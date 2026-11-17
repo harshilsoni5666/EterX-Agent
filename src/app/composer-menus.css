@@ -1,4 +1,19 @@
 /* Final composer menu layer: shared surfaces, row rhythm and edge scrolling. */
+/* Keep the composer theme scope in body portals without creating another
+   containing block or stacking context around the floating menus. */
+:root .eterx-composer-shell.eterx-composer-menu-portal {
+  display: contents !important;
+  contain: none !important;
+  container-type: normal !important;
+}
+
+:root .eterx-composer-menu-portal > [data-adaptive-menu="true"] {
+  position: fixed !important;
+  z-index: 10000 !important;
+  pointer-events: auto !important;
+  -webkit-app-region: no-drag;
+}
+
 :root .eterx-composer-shell .eterx-model-provider-heading {
   padding: 12px 12px 5px;
   color: var(--composer-menu-muted);

@@ -673,13 +673,6 @@ const revokeObjectPreview = (preview?: string) => {
   }
 };
 
-const getCenteredPopoutOffset = (rect: DOMRect, menuWidth: number, margin = 16) => {
-  const desiredLeft = rect.left + rect.width / 2 - menuWidth / 2;
-  const maxLeft = Math.max(margin, window.innerWidth - margin - menuWidth);
-  const clampedLeft = Math.min(Math.max(desiredLeft, margin), maxLeft);
-  return Math.round(clampedLeft - desiredLeft);
-};
-
 const DocumentPreviewIframe = React.memo(({ src }: { src: string }) => {
   return (
     <iframe
@@ -1127,6 +1120,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 }) => {
   const isAgentBuilder = Boolean(buildingAgentId || activeChatId?.startsWith('agent_builder_') || activeChatId?.includes('agent_builder'));
   const isLiveActive = liveState !== 'idle' && liveState !== 'error';
+  const isAgentRunning = isThinking || canStop;
   const hasAnyLiveSession = isLiveActive || hasBackgroundLiveSession;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1136,6 +1130,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const textareaResizeFrameRef = useRef<number | null>(null);
   const slashDragFrameRef = useRef<number | null>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
   const modelListRef = useRef<HTMLDivElement>(null);
   const initialFocusAppliedRef = useRef(false);
   // Attachment preparation may outlive a chat switch. Scope the deferred send
@@ -1164,11 +1159,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [showContextUsagePanel, setShowContextUsagePanel] = useState(false);
   const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
   const [projectSearch, setProjectSearch] = useState('');
-  const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
-  const [agentMenuMaxHeight, setAgentMenuMaxHeight] = useState(380);
-  const [modelMenuXOffset, setModelMenuXOffset] = useState(0);
   const [availableAgents, setAvailableAgents] = useState<AvailableAgentSummary[]>([]);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
+  const agentMenuRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const composerShellRef = useRef<HTMLDivElement>(null);
   const contextUsagePanelRef = useRef<HTMLElement>(null);
@@ -1379,11 +1372,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (typeof window === 'undefined') return;
     const margin = 12;
     const gap = 8;
-    const bounds = anchor.closest('.eterx-conversation-pane')?.getBoundingClientRect();
-    const leftEdge = Math.max(margin, (bounds?.left ?? 0) + margin);
-    const rightEdge = Math.min(window.innerWidth - margin, (bounds?.right ?? window.innerWidth) - margin);
-    const topEdge = Math.max(margin, (bounds?.top ?? 0) + margin);
-    const bottomEdge = Math.min(window.innerHeight - margin, (bounds?.bottom ?? window.innerHeight) - margin);
+    const viewport = window.visualViewport;
+    const leftEdge = (viewport?.offsetLeft ?? 0) + margin;
+    const rightEdge = leftEdge + (viewport?.width ?? document.documentElement.clientWidth) - margin * 2;
+    const topEdge = (viewport?.offsetTop ?? 0) + margin;
+    const bottomEdge = topEdge + (viewport?.height ?? document.documentElement.clientHeight) - margin * 2;
     const menuWidth = Math.max(0, Math.min(168, rightEdge - leftEdge));
     const menuHeight = Math.max(0, Math.min(optionCount * 34 + 10, bottomEdge - topEdge));
     const rect = anchor.getBoundingClientRect();
@@ -1395,7 +1388,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       topEdge,
       Math.min(rect.bottom - menuHeight, bottomEdge - menuHeight),
     );
-    setThinkingMenuPosition({ top, left, width: menuWidth, maxHeight: menuHeight });
+    setThinkingMenuPosition(previous =>
+      previous?.top === top && previous.left === left && previous.width === menuWidth && previous.maxHeight === menuHeight
+        ? previous
+        : { top, left, width: menuWidth, maxHeight: menuHeight }
+    );
   }, []);
 
   const openThinkingMenuForRow = (optionKey: string, anchor: HTMLElement, optionCount: number) => {
@@ -1778,15 +1775,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const closeCodingDetails = () => {
     const modeId = codingDetails;
     setCodingDetails(null);
-    requestAnimationFrame(() => agentSelectorRef.current?.querySelector<HTMLButtonElement>(`[data-coding-info="${modeId}"]`)?.focus());
+    requestAnimationFrame(() => agentMenuRef.current?.querySelector<HTMLButtonElement>(`[data-coding-info="${modeId}"]`)?.focus({ preventScroll: true }));
   };
 
   // Close agent menu on outside click
   useEffect(() => {
     if (!showAgentMenu) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (target && agentSelectorRef.current?.contains(target)) return;
+    const handler = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      const path = e.composedPath();
+      if ([agentSelectorRef.current, agentMenuRef.current].some(element =>
+        element && (element.contains(target) || path.includes(element))
+      )) return;
       setShowAgentMenu(false);
     };
     const escHandler = (e: KeyboardEvent) => {
@@ -1795,13 +1795,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       if (codingDetails) closeCodingDetails();
       else {
         setShowAgentMenu(false);
-        agentSelectorRef.current?.querySelector<HTMLButtonElement>('.eterx-agent-button')?.focus();
+        agentSelectorRef.current?.querySelector<HTMLButtonElement>('.eterx-agent-button')?.focus({ preventScroll: true });
       }
     };
-    document.addEventListener('mousedown', handler);
+    document.addEventListener('pointerdown', handler, true);
     document.addEventListener('keydown', escHandler);
     return () => {
-      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('pointerdown', handler, true);
       document.removeEventListener('keydown', escHandler);
     };
   }, [showAgentMenu, codingDetails]);
@@ -1870,10 +1870,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
     const handlePointerDown = (event: PointerEvent) => {
       const selector = modelSelectorRef.current;
+      const menu = modelMenuRef.current;
       const thinkingMenu = thinkingMenuPortalRef.current;
       const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
       const target = event.target as Node | null;
       if (selector && (selector.contains(target) || path.includes(selector))) return;
+      if (menu && (menu.contains(target) || path.includes(menu))) return;
       if (thinkingMenu && (thinkingMenu.contains(target) || path.includes(thinkingMenu))) return;
       setShowModelMenu(false);
       setShowThinkingLevels(false);
@@ -1882,6 +1884,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       if (event.key === 'Escape') {
         setShowModelMenu(false);
         setShowThinkingLevels(false);
+        modelSelectorRef.current?.querySelector<HTMLButtonElement>('.eterx-model-button')?.focus({ preventScroll: true });
       }
     };
 
@@ -1893,61 +1896,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     };
   }, [showModelMenu]);
   const [logoHoverText, setLogoHoverText] = useState('');
-
-  useEffect(() => {
-    if (!showAgentMenu || typeof window === 'undefined') {
-      setAgentMenuXOffset(0);
-      return;
-    }
-
-    const updatePosition = () => {
-      const rect = agentSelectorRef.current?.getBoundingClientRect();
-      if (!rect) return;
-
-      const margin = 16;
-      const menuWidth = Math.min(codingDetails ? 320 : 224, window.innerWidth - margin * 2);
-      setAgentMenuXOffset(getCenteredPopoutOffset(rect, menuWidth, margin));
-      const opensDown = traceLogsLength === 0 && liveState === 'idle';
-      const availableHeight = opensDown ? window.innerHeight - rect.bottom - 26 : rect.top - 26;
-      setAgentMenuMaxHeight(Math.max(96, Math.min(380, availableHeight)));
-    };
-
-    updatePosition();
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [showAgentMenu, codingDetails, traceLogsLength, liveState]);
-
-  useEffect(() => {
-    if (!showModelMenu || typeof window === 'undefined') {
-      setModelMenuXOffset(0);
-      return;
-    }
-
-    const updatePosition = () => {
-      const rect = modelSelectorRef.current?.getBoundingClientRect();
-      if (!rect) return;
-
-      const margin = 16;
-      const menuWidth = Math.min(isCompressed ? 248 : 286, window.innerWidth - margin * 2);
-      const xOffset = getCenteredPopoutOffset(rect, menuWidth, margin);
-      const menuLeft = rect.left + rect.width / 2 - menuWidth / 2 + xOffset;
-      const menuRight = menuLeft + menuWidth;
-
-      setModelMenuXOffset(xOffset);
-    };
-
-    updatePosition();
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [isCompressed, showModelMenu]);
 
   const logoHoverPhrases = [
     "Awaiting your command.",
@@ -2557,6 +2505,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const hasPreparingAttachments = attachments.some(att => att.uploadStatus === 'uploading');
   const hasErroredAttachments = attachments.some(att => att.uploadStatus === 'error');
   const hasComposerPayload = hasPromptText || attachments.length > 0;
+  // Live, Send (including steering), and Stop share one fixed action slot.
+  const composerAction = isStopping || (isAgentRunning && (!hasComposerPayload || isNetworkPaused))
+    ? 'stop'
+    : isNetworkPaused
+      ? 'network-paused'
+      : hasComposerPayload || !showVoiceControls
+        ? 'send'
+        : 'live';
+  const composerActionLabel = composerAction === 'stop'
+    ? isStopping ? 'Stopping agent' : 'Stop agent'
+    : composerAction === 'network-paused'
+      ? 'Waiting for network'
+      : composerAction === 'live'
+        ? hasBackgroundLiveSession ? 'Move Live to this chat' : 'Start Live Conversation'
+        : isAgentRunning ? 'Send follow-up' : 'Send message';
+  const composerActionTooltip = composerAction === 'send'
+    ? !hasComposerPayload ? 'Type a message to send'
+      : hasErroredAttachments ? 'Remove failed attachment'
+        : hasPreparingAttachments ? 'Preparing media'
+          : composerActionLabel
+    : composerActionLabel;
   // Capability validation belongs to the provider adapter. The composer must
   // never drop or block a real file just because a model catalogue entry uses
   // an unfamiliar vision/media name; the selected provider receives the
@@ -2567,6 +2536,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const chatKey = activeChatId || 'new_chat';
     if (stopRequestsRef.current.has(chatKey)) return;
 
+    queuedSendRef.current = null;
     setStoppingChatIds(previous => new Set(previous).add(chatKey));
     const stopPromise = (async () => {
       try {
@@ -2591,13 +2561,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [activeChatId, handleStop, showComposerNotice]);
 
   useEffect(() => {
-    if (isLiveActive || managedWorkspace.busy || queuedSendRef.current !== activeComposerChatKey || hasPreparingAttachments || hasErroredAttachments) return;
+    if (isLiveActive || isStopping || managedWorkspace.busy || queuedSendRef.current !== activeComposerChatKey || hasPreparingAttachments || hasErroredAttachments) return;
     if (!latestInputValueRef.current.trim() && attachments.length === 0) {
       queuedSendRef.current = null;
       return;
     }
     if (isNetworkPaused) return;
-    if (!isThinking && !activeConfiguredChatModel) {
+    if (!isAgentRunning && !activeConfiguredChatModel) {
       queuedSendRef.current = null;
       showComposerNotice('No model configured', 'Add an API key in Settings > API, then choose a live model in Settings > Models.');
       return;
@@ -2608,15 +2578,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       showComposerNotice(attachmentIssue.title, attachmentIssue.message);
       return;
     }
-    if (isThinking) {
+    if (isAgentRunning) {
       if (hasComposerPayload) handleSteer();
       return;
     }
     notifyAgentFaceSend();
     handleSend();
-  }, [isLiveActive, managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isThinking, showComposerNotice]);
+  }, [isLiveActive, isStopping, managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isAgentRunning, showComposerNotice]);
 
   const submitPrompt = useCallback(() => {
+    if (isStopping && !isLiveActive) return;
     if (managedWorkspace.busy) {
       showComposerNotice('Preparing workspace', 'Your workspace is still being created. Send your message once it is ready.');
       return;
@@ -2659,7 +2630,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       return;
     }
 
-    if (isThinking) {
+    if (isAgentRunning) {
       if (hasCurrentPayload) {
         handleSteer();
       }
@@ -2674,7 +2645,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (!hasCurrentPayload) return;
     notifyAgentFaceSend();
     handleSend();
-  }, [managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
+  }, [managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isLiveActive, isNetworkPaused, isAgentRunning, isStopping, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter also finalizes IME composition. Do not submit while an input method
@@ -2854,19 +2825,41 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   useEffect(() => {
     if (!showModelMenu || !showThinkingLevels || !thinkingMenuModelKey) return;
+    let frame = 0;
+    let lastAnchorRect: DOMRect | null = null;
     const updatePosition = () => {
       const anchor = thinkingMenuAnchorRef.current;
-      if (!anchor) return;
+      if (!anchor?.isConnected || window.getComputedStyle(anchor).visibility !== 'visible') {
+        setShowThinkingLevels(false);
+        return;
+      }
+      lastAnchorRect = anchor.getBoundingClientRect();
       const option = allModelOptions.find(item => item.optionKey === thinkingMenuModelKey) || null;
       const optionCount = getThinkingLevelOptions(option).length;
       if (optionCount > 0) updateThinkingMenuPosition(anchor, optionCount);
     };
     updatePosition();
+    const followAnchor = () => {
+      const anchor = thinkingMenuAnchorRef.current;
+      const rect = anchor?.getBoundingClientRect();
+      if (!rect || !lastAnchorRect || rect.left !== lastAnchorRect.left || rect.top !== lastAnchorRect.top
+        || rect.width !== lastAnchorRect.width || rect.height !== lastAnchorRect.height
+        || (anchor && window.getComputedStyle(anchor).visibility !== 'visible')) {
+        updatePosition();
+      }
+      frame = requestAnimationFrame(followAnchor);
+    };
+    frame = requestAnimationFrame(followAnchor);
     window.addEventListener('resize', updatePosition);
     window.addEventListener('scroll', updatePosition, true);
+    window.visualViewport?.addEventListener('resize', updatePosition);
+    window.visualViewport?.addEventListener('scroll', updatePosition);
     return () => {
+      cancelAnimationFrame(frame);
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
+      window.visualViewport?.removeEventListener('resize', updatePosition);
+      window.visualViewport?.removeEventListener('scroll', updatePosition);
     };
   }, [allModelOptions, getThinkingLevelOptions, showModelMenu, showThinkingLevels, thinkingMenuModelKey, updateThinkingMenuPosition]);
 
@@ -2910,9 +2903,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
     let lastInset = '';
     let lastPadding = '';
+    let lastScrollbarSpace = '';
     let insetFrame = 0;
     const updateBottomInset = () => {
       insetFrame = 0;
+      const feed = column.querySelector<HTMLElement>('.eterx-chat-feed-scroll');
+      if (feed) {
+        const scrollbarSpace = `${Math.max(0, feed.offsetWidth - feed.clientWidth)}px`;
+        if (scrollbarSpace !== lastScrollbarSpace) {
+          lastScrollbarSpace = scrollbarSpace;
+          column.style.setProperty('--eterx-chat-scrollbar-space', scrollbarSpace);
+        }
+      }
       const height = Math.ceil(dock.getBoundingClientRect().height);
       const padding = getComputedStyle(dock).paddingTop;
       if (padding !== lastPadding) {
@@ -2930,6 +2932,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     updateBottomInset();
     const observer = new ResizeObserver(scheduleInset);
     observer.observe(dock);
+    observer.observe(column);
     window.addEventListener('resize', scheduleInset);
 
     return () => {
@@ -2938,6 +2941,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       cancelAnimationFrame(insetFrame);
       column.style.removeProperty('--eterx-chat-composer-inset');
       column.style.removeProperty('--eterx-chat-feed-bottom-space');
+      column.style.removeProperty('--eterx-chat-scrollbar-space');
     };
   }, [isCompressed, isEmptyHome, queuedFollowUps.length]);
 
@@ -3011,10 +3015,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     emitModelSettingsUpdate({ type: 'model-selection-reconciled', chatModelSelection: nextSelection });
   }, [isModelLocked, modelOptions, activeModelSelection, modelSelectionScope, onModelSelectionChange]);
   const controlPopoutVerticalClass = 'bottom-[calc(100%+8px)]';
-  const selectorPopoutVerticalClass = isNewChatHome ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
-  const selectorMenuOffset = 8;
-  const agentMenuX = `calc(-50% + ${ agentMenuXOffset }px)`;
-  const modelMenuX = `calc(-50% + ${ modelMenuXOffset }px)`;
   const pillPopoutVerticalClass = isEmptyHome ? 'bottom-full mb-2' : 'bottom-[calc(100%+72px)] mb-0';
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle';
   const thinkingMenuOption = allModelOptions.find(option => option.optionKey === thinkingMenuModelKey) || null;
@@ -3633,22 +3633,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   className="flex-1 bg-transparent border-0 outline-hidden ring-0 text-[14.5px] text-[#F0F0F0] placeholder:text-[#6B6964] font-normal pr-3 resize-none min-h-[42px] max-h-[150px] leading-[1.45] py-2 overflow-y-auto eterx-scrollbar scrollbar-no-buttons"
                   style={{ caretColor: '#F0F0F0' }}
                 />
-              )}
-              {(isThinking || canStop || isStopping) && (
-                <Tooltip text={isStopping ? 'Stopping task' : 'Stop task'} side="top">
-                  <button
-                    type="button"
-                    onClick={handleStopClick}
-                    disabled={isStopping}
-                    aria-label={isStopping ? 'Stopping task' : 'Stop task'}
-                    aria-busy={isStopping}
-                    className="mb-0.5 mr-1 flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-[#2D2D2D] text-white hover:bg-[#383838] disabled:cursor-wait"
-                  >
-                    {isStopping
-                      ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-hidden="true" />
-                      : <span className="h-3 w-3 rounded-[2.5px] bg-current" aria-hidden="true" />}
-                  </button>
-                </Tooltip>
               )}
               <button
                 type="button"
@@ -4276,13 +4260,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       animate: { opacity: 1, clipPath: 'inset(0px round 16px)' },
                       exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px round 16px)' },
                       transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
-                    }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} heightLimit={380} constrainToPane={false}
-                      style={{ transform: `translateX(${ agentMenuX })`, width: codingDetails ? 320 : 224, maxHeight: agentMenuMaxHeight }}
-                      className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex overflow-hidden max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-none`}
+                    }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} heightLimit={380}
+                      portalAnchorRef={agentSelectorRef}
+                      menuRef={agentMenuRef}
+                      style={{ width: codingDetails ? 320 : 224 }}
+                      className="eterx-composer-popout eterx-agent-popout fixed flex overflow-hidden max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-none"
                       role="dialog"
                        aria-label="Chat and agent selection"
                     >
-                      <div className="eterx-agent-menu-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                      <div data-menu-scroll-region className="eterx-agent-menu-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
                       {codingDetails ? <CodingModeDetails modeId={codingDetails} onBack={closeCodingDetails} /> : <>
                       {/* Header */}
                       <div className="eterx-menu-heading px-2.5 pt-1 pb-1.5">
@@ -4492,9 +4478,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     animate: { opacity: 1, clipPath: 'inset(0px)', filter: 'blur(0px)' },
                     exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px)', filter: 'blur(1px)' },
                     transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
-                  }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} constrainToPane={false}
-                    style={{ transform: `translateX(${ modelMenuX })` }}
-                    className={`eterx-composer-popout eterx-model-menu-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.10] bg-[#202020] p-1.5 text-[#F4F1EA] shadow-none`}
+                  }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome}
+                    portalAnchorRef={modelSelectorRef}
+                    menuRef={modelMenuRef}
+                    className={`eterx-composer-popout eterx-model-menu-popout fixed flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.10] bg-[#202020] p-1.5 text-[#F4F1EA] shadow-none`}
                     role="dialog"
                     aria-label="Model and thinking settings"
                   >
@@ -4666,118 +4653,48 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               )}
 
               {showVoiceControls && <DictationButton phase={dictationPhase} onClick={toggleSpeech} />}
-              {showVoiceControls && !isLiveActive && (hasComposerPayload || isThinking || canStop || isStopping) && <Tooltip text={hasBackgroundLiveSession ? "Move Live to this chat" : "Start Live Conversation"} side="top">
-                <button
-                  type="button"
-                  onClick={onLiveStart}
-                  disabled={isNetworkPaused}
-                  aria-label={hasBackgroundLiveSession ? "Move Live to this chat" : "Start Live Conversation"}
-                  className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-none' : '' }`}
-                >
-                  <div className={inputControlSheen} />
-                  <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
-                </button>
-              </Tooltip>}
 
-              {/* Send / Stop / Stopping-Spinner Button — instant state changes */}
-              {liveState !== 'idle' && liveState !== 'error' ? (
-                null /* Cancel/Stop is already rendered in the live overlay above */
-              ) : (
-                <>
-                  {(isStopping || isThinking || canStop) && (hasComposerPayload || isNetworkPaused) && (
-                    <Tooltip text={isStopping ? 'Stopping agent' : 'Stop agent'} side="top">
-                      <button
-                        type="button"
-                        disabled={isStopping}
-                        onClick={handleStopClick}
-                        aria-label={isStopping ? 'Stopping agent' : 'Stop agent'}
-                        aria-busy={isStopping}
-                        className="eterx-control-button eterx-composer-stop-button eterx-composer-action-stop w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#292929] text-white disabled:cursor-wait"
-                      >
-                        {isStopping ? (
-                          <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-hidden="true" />
-                        ) : (
-                          <span className="eterx-composer-stop-icon block h-3 w-3 rounded-[2.5px] bg-current" aria-hidden="true" />
-                        )}
-                      </button>
-                    </Tooltip>
-                  )}
-                  <div className="eterx-composer-action-slot">
-                    <>
-                    {isNetworkPaused ? (
-                    <div key="network-paused">
-                      <Tooltip text="Waiting for network" side="top">
-                        <button
-                          onClick={onNetworkPausedAction}
-                          className="eterx-control-button eterx-composer-status-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#2D2D2D] border border-transparent text-white shadow-none transition-all duration-150 hover:bg-[#333333] hover:border-transparent active:bg-[#333333]"
-                        >
-                          <motion.div
-                            className="eterx-composer-spinner w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
-                            animate={{ rotate: 360 }}
-                            transition={{ duration: 0.82, repeat: Infinity, ease: 'linear' }}
-                          />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  ) : (isStopping || isThinking || canStop) && !hasComposerPayload ? (
-                    /* ── STOP button (agent running, draft or empty) ── */
-                    <div key="stop">
-                      <Tooltip text={isStopping ? "Stopping agent" : "Stop agent"} side="top">
-                        <button
-                          type="button"
-                          disabled={isStopping}
-                          onClick={handleStopClick}
-                          aria-label={isStopping ? 'Stopping agent' : 'Stop agent'}
-                          aria-busy={isStopping}
-                          className={`eterx-control-button eterx-composer-stop-button eterx-composer-action-stop w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#292929] text-white transition-none shadow-none group overflow-hidden relative ${ isStopping ? 'cursor-wait' : 'cursor-pointer active:scale-[0.96]' }`}
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          {isStopping ? (
-                            <span className="eterx-composer-stop-pending h-[12px] w-[12px] animate-spin rounded-full border-[1.75px] border-white/30 border-t-white" aria-hidden="true" />
-                          ) : (
-                            <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current transition-all duration-200" aria-hidden="true" />
-                          )}
-                        </button>
-                      </Tooltip>
-                    </div>
-                  ) : hasComposerPayload || !showVoiceControls ? (
-                    /* ── SEND button ── */
-                    <div key="send">
-                      <Tooltip text={!hasComposerPayload ? "Type a message to send" : hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : isThinking ? "Queue or steer follow-up" : "Send message"} side="top">
-                        <button
-                          type="button"
-                          onClick={submitPrompt}
-                          disabled={!hasComposerPayload || managedWorkspace.busy}
-                          aria-label={isThinking ? 'Send follow-up' : 'Send message'}
-                          className={`eterx-control-button eterx-composer-send-button eterx-composer-action-send w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-none bg-[#292929] text-white shadow-none active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={2.05} />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  ) : (
-                    /* Empty composer: live replaces send on voice-enabled surfaces. */
-                    <div key="live">
-                      <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Move Live to this chat" : "Start Live Conversation"} side="top">
-                        <button
-                          type="button"
-                          onClick={isLiveActive ? onLiveStop : onLiveStart}
-                          aria-label={hasBackgroundLiveSession ? "Move Live to this chat" : "Start Live Conversation"}
-                          disabled={isNetworkPaused}
-                          data-active={hasAnyLiveSession ? 'true' : undefined}
-                          className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#292929] text-white shadow-none transition-all duration-150 active:bg-[#222222] cursor-pointer group relative overflow-hidden hover:bg-[#373737] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-none' : '' }`}
-                        >
-                          <div className={inputControlSheen} />
-                          <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon relative z-[1] w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : '!text-white' }`} strokeWidth={1.85} />
-                        </button>
-                      </Tooltip>
-                    </div>
+              <div className="eterx-composer-action-slot">
+                <Tooltip text={composerActionTooltip} side="top">
+                  <button
+                    type="button"
+                    onClick={composerAction === 'stop' ? handleStopClick : composerAction === 'network-paused' ? onNetworkPausedAction : composerAction === 'live' ? onLiveStart : submitPrompt}
+                    disabled={isStopping || (composerAction === 'send' && (!hasComposerPayload || managedWorkspace.busy))}
+                    aria-label={composerActionLabel}
+                    aria-busy={isStopping || composerAction === 'network-paused'}
+                    data-active={composerAction === 'live' && hasAnyLiveSession ? 'true' : undefined}
+                    className={`eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#292929] text-white shadow-none group relative overflow-hidden ${
+                      composerAction === 'stop'
+                        ? `eterx-composer-stop-button eterx-composer-action-stop transition-none ${isStopping ? 'cursor-wait' : 'cursor-pointer active:scale-[0.96]'}`
+                        : composerAction === 'send'
+                          ? `eterx-composer-send-button eterx-composer-action-send transition-none active:scale-[0.96] ${hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : ''}`
+                          : composerAction === 'live'
+                            ? `eterx-composer-live-button border border-transparent transition-all duration-150 active:bg-[#222222] cursor-pointer hover:bg-[#373737] hover:border-transparent hover:text-white ${hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50' : ''}`
+                            : 'eterx-composer-status-button border border-transparent transition-all duration-150 hover:bg-[#333333] hover:border-transparent active:bg-[#333333]'
+                    }`}
+                  >
+                    <div className={composerAction === 'live' ? inputControlSheen : 'absolute inset-0 bg-gradient-to-t from-black/0 to-black/5'} />
+                    {composerAction === 'stop' ? (
+                      isStopping ? (
+                        <span className="eterx-composer-stop-pending h-[12px] w-[12px] animate-spin rounded-full border-[1.75px] border-white/30 border-t-white" aria-hidden="true" />
+                      ) : (
+                        <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current" aria-hidden="true" />
+                      )
+                    ) : composerAction === 'network-paused' ? (
+                      <motion.div
+                        className="eterx-composer-spinner w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
+                        animate={{ rotate: 360 }}
+                        transition={{ duration: 0.82, repeat: Infinity, ease: 'linear' }}
+                        aria-hidden="true"
+                      />
+                    ) : composerAction === 'live' ? (
+                      <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon relative z-[1] w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : '!text-white'}`} strokeWidth={1.85} />
+                    ) : (
+                      <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={2.05} />
                     )}
-                    </>
-                  </div>
-                </>
-              )}
+                  </button>
+                </Tooltip>
+              </div>
             </div>
           </div>
           )}

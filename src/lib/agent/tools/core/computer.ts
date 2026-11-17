@@ -11,6 +11,7 @@ import {
 } from '../../computer/managed-computer';
 import { cuaDriverProvider, getCuaDriverStatus } from '../../computer/cua-driver';
 import { enforceToolCapability } from '../security/tool_policy';
+import { formatUnknownError } from '../../error-format';
 
 async function executePortableComputerAction(action: string, input: any, ctx: any, chatId?: string) {
   const { screenAgentTool } = await import('./screen_agent');
@@ -143,6 +144,7 @@ Desktop and browser access are separate settings. Use screen_agent for detailed 
 
   outputSchema: z.object({
     success: z.boolean(),
+    error: z.string().optional(),
     action: z.string(),
     result: z.any(),
     vision: z.object({
@@ -159,12 +161,16 @@ Desktop and browser access are separate settings. Use screen_agent for detailed 
     const chatId = ctx?.chatId || ctx?.projectId || input.chatId;
     const decision = enforceToolCapability('computer', input, ctx);
     if (!decision.allowed) {
-      return { success: false, action, result: decision.reason || 'Computer control is not allowed' };
+      const error = decision.reason || 'Computer control is not allowed';
+      return { success: false, action, result: error, error };
     }
 
     try {
       if (process.platform !== 'win32' || (ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false)) {
-        return await executePortableComputerAction(action, input, ctx, chatId);
+        const result: any = await executePortableComputerAction(action, input, ctx, chatId);
+        return { ...result, ...(!result.success ? {
+          error: formatUnknownError(result.error || result.observationError || result.result, 'The computer action failed.', 700),
+        } : {}) };
       }
 
       switch (action) {
@@ -401,7 +407,8 @@ Desktop and browser access are separate settings. Use screen_agent for detailed 
           return { success: false, action, result: `Unknown action: ${action}` };
       }
     } catch (e: any) {
-      return { success: false, action, result: `Error: ${e.message?.substring(0, 300)}` };
+      const error = formatUnknownError(e, 'The computer action failed.', 700);
+      return { success: false, action, result: error, error };
     }
   },
 };

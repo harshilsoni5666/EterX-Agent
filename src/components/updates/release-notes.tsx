@@ -1,6 +1,5 @@
 'use client';
 
-import { Sparkles } from 'lucide-react';
 import type { DesktopReleaseNotes, DesktopUpdateState } from '../../lib/desktop-updates';
 
 const sectionLabels: Record<DesktopReleaseNotes['sections'][number]['kind'], string> = {
@@ -14,7 +13,7 @@ export function ReleaseNotesContent({ notes, compact = false }: { notes: Desktop
   if (!notes) {
     return (
       <p className="eterx-release-muted text-[12px] leading-relaxed">
-        Release highlights aren’t available for this version right now.
+        Release notes are unavailable for this version.
       </p>
     );
   }
@@ -53,14 +52,13 @@ export function UpdateWhatsNew({ state }: { state: DesktopUpdateState }) {
     ? releaseDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
     : null;
 
+  if (!notes) return null;
+
   return (
-    <section className="eterx-release-highlights rounded-xl border p-5" aria-label="What’s New">
+    <section className="eterx-release-highlights mt-7 rounded-xl border p-5" aria-label="What’s New">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="flex items-center gap-2 text-[15px] font-semibold tracking-[-0.01em]">
-            <Sparkles size={16} className="eterx-release-accent" aria-hidden="true" />
-            What’s New
-          </h3>
+          <h3 className="text-[15px] font-semibold tracking-[-0.01em]">What’s New</h3>
           {version !== 'development' && (
             <p className="eterx-release-muted mt-1.5 text-[11px]">
               EterX {version}{dateLabel ? ` · ${dateLabel}` : ''}

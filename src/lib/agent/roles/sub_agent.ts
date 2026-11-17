@@ -282,6 +282,7 @@ export function pauseAgent(projectId: string, agentName: string, onTrace?: (trac
   let resolver: (() => void) | null = null;
   const promise = new Promise<void>((resolve) => { resolver = resolve; });
   agentPauseStates.set(key, { paused: true, resolver, promise });
+  globalSubAgentSpawner.notifyControlChange(projectId);
   interAgentMailbox.updateAgentPresence(resolveProjectId(projectId), agentName, {
     status: 'paused',
     progress: 'Paused by main control',
@@ -319,25 +320,29 @@ export function resumeAgent(projectId: string, agentName: string, onTrace?: (tra
   const key = agentKey(projectId, agentName, activeAgentId);
   const state = agentPauseStates.get(key);
   if (!state?.paused) return false; // not paused
+  const instance = globalSubAgentSpawner.getAgentStatus().find(agent => agent.id === activeAgentId);
+  const stillExecuting = instance?.status === 'running';
+  if (instance?.status === 'paused') instance.status = 'waiting';
 
   state.paused = false;
-  state.resolver?.(); // resolve the promise — execution continues
+  state.resolver?.(); // wake the worker; it must reacquire capacity before executing
   agentPauseStates.delete(key);
   controlAgentNames.delete(key);
+  globalSubAgentSpawner.notifyControlChange(projectId);
   interAgentMailbox.updateAgentPresence(resolveProjectId(projectId), agentName, {
-    status: 'running',
-    progress: 'Resumed by main control',
+    status: stillExecuting ? 'running' : 'queued',
+    progress: stillExecuting ? 'Resumed by main control' : 'Waiting to resume within execution capacity',
   });
   console.log(`[SubAgent] ▶ Resumed: ${agentName}`);
 
   const traceEvent = {
     type: 'sub_agent_resume',
-    text: `${agentName} resumed`,
+    text: stillExecuting ? `${agentName} resumed` : `${agentName} waiting to resume`,
     subAgent: agentName,
     agentName: agentName,
     subAgentId: activeAgentId,
     subAgentChatId: `${projectId}::sub-agent::${activeAgentId}`,
-    agentStatus: 'working',
+    agentStatus: stillExecuting ? 'working' : 'queued',
   };
 
   if (onTrace) {
@@ -444,10 +449,10 @@ export function isAgentClosed(projectId: string, agentName: string, agentId?: st
 }
 
 /**
- * Wait while an agent is paused. Returns immediately if not paused.
- * Called inside the agent's trace loop to suspend execution.
+ * Honor pause and reacquire a worker's execution slot before its next action.
  */
-export async function awaitIfPaused(projectId: string, agentName: string, agentId?: string): Promise<void> {
+export async function awaitIfPaused(projectId: string, agentName: string, agentId?: string, context?: ProjectContext): Promise<void> {
+  if (agentId && await globalSubAgentSpawner.awaitExecutionSlot(projectId, agentName, agentId, context)) return;
   const key = agentKey(projectId, agentName, agentId);
   const state = agentPauseStates.get(key);
   if (state?.paused && state.promise) {
@@ -732,6 +737,7 @@ interface SubAgentInstance {
   parentContext?: string;
   onTrace?: (trace: any) => void;
   setLeasedKey?: (apiKey: string) => void;
+  reservation?: SubAgentSlotReservation;
   /** Direct user message IDs remain idempotent after the live queue drains. */
   directUserMessageIds: Set<string>;
   directUserMessages: Array<{
@@ -769,7 +775,16 @@ type PendingSubAgentResult = {
   attempt?: number;
 };
 type BackgroundSubAgentRun = { projectId: string, name: SubAgentName, agentId?: string, parentAgentId?: string, promise: Promise<any> };
-type SubAgentSlotReservation = { projectId: string; name: SubAgentName; lease: KeyLease | null };
+type SubAgentSlotReservation = {
+  projectId: string;
+  name: SubAgentName;
+  lease: KeyLease | null;
+  // A stopped execution frees concurrency immediately. Its provider lease
+  // remains owned until the aborted request has actually finished unwinding.
+  active: boolean;
+  abortSignal?: AbortSignal;
+  onAbort?: () => void;
+};
 
 const pendingResults = sharedRuntime.pendingResults;
 const durableResultKeys = sharedRuntime.durableResultKeys;
@@ -853,21 +868,33 @@ export class SubAgentSpawner {
     queue: SubAgentInstance['directUserMessages'];
   }> = new Map();
   private directContinuationPromises: Map<string, Promise<void>> = new Map();
+  private executionOwners = new Set<string>();
   private slotReservations: Map<string, SubAgentSlotReservation> = new Map();
   private capacityWaiters: Map<string, Set<() => void>> = new Map();
 
   private reserveSlot(projectId: string, name: SubAgentName, agentId: string, context: ProjectContext, modelOverride?: Omit<SubAgentTaskSpec, 'task' | 'name'>): boolean {
-    if (this.slotReservations.has(agentId)) return true;
+    const abortSignal = (context as ProjectContext & { abortSignal?: AbortSignal }).abortSignal;
+    if (abortSignal?.aborted || isCancelled(projectId, name, agentId) || swarmCoordinator.isTerminal(agentId)) return false;
+    const existing = this.slotReservations.get(agentId);
+    if (existing) return this.isExecutionSlotActive(agentId, existing);
     const selection = resolveSubAgentModel(context, modelOverride);
     if (selection.provider === 'gemini' && apiKeyPool.totalKeys === 0) throw new Error('No Gemini API keys are configured for this worker.');
-    if (this.slotReservations.size >= SWARM_LIMITS.globalConcurrency) return false;
+    if (this.getOccupiedSlotCount() >= SWARM_LIMITS.globalConcurrency) return false;
     if (this.getOccupiedSlotCount(projectId) >= getConfiguredSubAgentLimit(context)) return false;
     const node = swarmCoordinator.get(agentId);
     if (node && (swarmCoordinator.isTerminal(agentId) || !swarmCoordinator.canStart(agentId,
       candidate => candidate.provider !== 'gemini' || apiKeyPool.canAcceptNewAgent()))) return false;
-    const lease = selection.provider === 'gemini' ? apiKeyPool.leaseSubAgentKey(projectId, name) : null;
+    const lease = selection.provider === 'gemini' ? apiKeyPool.leaseSubAgentKey(projectId, agentId) : null;
     if (selection.provider === 'gemini' && !lease) return false;
-    this.slotReservations.set(agentId, { projectId: resolveProjectId(projectId), name, lease });
+    const reservation: SubAgentSlotReservation = {
+      projectId: resolveProjectId(projectId), name, lease, active: true,
+      abortSignal,
+    };
+    reservation.onAbort = () => this.deactivateSlot(agentId, reservation);
+    this.slotReservations.set(agentId, reservation);
+    reservation.abortSignal?.addEventListener('abort', reservation.onAbort, { once: true });
+    const instance = this.activeAgents.get(agentId);
+    if (instance) instance.reservation = reservation;
     if (node) swarmCoordinator.start(agentId);
     return true;
   }
@@ -875,9 +902,30 @@ export class SubAgentSpawner {
   private releaseSlot(agentId: string, expected?: SubAgentSlotReservation): void {
     const reservation = this.slotReservations.get(agentId);
     if (!reservation || expected && reservation !== expected) return;
+    reservation.active = false;
+    if (reservation.onAbort) reservation.abortSignal?.removeEventListener('abort', reservation.onAbort);
     this.slotReservations.delete(agentId);
+    const instance = this.activeAgents.get(agentId);
+    if (instance?.reservation === reservation) instance.reservation = undefined;
     if (reservation.lease) apiKeyPool.releaseKey(reservation.lease.chatId);
     this.notifyCapacityWaiters();
+  }
+
+  private isExecutionSlotActive(agentId: string, reservation: SubAgentSlotReservation): boolean {
+    return reservation.active !== false && !reservation.abortSignal?.aborted
+      && !this.activeAgents.get(agentId)?.abortController.signal.aborted
+      && !swarmCoordinator.isTerminal(agentId);
+  }
+
+  private deactivateSlot(agentId: string, expected?: SubAgentSlotReservation): void {
+    const reservation = this.slotReservations.get(agentId);
+    if (!reservation || expected && reservation !== expected || reservation.active === false) return;
+    reservation.active = false;
+    this.notifyCapacityWaiters();
+  }
+
+  public notifyControlChange(projectId: string): void {
+    this.notifyCapacityWaiters(projectId);
   }
 
   private notifyCapacityWaiters(projectId?: string): void {
@@ -906,6 +954,29 @@ export class SubAgentSpawner {
     const parentAbortSignal = (context as any).abortSignal as AbortSignal | undefined;
     while (!isCancelled(projectId) && !parentAbortSignal?.aborted) {
       if (isAgentClosed(projectId, name, agentId) || swarmCoordinator.isTerminal(agentId)) return false;
+      const pause = agentPauseStates.get(agentKey(projectId, name, agentId));
+      if (pause?.paused && pause.promise) {
+        // Pause takes effect at a provider/tool boundary, after the preceding
+        // action has returned. Resume must go through admission again.
+        const instance = this.activeAgents.get(agentId);
+        if (instance) instance.status = 'paused';
+        swarmCoordinator.suspend(agentId, 'Paused by user');
+        const held = this.slotReservations.get(agentId);
+        if (held) this.releaseSlot(agentId, held);
+        await new Promise<void>(resolve => {
+          const wake = () => {
+            parentAbortSignal?.removeEventListener('abort', wake);
+            resolve();
+          };
+          parentAbortSignal?.addEventListener('abort', wake, { once: true });
+          void pause.promise!.then(wake);
+          if (parentAbortSignal?.aborted) wake();
+        });
+        if (parentAbortSignal?.aborted || isCancelled(projectId, name, agentId) || swarmCoordinator.isTerminal(agentId)) return false;
+        if (instance) instance.status = 'waiting';
+        swarmCoordinator.resume(agentId, resolveSubAgentModel(context, modelOverride).provider);
+        continue;
+      }
       if (this.reserveSlot(projectId, name, agentId, context, modelOverride)) return true;
       interAgentMailbox.updateAgentPresence(projectId, name, {
         status: 'queued',
@@ -935,6 +1006,33 @@ export class SubAgentSpawner {
       });
     }
     return false;
+  }
+
+  public async awaitExecutionSlot(projectId: string, name: string, agentId: string, context?: ProjectContext): Promise<boolean> {
+    const instance = this.activeAgents.get(agentId);
+    if (!instance || !isSameProjectScope(instance.projectId, projectId) || instance.name !== name) return false;
+    const executionContext = (context || { ...instance.originContext, abortSignal: instance.abortController.signal }) as ProjectContext & { abortSignal?: AbortSignal };
+    while (true) {
+      if (instance.abortController.signal.aborted || executionContext.abortSignal?.aborted
+        || ['completed', 'failed', 'cancelled', 'closed'].includes(instance.status)) throw new Error('CANCELLED_BY_USER');
+      const selection = resolveSubAgentModel(executionContext);
+      if (!this.slotReservations.has(agentId)) swarmCoordinator.resume(agentId, selection.provider);
+      if (!await this.reserveSlotWhenAvailable(projectId, name, agentId, executionContext, selection)) throw new Error('CANCELLED_BY_USER');
+      if (isAgentPaused(projectId, name, agentId)) continue;
+      const reservation = this.slotReservations.get(agentId);
+      if (!reservation || !this.isExecutionSlotActive(agentId, reservation)) throw new Error('CANCELLED_BY_USER');
+      const wasSuspended = instance.status === 'waiting' || instance.status === 'paused';
+      instance.reservation = reservation;
+      if (wasSuspended && reservation.lease) instance.setLeasedKey?.(reservation.lease.apiKey);
+      instance.status = 'running';
+      if (wasSuspended) {
+        interAgentMailbox.updateAgentPresence(projectId, name, { status: 'running', progress: 'Execution resumed' });
+        instance.onTrace?.({ type: 'sub_agent_resume', text: `${name} resumed`, subAgent: name, agentName: name,
+          subAgentId: agentId, subAgentChatId: `${instance.projectId}::sub-agent::${agentId}`,
+          agentStatus: 'running', timestamp: Date.now() });
+      }
+      return true;
+    }
   }
 
   private isNameBusy(projectId: string, name: SubAgentName, reservedNames?: Set<SubAgentName>): boolean {
@@ -1017,6 +1115,9 @@ export class SubAgentSpawner {
         instance.abortController.abort(new Error('CANCELLED_BY_USER'));
       }
     }
+    for (const [agentId, reservation] of this.slotReservations) {
+      if (isSameProjectScope(reservation.projectId, resolvedProjectId)) this.deactivateSlot(agentId, reservation);
+    }
     this.notifyCapacityWaiters(resolvedProjectId);
   }
 
@@ -1025,6 +1126,10 @@ export class SubAgentSpawner {
       if (!instance.abortController.signal.aborted) {
         instance.abortController.abort(new Error('CANCELLED_BY_USER'));
       }
+    }
+    for (const [agentId, reservation] of this.slotReservations) this.deactivateSlot(agentId, reservation);
+    for (const run of this.backgroundPromises.values()) {
+      if (run.agentId) swarmCoordinator.cancelBranch(run.agentId, 'Stopped by user');
     }
     this.notifyCapacityWaiters();
   }
@@ -1095,6 +1200,7 @@ export class SubAgentSpawner {
     modelOverride = { ...modelOverride, ...modelSelection };
     const name = customName || this.resolveAgentName(context.projectId, task);
     const agentId = customAgentId || this.createAgentId(context.projectId, name);
+    if (this.activeAgents.has(agentId)) throw new Error('This worker execution is still settling. Wait before continuing its conversation.');
     const subAgentChatId = `${context.projectId}::sub-agent::${agentId}`;
     const feedOwnership = resolveFeedOwnership(context, subAgentChatId);
     const node = swarmCoordinator.get(agentId);
@@ -1109,7 +1215,18 @@ export class SubAgentSpawner {
       try { emitTrace({ ...feedOwnership, ...lineage, ...event }); }
       catch (error) { console.warn('[SubAgent] Trace delivery failed:', formatUnknownError(error)); }
     } : undefined;
-    if (!await this.reserveSlotWhenAvailable(context.projectId, name, agentId, context, modelOverride)) {
+    this.executionOwners ||= new Set();
+    if (this.executionOwners.has(agentId)) throw new Error('This worker already owns an execution. Wait for it to settle before continuing.');
+    this.executionOwners.add(agentId);
+    let reserved: boolean;
+    try {
+      reserved = await this.reserveSlotWhenAvailable(context.projectId, name, agentId, context, modelOverride);
+    } catch (error) {
+      this.executionOwners.delete(agentId);
+      throw error;
+    }
+    if (!reserved) {
+      this.executionOwners.delete(agentId);
       return {
         agentId,
         name,
@@ -1239,7 +1356,7 @@ export class SubAgentSpawner {
       const instance: SubAgentInstance = {
         id: agentId, projectId: context.projectId, name, task, deepBrief,
         ...lineage,
-        status: 'running', traceLog, startedAt: Date.now(), abortController,
+        status: 'running', traceLog, startedAt: Date.now(), abortController, reservation,
         directUserMessageIds: directConversationState.acceptedIds, directUserMessages,
         // Direct worker model changes must never mutate the parent's context.
         originContext: { ...context,
@@ -1253,51 +1370,68 @@ export class SubAgentSpawner {
         } as ProjectContext, parentContext, onTrace,
       };
       this.activeAgents.set(agentId, instance);
-      this.completedAgents.delete(agentId);
-      void agentMessageBus.writeAgentStatus(name, {
-        status: 'running', task, agentId, subAgentChatId,
-        progress: 'Starting execution...',
-        startedAt: instance.startedAt,
-        ...feedOwnership,
-        ...lineage,
-      }, context.projectId).catch(() => { });
-      interAgentMailbox.updateAgentPresence(context.projectId, name, {
-        status: 'running',
-        task,
-        progress: 'Starting execution...',
-        ...feedOwnership,
-        ...lineage,
-      });
-
-      // Emit spawn event to UI
-      if (onTrace) {
-        onTrace({
-          type: 'sub_agent_spawn',
-          text: `${ name } started`,
-          secondary: task.substring(0, 80),
-          task: task,
-          subAgent: name,
-          subAgentId: agentId,
-          subAgentChatId,
-          agentName: name,
-          agentStatus: 'running',
-          ...lineage,
-          timestamp: instance.startedAt,
-          startTime: instance.startedAt,
-        });
-      }
-
-      instance.status = 'running';
+      const stopExecution = () => {
+        instance.status = isAgentClosed(context.projectId, name, agentId) ? 'closed' : 'cancelled';
+        // Individual Close already applied the user's click cutoff. Other
+        // stops discard messages accepted before cancellation; later Send
+        // requests remain queued for a new execution after cleanup.
+        if (instance.status !== 'closed') this.clearDirectUserMessages(context.projectId, name, agentId, Date.now());
+        if (instance.reservation) this.deactivateSlot(agentId, instance.reservation);
+        agentPauseStates.get(agentKey(context.projectId, name, agentId))?.resolver?.();
+        interAgentMailbox.updateAgentPresence(context.projectId, name, { status: instance.status, progress: 'Stopped by user' });
+        if (instance.status === 'cancelled') {
+          const stoppedAt = Date.now();
+          onTrace?.({ type: 'sub_agent_close', text: `${name} stopped`, subAgent: name, agentName: name,
+            subAgentId: agentId, subAgentChatId, agentStatus: 'cancelled',
+            timestamp: stoppedAt, startTime: instance.startedAt, endTime: stoppedAt });
+        }
+      };
+      abortController.signal.addEventListener('abort', stopExecution, { once: true });
+      if (abortController.signal.aborted) stopExecution();
       const lease = reservation.lease;
 
       try {
+        assertExecutionActive();
+        this.completedAgents.delete(agentId);
+        void agentMessageBus.writeAgentStatus(name, {
+          status: 'running', task, agentId, subAgentChatId,
+          progress: 'Starting execution...',
+          startedAt: instance.startedAt,
+          ...feedOwnership,
+          ...lineage,
+        }, context.projectId).catch(() => { });
+        interAgentMailbox.updateAgentPresence(context.projectId, name, {
+          status: 'running',
+          task,
+          progress: 'Starting execution...',
+          ...feedOwnership,
+          ...lineage,
+        });
+
+        if (onTrace) {
+          onTrace({
+            type: 'sub_agent_spawn',
+            text: `${ name } started`,
+            secondary: task.substring(0, 80),
+            task: task,
+            subAgent: name,
+            subAgentId: agentId,
+            subAgentChatId,
+            agentName: name,
+            agentStatus: 'running',
+            ...lineage,
+            timestamp: instance.startedAt,
+            startTime: instance.startedAt,
+          });
+        }
+
         // Startup already reserved the provider lease atomically with the slot.
         const { createIsolatedClient } = await import('../Agent');
         assertExecutionActive();
         const subAgentClient = createIsolatedClient(lease?.apiKey || '', modelSelection.mode, (context as any).runtimeSettings);
-    instance.setLeasedKey = apiKey => subAgentClient.setLeasedKey(apiKey);
+        instance.setLeasedKey = apiKey => subAgentClient.setLeasedKey(apiKey);
 
-    const result = await subAgentClient.executeMessageLoop(
+        const result = await subAgentClient.executeMessageLoop(
           subAgentContext,
           deepBrief,
           [],
@@ -1313,18 +1447,9 @@ export class SubAgentSpawner {
               return;
             }
 
-            // Check pause — if paused, this blocks until resumed
-            // We can't await here (sync callback), so we use a microtask check
-            // The actual await happens in the executeMessageLoop's async iterations
-            const pauseKey = agentKey(context.projectId, name, agentId);
-            const pauseState = agentPauseStates.get(pauseKey);
-            if (pauseState?.paused && pauseState.promise) {
-              // Signal that we're paused to the message loop by throwing a special marker
-              // The message loop's outer try/catch will handle this
-              instance.status = 'paused';
-            } else if (instance.status === 'paused') {
-              instance.status = 'running';
-            }
+            // The async control boundary owns pause/resume and slot admission.
+            // A trace must not mark a worker running while it waits for capacity.
+            const executionStatus = instance.status === 'spawning' ? 'running' : instance.status;
 
             const traceSummary = `${ trace.text || '' }${ trace.secondary ? ' | ' + trace.secondary : '' }`.slice(0, 4000);
             const logEntry = `[${ new Date().toISOString() }] ${ trace.type }: ${ traceSummary }`;
@@ -1340,14 +1465,14 @@ export class SubAgentSpawner {
             if (statusWriteAt - lastStatusWriteAt >= SUB_AGENT_STATUS_WRITE_INTERVAL_MS) {
               lastStatusWriteAt = statusWriteAt;
               interAgentMailbox.updateAgentPresence(context.projectId, name, {
-                status: instance.status === 'paused' ? 'paused' : 'running',
+                status: executionStatus,
                 task,
                 progress: trace.text || 'Working...',
                 ...resolveFeedOwnership(context, subAgentChatId),
           ...lineage,
               });
               agentMessageBus.writeAgentStatus(name, {
-                status: instance.status === 'paused' ? 'paused' : 'running', agentId, subAgentChatId,
+                status: executionStatus, agentId, subAgentChatId,
                 task,
                 progress: trace.text || 'Working...',
                 traceLog: traceLog.slice(-10),
@@ -1368,7 +1493,7 @@ export class SubAgentSpawner {
                 subAgentId: agentId,
                 subAgentChatId,
                 agentName: name,
-                agentStatus: instance.status === 'paused' ? 'paused' : 'working',
+                agentStatus: executionStatus === 'running' ? 'working' : executionStatus,
                 agentStep: traceEventCount
               });
             }
@@ -1400,6 +1525,9 @@ export class SubAgentSpawner {
         instance.result = result.text;
         instance.completedAt = Date.now();
         instance.durationMs = durationMs;
+        const completedReservation = instance.reservation;
+        if (completedReservation?.lease) apiKeyPool.reportSuccess(completedReservation.lease.chatId);
+        if (completedReservation) this.releaseSlot(agentId, completedReservation);
 
         interAgentMailbox.updateAgentPresence(context.projectId, name, {
           status: 'completed',
@@ -1476,7 +1604,6 @@ export class SubAgentSpawner {
           ...lineage,
           },
         });
-        apiKeyPool.reportSuccess(`${context.projectId}_sub_${name}`);
 
         if (onTrace) {
           onTrace({
@@ -1523,14 +1650,16 @@ export class SubAgentSpawner {
           || isCancelled(context.projectId)
           || (context as any).abortSignal?.aborted
           || abortController.signal.aborted;
-        if (!wasCancelled && lease) {
-          apiKeyPool.reportFailure(`${context.projectId}_sub_${name}`, apiKeyPool.classifyError(errorMessage), errorMessage);
+        const failedReservation = instance.reservation;
+        if (!wasCancelled && failedReservation?.lease) {
+          apiKeyPool.reportFailure(failedReservation.lease.chatId, apiKeyPool.classifyError(errorMessage), errorMessage);
         }
 
         instance.status = wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed';
         instance.result = wasClosed ? 'Closed by user' : wasCancelled ? 'Cancelled by user' : errorMessage;
         instance.completedAt = Date.now();
         instance.durationMs = durationMs;
+        if (failedReservation) this.releaseSlot(agentId, failedReservation);
         swarmCoordinator.settle(agentId, wasCancelled ? 'cancelled' : 'failed', instance.result);
         for (const child of swarmCoordinator.descendants(agentId)) {
           if (!swarmCoordinator.isTerminal(child.id)) this.cancelBranch(context.projectId, child.id);
@@ -1641,6 +1770,7 @@ export class SubAgentSpawner {
         return { agentId, name, result: instance.result!, success: false, durationMs, traceLog };
       } finally {
         parentAbortSignal?.removeEventListener('abort', abortFromParent);
+        abortController.signal.removeEventListener('abort', stopExecution);
         const completedControlKey = agentKey(context.projectId, name, agentId);
         agentPauseStates.get(completedControlKey)?.resolver?.();
         agentPauseStates.delete(completedControlKey);
@@ -1660,11 +1790,11 @@ export class SubAgentSpawner {
             }
           }
         }
-        this.activeAgents.delete(agentId);
-        this.releaseSlot(agentId);
+        if (instance.reservation) this.releaseSlot(agentId, instance.reservation);
+        if (this.activeAgents.get(agentId) === instance) this.activeAgents.delete(agentId);
         if (
           instance.directUserMessages.length > 0 &&
-          ['completed', 'failed', 'closed'].includes(instance.status)
+          ['completed', 'failed', 'cancelled', 'closed'].includes(instance.status)
         ) {
           // A message may arrive during the provider's final response, after the
           // last safe drain. Resume it only after the old answer and lifecycle
@@ -1676,6 +1806,7 @@ export class SubAgentSpawner {
       // Covers startup failures before the provider loop's own cleanup exists.
       // Identity guards keep an old run from releasing a new continuation.
       parentAbortSignal?.removeEventListener('abort', abortFromParent);
+      this.executionOwners.delete(agentId);
       this.releaseSlot(agentId, reservation);
     }
   }
@@ -1829,6 +1960,7 @@ export class SubAgentSpawner {
           if (this.getBackgroundCount(context.projectId) === 0) {
             clearCancelState(context.projectId);
           }
+          this.scheduleDirectContinuations(context.projectId);
         });
 
       this.backgroundPromises.set(runKey, { projectId: context.projectId, name, agentId: plan.agentId, parentAgentId: nodes[index].parentAgentId, promise });
@@ -1884,7 +2016,8 @@ export class SubAgentSpawner {
     if (instance) {
       instance.status = 'waiting';
       swarmCoordinator.suspend(instance.id);
-      this.releaseSlot(instance.id);
+      const held = instance.reservation || this.slotReservations.get(instance.id);
+      if (held) this.releaseSlot(instance.id, held);
       interAgentMailbox.updateAgentPresence(context.projectId, instance.name, { status: 'waiting', progress: 'Joining child evidence' });
     }
     try {
@@ -1901,12 +2034,7 @@ export class SubAgentSpawner {
       else await drain();
     } finally {
       if (instance && !(context as any).abortSignal?.aborted && !isCancelled(context.projectId) && !swarmCoordinator.isTerminal(instance.id)) {
-        const selection = resolveSubAgentModel(context);
-        swarmCoordinator.resume(instance.id, selection.provider);
-        if (!await this.reserveSlotWhenAvailable(context.projectId, instance.name, instance.id, context, selection)) throw new Error('CANCELLED_BY_USER');
-        const lease = this.slotReservations.get(instance.id)?.lease;
-        if (lease) instance.setLeasedKey?.(lease.apiKey);
-        instance.status = 'running';
+        await this.awaitExecutionSlot(context.projectId, instance.name, instance.id, context);
         interAgentMailbox.updateAgentPresence(context.projectId, instance.name, { status: 'running', progress: 'Integrating child evidence' });
       }
     }
@@ -1947,6 +2075,7 @@ export class SubAgentSpawner {
       if (node.state !== 'cancelled') continue;
       const instance = this.activeAgents.get(node.id);
       instance?.abortController.abort(new Error('CANCELLED_BY_USER'));
+      this.deactivateSlot(node.id);
       const key = agentKey(projectId, node.name, node.id);
       agentPauseStates.get(key)?.resolver?.();
       agentPauseStates.delete(key);
@@ -1978,18 +2107,15 @@ export class SubAgentSpawner {
       .filter(run => isSameProjectScope(run.projectId, projectId)).length;
   }
 
-  public getOccupiedSlotCount(projectId: string): number {
-    const resolvedProjectId = resolveProjectId(projectId);
-    const occupiedNames = new Set<string>();
-    for (const agent of this.activeAgents.values()) {
-      if (isSameProjectScope(agent.projectId, resolvedProjectId) && !['waiting', 'completed', 'failed', 'cancelled', 'closed'].includes(agent.status)) {
-        occupiedNames.add(agent.name.toLowerCase());
-      }
+  public getOccupiedSlotCount(projectId?: string): number {
+    let occupied = 0;
+    // Reservations are keyed by immutable worker ID. History, queued tasks,
+    // paused/joining workers and stopped runs retaining a lease are not slots.
+    for (const [agentId, reservation] of this.slotReservations) {
+      if ((!projectId || isSameProjectScope(reservation.projectId, projectId))
+        && this.isExecutionSlotActive(agentId, reservation)) occupied++;
     }
-    for (const reservation of this.slotReservations.values()) {
-      if (isSameProjectScope(reservation.projectId, resolvedProjectId)) occupiedNames.add(reservation.name.toLowerCase());
-    }
-    return occupiedNames.size;
+    return occupied;
   }
 
   public matchesActiveAgent(projectId: string, agentName: string, agentId: string): boolean {
@@ -2018,12 +2144,24 @@ export class SubAgentSpawner {
     )?.id || interAgentMailbox.getTeamSnapshot(projectId).find(agent => agent.agentName.toLowerCase() === normalizedName && agent.agentId && !swarmCoordinator.isTerminal(agent.agentId))?.agentId;
   }
 
+  private scheduleDirectContinuations(projectId: string): void {
+    if (isCancelled(projectId)) return;
+    for (const instance of this.completedAgents.values()) {
+      if (isSameProjectScope(instance.projectId, projectId) && this.directConversationStates.get(instance.id)?.queue.length) {
+        queueMicrotask(() => this.startNextDirectContinuation(instance));
+      }
+    }
+  }
+
   /** Start exactly one retained direct message after its predecessor settles. */
   private startNextDirectContinuation(previous: SubAgentInstance): void {
     const runKey = `${ previous.projectId }:${ previous.id }:direct`;
     if (this.directContinuationPromises.has(runKey)) return;
-    const active = this.activeAgents.get(previous.id);
-    if (active && !['completed', 'failed', 'cancelled', 'closed'].includes(active.status)) return;
+    // Terminal status can be published before report persistence and cleanup
+    // finish. The predecessor owns this ID until its finally removes it.
+    if (this.activeAgents.has(previous.id) || this.executionOwners?.has(previous.id)
+      || this.backgroundPromises.has(`${previous.projectId}:${previous.id}`)
+      || isCancelled(previous.projectId) || isAgentClosed(previous.projectId, previous.name, previous.id)) return;
     const state = this.directConversationStates.get(previous.id);
     const nextMessage = state?.queue[0];
     if (!state || !nextMessage) return;
@@ -2118,14 +2256,10 @@ export class SubAgentSpawner {
       if (reservation) this.releaseSlot(previous.id, reservation);
       this.directContinuationPromises.delete(runKey);
       this.backgroundPromises.delete(runKey);
-      const latest = this.completedAgents.get(previous.id) || previous;
-      const mayContinue = !continuationStopped && !isCancelled(previous.projectId) && !isAgentClosed(previous.projectId, previous.name, previous.id);
       if (this.getBackgroundCount(previous.projectId) === 0) {
         clearCancelState(previous.projectId);
       }
-      if (state.queue.length > 0 && mayContinue) {
-        queueMicrotask(() => this.startNextDirectContinuation(latest));
-      }
+      this.scheduleDirectContinuations(previous.projectId);
     });
     this.directContinuationPromises.set(runKey, continuationPromise);
     this.backgroundPromises.set(runKey, {
@@ -2215,12 +2349,8 @@ export class SubAgentSpawner {
 
   public clearCompleted(): void {
     const removedIds = new Set<string>();
-    for (const [id, agent] of this.activeAgents) {
-      if (agent.status === 'completed' || agent.status === 'failed' || agent.status === 'cancelled') {
-        this.activeAgents.delete(id);
-        removedIds.add(id);
-      }
-    }
+    // Active entries, including terminal runs still persisting their reports,
+    // belong to spawnAgent.finally and must not be removed by a history clear.
     for (const id of this.completedAgents.keys()) removedIds.add(id);
     this.completedAgents.clear();
     for (const id of removedIds) {
@@ -2621,3 +2751,5 @@ OUTPUT: Research report with cited sources, confidence levels per claim, and are
 }
 
 export const globalSubAgentSpawner = sharedRuntime.spawner ||= new SubAgentSpawner();
+// Refresh behavior during development reloads without dropping live owners.
+Object.setPrototypeOf(globalSubAgentSpawner, SubAgentSpawner.prototype);

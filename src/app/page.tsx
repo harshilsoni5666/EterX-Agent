@@ -7,7 +7,6 @@ import { useImportSync, IMPORT_UPDATED_EVENT } from '../lib/imports/client';
 import type { ImportOrigin } from '../lib/imports/types';
 import { importedWorkspaceMetadata } from '../lib/imports/workspace';
 import { createDictationCapture, DICTATION_FINISH_TIMEOUT_MS, type DictationPhase } from '../lib/microphone';
-import { DictationButton } from '../components/ui/dictation-button';
 import { useDesktopUpdates } from '../lib/desktop-updates';
 import { UpdateNotification } from '../components/updates/update-notification';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
@@ -118,7 +117,7 @@ import {
 } from '../lib/chat-composer-ownership';
 import { buildTemporaryTitle, cleanGeneratedTitle, compactTitleHistory, mergeChatTitleMetadata, TITLE_REQUEST_TIMEOUT_MS, TITLE_REFRESH_USER_TURNS, type ChatTitleMetadata } from '../lib/chat/title-generation';
 import { getCodingMode } from '../lib/code/coding-modes';
-import { ProxyChatModelPicker } from '../components/layout/proxy-runtime-model-picker';
+import { ProxyChatActions } from '../components/chat/proxy-chat-actions';
 import { ProxyAgentControls } from '../components/chat/proxy-agent-controls';
 import {
   GENERAL_AGENT_SELECTION,
@@ -4029,13 +4028,16 @@ function DeepWorkUI() {
   }, [activeChatId, activeRunLocation, activeWorkspacePath, terminalDraftId, proxyAttachments, proxyChatInput, proxyChatLoading, proxyModelEntries, proxyPinnedItems]);
 
   const getProxyWindowBounds = useCallback(() => {
-    const rect = splitContainerRef.current?.getBoundingClientRect();
+    const pane = conversationPaneRef.current;
+    const rect = (pane?.closest('.eterx-conversation-layout') || pane)?.getBoundingClientRect();
+    const feed = pane?.querySelector<HTMLElement>('.eterx-chat-feed-scroll');
+    const scrollbarSpace = feed ? Math.max(0, feed.offsetWidth - feed.clientWidth) : 9;
     const left = Math.max(12, Math.min((rect?.left || 0) + 12, window.innerWidth - 13));
     const top = Math.max(12, Math.min((rect?.top || 0) + 12, window.innerHeight - 13));
     return {
       left,
       top,
-      right: Math.max(left + 1, Math.min(rect?.right ?? window.innerWidth, window.innerWidth) - 12),
+      right: Math.max(left + 1, Math.min(rect?.right ?? window.innerWidth, window.innerWidth) - 12 - scrollbarSpace),
       bottom: Math.max(top + 1, Math.min(rect?.bottom ?? window.innerHeight, window.innerHeight) - 12),
     };
   }, []);
@@ -4137,7 +4139,8 @@ function DeepWorkUI() {
 
     clampProxyWindowToBounds();
     const observer = new ResizeObserver(clampProxyWindowToBounds);
-    if (splitContainerRef.current) observer.observe(splitContainerRef.current);
+    const conversation = conversationPaneRef.current?.closest('.eterx-conversation-layout');
+    if (conversation) observer.observe(conversation);
     window.addEventListener('resize', clampProxyWindowToBounds);
     return () => {
       observer.disconnect();
@@ -15467,7 +15470,7 @@ function DeepWorkUI() {
         if (log.type === 'sub_agent_pause' || reportedStatus === 'paused') {
           mainStatus = 'paused';
         } else if (log.type === 'sub_agent_resume') {
-          mainStatus = 'working';
+          mainStatus = ['queued', 'waiting', 'paused'].includes(reportedStatus) ? reportedStatus : 'working';
         } else if (log.type === 'sub_agent_close') {
           mainStatus = 'closed';
         }
@@ -15603,7 +15606,10 @@ function DeepWorkUI() {
         if (a) { a.status = 'paused'; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
       } else if (log.type === 'sub_agent_resume') {
         const a = agentMap.get(agentIdentity);
-        if (a && !['completed', 'error', 'closed'].includes(String(a.status))) { a.status = 'working'; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
+        if (a && !['completed', 'error', 'closed'].includes(String(a.status))) {
+          a.status = ['queued', 'waiting', 'paused'].includes(reportedStatus) ? reportedStatus : 'working';
+          a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0);
+        }
       } else if (log.type === 'sub_agent_close') {
         const a = agentMap.get(agentIdentity);
         settleSubAgentState(a, log, 'closed');
@@ -18159,7 +18165,7 @@ function DeepWorkUI() {
                                 if (showProxyAttachMenu) { setShowProxyAttachMenu(false); }
                                 else setShowProxyChat(false);
                               }}
-                              className="eterx-proxy-chat-window pointer-events-auto fixed right-6 bottom-20 z-[9990] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171717] shadow-none flex flex-col transition-[box-shadow] duration-200"
+                              className="eterx-proxy-chat-window pointer-events-auto fixed right-3 bottom-3 z-[9990] max-h-[calc(100vh-24px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171717] shadow-none flex flex-col transition-[box-shadow] duration-200"
                               style={{
                                 width: proxyChatWindow.width,
                                 height: proxyChatWindow.height,
@@ -18421,7 +18427,7 @@ function DeepWorkUI() {
                                     style={customInputHeight ? { height: `${customInputHeight}px` } : undefined}
                                     className="eterx-proxy-textarea w-full bg-transparent text-white text-[12.5px] leading-relaxed outline-hidden placeholder-white/30 resize-none px-1 py-1 min-h-[32px] max-h-[360px] eterx-scrollbar"
                                   />
-                                  <div className="flex items-center justify-between gap-2 mt-0.5 px-0.5 min-w-0">
+                                  <div className="eterx-proxy-composer-toolbar">
                                     <div ref={proxyAttachMenuRef} className="relative flex items-center shrink-0">
                                       <button
                                         type="button"
@@ -18465,26 +18471,16 @@ function DeepWorkUI() {
                                         </div>
                                       )}
                                     </div>
-                                    <div className="eterx-proxy-composer-actions flex flex-1 items-center justify-end gap-1.5 min-w-0">
-                                      <ProxyChatModelPicker
-                                        key={activeChatId}
-                                        selection={effectiveProxyModelSelection}
-                                        entries={proxyModelEntries}
-                                        onSelect={handleProxyModelSelectionChange}
-                                      />
-
-                                      {/* Speech (Mic) Icon */}
-                                      <DictationButton compact phase={dictationTargetRef.current === 'proxy' ? dictationPhase : 'idle'} onClick={() => void toggleSpeech('proxy')} />
-                                      {/* Send button */}
-                                      <button
-                                        type="submit"
-                                        aria-label={proxyChatLoading ? 'Proxy agent is responding' : 'Send proxy message'}
-                                        disabled={!proxyEnabled || proxyPaused || proxyChatLoading || !selectedModel || (!proxyChatInput.trim() && proxyAttachments.length === 0 && proxyPinnedItems.length === 0)}
-                                        className="eterx-proxy-send-button h-7 w-7 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white/80 flex items-center justify-center transition-colors focus:outline-hidden"
-                                      >
-                                        <ArrowUp className="h-4 w-4" />
-                                      </button>
-                                    </div>
+                                    <ProxyChatActions
+                                      key={activeChatId}
+                                      selection={effectiveProxyModelSelection}
+                                      entries={proxyModelEntries}
+                                      onSelect={handleProxyModelSelectionChange}
+                                      dictationPhase={dictationTargetRef.current === 'proxy' ? dictationPhase : 'idle'}
+                                      onDictation={() => void toggleSpeech('proxy')}
+                                      busy={proxyChatLoading}
+                                      sendDisabled={!proxyEnabled || proxyPaused || !selectedModel || (!proxyChatInput.trim() && proxyAttachments.length === 0 && proxyPinnedItems.length === 0)}
+                                    />
                                   </div>
                                 </div>
                                 {proxyComposerError && <div role="alert" className="mt-2 flex items-start gap-2 px-1 text-[11px] leading-4 text-red-400"><p className="min-w-0 flex-1 break-words">{proxyComposerError}</p><button type="button" aria-label="Dismiss proxy error" onClick={() => setProxyComposerError('')} className="shrink-0 rounded-sm p-1 hover:bg-white/10"><X className="h-3 w-3" /></button></div>}

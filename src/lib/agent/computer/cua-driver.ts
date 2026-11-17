@@ -2,6 +2,7 @@ import { execFile, spawn } from 'child_process';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
+import { cuaProcessFailure, decodeCuaResponse } from './cua-response';
 
 import { setTimeout as delay } from 'timers/promises';
 
@@ -27,6 +28,7 @@ export type CuaDriverStatus = {
 
 export type CuaActionResult = {
   success: boolean;
+  error?: string;
   result: unknown;
   provider: string;
   vision?: { inlineData: { data: string; mimeType: 'image/png' | 'image/jpeg' } } | null;
@@ -57,28 +59,8 @@ function driverCommand(): string {
 }
 
 function parseJson<T>(stdout: string): T | null {
-  const text = String(stdout || '').trim();
-  if (!text) return null;
-  const unwrap = (value: any): T => {
-    if (value?.isError || value?.error || value?.success === false || value?.ok === false) return value as T;
-    if (value?.structuredContent) return value.structuredContent as T;
-    for (const block of Array.isArray(value?.content) ? value.content : []) {
-      if (block?.type !== 'text') continue;
-      try { return JSON.parse(block.text) as T; } catch {}
-    }
-    return value as T;
-  };
-  try {
-    return unwrap(JSON.parse(text));
-  } catch {}
-  const first = text.indexOf('{');
-  const last = text.lastIndexOf('}');
-  if (first >= 0 && last > first) {
-    try {
-      return unwrap(JSON.parse(text.slice(first, last + 1)));
-    } catch {}
-  }
-  return null;
+  try { return decodeCuaResponse(stdout).value as T; }
+  catch { return null; }
 }
 
 function daemonIsRunning(stdout: string): boolean {
@@ -95,9 +77,9 @@ export async function runCua(args: string[], timeout = 8000, signal?: AbortSigna
     return await new Promise<string>((resolve, reject) => {
       const child = execFile(driverCommand(), args, {
         timeout, signal, windowsHide: true, maxBuffer: 24 * 1024 * 1024, encoding: 'utf8',
-      }, (error, stdout) => {
+      }, (error, stdout, stderr) => {
         if (error) {
-          Object.assign(error, { stdout });
+          Object.assign(error, { stdout, stderr });
           reject(error);
         } else resolve(String(stdout || ''));
       });
@@ -111,16 +93,13 @@ export async function runCua(args: string[], timeout = 8000, signal?: AbortSigna
     // Do not echo that into the chat or the monitor on a process failure.
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Desktop input stopped. Observe the target before repeating any input that may already have been sent.');
     daemonCache = null;
-    const structured = parseJson<any>(String(error?.stdout || ''));
-    if (args[0] === 'call' && !error?.killed && structured
-      && (structured.isError || structured.error || structured.success === false || structured.ok === false)) {
-      return String(error.stdout);
-    }
+    const detail = cuaProcessFailure(String(error?.stdout || ''), String(error?.stderr || ''), stdin);
+    const operation = args[0] === 'call' ? ` (${args[1]})` : '';
     throw new Error(error?.code === 'ENOENT'
       ? 'Cua Driver executable was not found. Install it or set ETERX_CUA_DRIVER_CMD to its executable path.'
       : error?.killed
         ? 'Cua Driver timed out. Input may have been delivered; observe the target before retrying.'
-        : `Cua Driver could not complete the request (${String(error?.code || 'process error')}). Refresh desktop status for setup details.`);
+        : `Cua Driver${operation}: ${detail || `Could not complete the request (${String(error?.code || 'process error')}). Refresh desktop status for setup details.`}`);
   }
 }
 

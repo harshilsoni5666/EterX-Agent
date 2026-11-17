@@ -6077,8 +6077,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       {activeTab === 'updates' && (
                         <div className="flex min-h-full flex-col">
                           <SectionHeader title="Application updates" />
-                          <UpdateWhatsNew state={updateState} />
-                          <div className="mt-auto pt-7">
+                          <div>
                           {updateState.lastInstall && updateState.status !== 'installing' && (
                             <p role="status" className={`mb-4 rounded-xl border px-4 py-3 text-[12px] leading-relaxed ${
                               updateState.lastInstall.status === 'succeeded'
@@ -6188,9 +6187,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
                             {updateState.automaticChecks
-                              ? 'EterX checks automatically shortly after opening, every 30 minutes while visible, and when returning to the app if the last check was more than 5 minutes ago. Failed checks retry after 1, 2, 5, 10, then 30 minutes; reconnecting also schedules a retry. Scans pause while the app is hidden, minimized, or asleep, and while an update downloads or waits for installation.'
-                              : 'Automatic updates are available in supported desktop installations.'}
-                            {' '}Click Update to download the new version, then Restart to update when you are ready. EterX saves your work, applies the update, and reopens. Windows updates run without the setup wizard; an administrator approval may still be needed for a system-wide installation. Your chats, workspaces, API settings, browser profiles, and preferences are kept. The restart result appears here when EterX opens again.
+                              ? 'EterX checks for updates after launch, every 30 minutes while visible, and when you return after a period away. Failed checks retry automatically.'
+                              : 'Automatic update checks are not active in this installation.'}
+                            {' '}When available, use Check for updates to start a manual check. Download an available version and restart EterX when convenient. Your chats, workspaces, API settings, browser profiles, and preferences are preserved. The update result appears here after restart.
                           </p>
                           {updateState.releaseDate && updateState.availableVersion && (
                             <p className="mt-2 text-[11px] text-[#555]">
@@ -6206,6 +6205,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <p className="mt-2 text-[11px] text-[#555]">Next automatic check around {new Date(updateState.nextCheckAt).toLocaleTimeString()}</p>
                           )}
                           </div>
+                          <UpdateWhatsNew state={updateState} />
                         </div>
                       )}
 

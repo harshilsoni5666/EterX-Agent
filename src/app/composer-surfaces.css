@@ -488,6 +488,7 @@
 
 /* Search focus changes the fill without drawing an outline or a second box. */
 :root[data-theme] body .eterx-app-shell .eterx-composer-shell .eterx-model-menu-popout .eterx-model-search input:is(:focus, :focus-visible),
+:root[data-theme] body .eterx-composer-menu-portal .eterx-model-menu-popout .eterx-model-search input:is(:focus, :focus-visible),
 :root[data-theme] body .eterx-app-shell .eterx-composer-shell .eterx-status-popout .eterx-status-search:focus-within {
   border: 0 !important;
   outline: none !important;
@@ -508,6 +509,7 @@
 }
 
 :root[data-theme] body .eterx-app-shell .eterx-composer-shell :is(button, [role="button"]):focus-visible,
+:root[data-theme] body .eterx-composer-menu-portal :is(button, [role="button"]):focus-visible,
 :root[data-theme] .eterx-model-thinking-popout button:focus-visible {
   outline: 2px solid var(--composer-focus) !important;
   outline-offset: -2px;

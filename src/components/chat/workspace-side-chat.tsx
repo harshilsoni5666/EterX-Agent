@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, ArrowUpLeft, Folder, Loader2, Search } from 'lucide-react';
 import { MessagesCircle } from './workspace-icons';
 import { PremiumEdit } from '../ui/premium-icons';
@@ -143,13 +143,6 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
   const answerQuestion = useCallback((timestamp: number, answer: string, responseKey?: string) => {
     actionsRef.current.answer(id, timestamp, answer, responseKey);
   }, [id]);
-  useLayoutEffect(() => {
-    const surface = pane.current, feed = surface?.querySelector<HTMLElement>('.eterx-chat-feed-scroll');
-    if (!surface || !feed) return;
-    const sync = () => surface.style.setProperty('--ws-chat-scrollbar-space', Math.max(0, feed.offsetWidth - feed.clientWidth) + 'px');
-    const observer = new ResizeObserver(sync); observer.observe(feed); sync();
-    return () => observer.disconnect();
-  }, []);
   useEffect(() => {
     alive.current = true;
     if (chat) {

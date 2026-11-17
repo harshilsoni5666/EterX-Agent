@@ -857,7 +857,8 @@ Cua Driver must be available for native desktop control. Missing capture or inpu
     const speedFactor = input.speed === 'slow' ? 1.8 : input.speed === 'fast' ? 0.5 : 1;
     const decision = enforceToolCapability('screen_agent', input, ctx);
     if (!decision.allowed) {
-      return { success: false, action, result: decision.reason || 'Screen agent control is not allowed', vision: null };
+      const error = decision.reason || 'Screen agent control is not allowed';
+      return { success: false, action, result: error, error, vision: null };
     }
     // Host control uses one driver and one screenshot coordinate system on
     // every supported desktop platform.

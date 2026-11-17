@@ -14,6 +14,10 @@ Desktop screenshots are passed as native image inputs through the configured Gem
 
 Screenshots stay separate from JSON tool-result compaction. The model receives the image alongside window identity, capture metadata and accessible controls. Desktop observations and input results are not reused from the intelligent tool cache.
 
+Capture requests pass `screenshot_out_file` to the native capture tool so the driver writes pixels directly to EterX's temporary image file. The same response's MCP image blocks and CLI `screenshot_png_b64` encoding are also preserved separately from metadata. EterX reads only its own requested file path, validates the image bytes, and removes the temporary file afterward. This covers initial observations, previews and post-action screenshots with the same driver; missing pixels never become a text-only observation or an automatic input retry.
+
+Failed computer actions retain a readable error in the action feed. Driver process errors preserve their diagnostic reason with typed input and image payloads omitted, and a missing screenshot is reported as a capture-delivery failure rather than assumed to be a permission problem.
+
 Gemini Live receives tool screenshots as visual frames. OpenAI Realtime receives image conversation items. Other Live transports that cannot carry these images do not expose native computer control; the configured main agent remains available for desktop tasks.
 
 ## Selecting and operating a window

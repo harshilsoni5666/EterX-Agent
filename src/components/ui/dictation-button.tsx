@@ -4,10 +4,11 @@ import { PremiumMic } from './premium-icons';
 import { Tooltip } from './tooltip';
 import type { DictationPhase } from '../../lib/microphone';
 
-export function DictationButton({ phase, onClick, compact = false }: {
+export function DictationButton({ phase, onClick, compact = false, disabled = false }: {
   phase: DictationPhase;
   onClick: () => void;
   compact?: boolean;
+  disabled?: boolean;
 }) {
   const active = phase === 'starting' || phase === 'listening';
   const finishing = phase === 'finishing';
@@ -20,7 +21,7 @@ export function DictationButton({ phase, onClick, compact = false }: {
       <button
         type="button"
         onClick={onClick}
-        disabled={finishing}
+        disabled={finishing || disabled}
         aria-label={label}
         aria-pressed={active}
         aria-busy={finishing}

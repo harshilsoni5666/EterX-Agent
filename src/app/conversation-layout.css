@@ -1,8 +1,8 @@
-/* Reserve layout space for Proxy instead of translating the transcript. The
-   conversation keeps measuring only the width available to its own content. */
+/* The scroll surface always spans the conversation. Proxy reserves space
+   inside the transcript and composer, never beside their scrollbar. */
 .eterx-conversation-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   flex: 1 1 0%;
   min-width: 0;
@@ -31,6 +31,8 @@
   transition: none !important;
 }
 .eterx-conversation-pane {
+  --eterx-proxy-side-space: 0px;
+  --eterx-turn-nav-space: 0px;
   container-name: eterx-conversation;
   container-type: inline-size;
   min-width: 0;
@@ -45,10 +47,29 @@
   box-sizing: border-box;
 }
 
-/* Reserve equal scrollbar space on both sides so the main transcript stays
-   centered on the composer. Side chat compensates its own scrollbar width. */
-.eterx-conversation-pane:not(.eterx-workspace-side-conversation) .eterx-chat-feed-scroll {
-  scrollbar-gutter: stable both-edges;
+/* Keep a clear lane for turn navigation, including when Proxy is enabled. */
+.eterx-conversation-pane:has(.eterx-chat-feed[data-compressed="false"] .eterx-chat-turns-nav) {
+  --eterx-turn-nav-space: 48px;
+}
+:root .eterx-conversation-pane .eterx-chat-feed-scroll {
+  scrollbar-gutter: stable;
+  padding-left: max(var(--eterx-conversation-gutter, 16px), var(--eterx-turn-nav-space)) !important;
+  padding-right: calc(var(--eterx-conversation-gutter, 16px) + var(--eterx-proxy-side-space)) !important;
+}
+:root .eterx-conversation-layout > .eterx-conversation-pane > .eterx-chat-input-dock {
+  width: calc(100% - var(--eterx-chat-scrollbar-space, var(--eterx-sb-size, 9px))) !important;
+  left: 0 !important;
+  right: var(--eterx-chat-scrollbar-space, var(--eterx-sb-size, 9px)) !important;
+  padding-left: max(var(--eterx-conversation-gutter, 16px), var(--eterx-turn-nav-space)) !important;
+  padding-right: calc(var(--eterx-conversation-gutter, 16px) + var(--eterx-proxy-side-space)) !important;
+  pointer-events: none;
+}
+.eterx-conversation-pane .eterx-chat-input-dock > * {
+  pointer-events: auto;
+}
+@container eterx-conversation (max-width: 760px) {
+  .eterx-conversation-pane .eterx-chat-turns-nav { display: none !important; }
+  .eterx-conversation-pane :is(.eterx-chat-feed, .eterx-chat-input-dock) { --eterx-turn-nav-space: 0px; }
 }
 .eterx-chat-column[data-terminal-placement="right"] .eterx-conversation-layout > .eterx-conversation-pane {
   flex: 1 1 0%;
@@ -132,20 +153,20 @@
   display: flex;
 }
 
-/* Sidebar and workspace resizing switch to a controls column only when the
-   conversation has enough room, independently of the viewport width. */
+/* On wide panes the card occupies a reserved content gutter. The pane and
+   its native scrollbar keep their full width when Proxy is toggled. */
 @container eterx-conversation-layout (min-width: 1000px) {
-  .eterx-conversation-layout > .eterx-conversation-pane {
-    grid-column: 1;
-    grid-row: 1 / -1;
+  .eterx-conversation-layout > .eterx-proxy-dock ~ .eterx-conversation-pane {
+    --eterx-proxy-side-space: 248px;
   }
   .eterx-conversation-layout > .eterx-proxy-dock {
-    grid-column: 2;
-    grid-row: 1 / -1;
-    align-self: center;
+    position: absolute;
+    grid-area: auto;
+    inset: 12px calc(12px + var(--eterx-sb-size, 9px)) 12px auto;
+    justify-content: center;
     width: 224px;
     max-height: calc(100% - 24px);
-    margin: 12px 12px 12px 0;
+    margin: 0;
     padding: 0;
   }
   .eterx-conversation-layout .eterx-proxy-compact-bar {
@@ -157,7 +178,7 @@
     inset: auto;
     width: 100%;
     max-width: 100%;
-    max-height: inherit;
+    max-height: 100%;
   }
 }
 
@@ -171,6 +192,8 @@
 }
 .eterx-proxy-chat-header {
   min-width: 0;
+  min-height: 56px;
+  padding: 12px 20px;
   gap: 12px;
 }
 .eterx-proxy-context-panel {
@@ -194,12 +217,125 @@
   max-height: clamp(32px, 30cqh, 240px);
   overflow-y: auto;
 }
-.eterx-proxy-composer-actions > button {
-  flex-shrink: 0;
+.eterx-proxy-message-feed {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.eterx-proxy-composer > [role="alert"] {
+  max-height: 20cqh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.eterx-proxy-composer-toolbar,
+.eterx-proxy-composer-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+.eterx-proxy-composer-toolbar {
+  margin-top: 2px;
+  padding-inline: 2px;
+}
+.eterx-proxy-composer-actions {
+  flex: 1 1 0%;
+  justify-content: flex-end;
+  color: var(--foreground);
+}
+.eterx-proxy-composer-actions > :not(.eterx-proxy-model-picker) {
+  flex: 0 0 auto;
+}
+.eterx-proxy-model-picker {
+  position: relative;
+  flex: 0 1 160px;
+  min-width: 0;
+  max-width: 160px;
+}
+.eterx-proxy-model-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--foreground) 5%, transparent);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+}
+.eterx-proxy-model-trigger > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.eterx-proxy-model-trigger:hover,
+.eterx-proxy-model-trigger[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--foreground) 9%, transparent);
+}
+.eterx-proxy-chat-model-menu {
+  position: fixed;
+  z-index: 10020;
+  box-sizing: border-box;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--background) 92%, var(--foreground) 8%);
+  color: var(--foreground);
+  box-shadow: 0 8px 28px #0002;
+}
+.eterx-proxy-chat-model-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+}
+.eterx-proxy-chat-model-menu button:is(:hover, :focus-visible, [aria-checked="true"]) {
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+.eterx-proxy-model-trigger:focus-visible,
+.eterx-proxy-chat-model-menu button:focus-visible {
+  outline: 2px solid var(--muted-foreground);
+  outline-offset: -2px;
+}
+.eterx-proxy-model-provider {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.eterx-proxy-composer-actions .eterx-proxy-send-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+}
+.eterx-proxy-composer-actions .eterx-proxy-send-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--foreground) 18%, transparent);
+}
+.eterx-proxy-composer-actions .eterx-proxy-send-button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.eterx-proxy-composer-actions .eterx-proxy-send-button:focus-visible {
+  outline: 2px solid var(--muted-foreground);
+  outline-offset: 2px;
 }
 
-/* A side conversation owns the same controller layout as Main. Its own
-   container decides between the top bar and the full controls column. */
+/* A side conversation owns the same controller layout as Main. */
 .eterx-workspace-side-layout {
   container-type: size;
   isolation: isolate;
@@ -213,17 +349,17 @@
 }
 .eterx-workspace-proxy-chat {
   position: absolute;
-  right: 12px;
+  right: calc(12px + var(--eterx-sb-size, 9px));
   bottom: 12px;
   z-index: 70;
-  width: min(340px, calc(100% - 24px));
+  width: min(340px, calc(100% - 24px - var(--eterx-sb-size, 9px)));
   height: min(460px, calc(100% - 24px));
-  max-width: calc(100% - 24px);
+  max-width: calc(100% - 24px - var(--eterx-sb-size, 9px));
   max-height: calc(100% - 24px);
 }
 .eterx-workspace-proxy-chat[data-expanded="true"] {
-  width: calc(100% - 24px);
-  height: calc(100% - 24px);
+  width: min(440px, calc(100% - 24px - var(--eterx-sb-size, 9px)));
+  height: min(620px, calc(100% - 24px));
 }
 .eterx-workspace-side-layout .eterx-workspace-proxy-icon {
   display: inline-flex;

@@ -60,7 +60,14 @@ class SwarmCoordinator {
     this.generation++;
     node.updatedAt = Date.now();
     this.revisions.set(node.projectId, (this.revisions.get(node.projectId) || 0) + 1);
-    for (const wake of this.listeners.get(node.projectId) || []) wake();
+    // Resource claims can block work in another chat using the same files.
+    // Wake those queues when an owner suspends or settles, even if its
+    // execution slot was already released before report persistence finished.
+    if (node.claims.length) {
+      for (const listeners of this.listeners.values()) for (const wake of listeners) wake();
+    } else {
+      for (const wake of this.listeners.get(node.projectId) || []) wake();
+    }
   }
   subscribe(projectId: string, wake: () => void) {
     const listeners = this.listeners.get(projectId) || new Set();
@@ -209,7 +216,7 @@ class SwarmCoordinator {
       this.transition(node, 'queued', 'Continuing a direct user conversation');
     }
   }
-  suspend(id: string) { const node = this.get(id); if (node && !terminal.has(node.state)) this.transition(node, 'waiting', 'Joining delegated work'); }
+  suspend(id: string, reason = 'Joining delegated work') { const node = this.get(id); if (node && !terminal.has(node.state)) this.transition(node, 'waiting', reason); }
   resume(id: string, provider?: string) {
     const node = this.get(id);
     if (node && node.state === 'waiting') {
@@ -305,6 +312,7 @@ class SwarmCoordinator {
 
 const state = globalThis as typeof globalThis & { __eterxSwarmCoordinator?: SwarmCoordinator };
 export const swarmCoordinator = state.__eterxSwarmCoordinator ||= new SwarmCoordinator();
+Object.setPrototypeOf(swarmCoordinator, SwarmCoordinator.prototype);
 
 export const SWARM_MODE_INSTRUCTION = `The user selected Swarm Mode. Deliberately organize this request as a coordinated task graph using spawn_sub_agent. Delegate at least one useful, bounded outcome when tools and the request permit it; explain a genuine inability instead of fabricating busywork. Team size is not a goal. Identify uncertainty, independent outcomes, critical dependencies, acceptance evidence and shared resources before expansion. Use task-specific roles, not a preset frontend/backend/reviewer team. Supply a rationale and acceptance condition for each assignment, task keys and dependsOn for ordered work, and read/write resources for shared files. Start a small frontier and expand only when new independent work justifies its cost. Every worker may delegate a narrower outcome and remains accountable for integrating its children. Use targeted messages and parent handoffs; broadcast only discoveries that change the whole team's work. Never treat lifecycle completion as proof of correctness. Reuse evidence, reconcile disagreements and integrate all required branches before answering. User restrictions, tool permissions and model selection remain in force.
 

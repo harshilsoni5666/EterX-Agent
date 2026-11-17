@@ -3582,6 +3582,15 @@ const ActionChip = ({
     if (preview) setIsExpanded(open => !open);
   };
   const actionFailed = !actionIsLive && (toolResultFailed(toolResult) || log.status === 'failed' || log.status === 'error');
+  const isDesktopFailure = actionFailed && ['computer', 'screen_agent'].includes(displayToolName);
+  const desktopFailureResult = isDesktopFailure ? parseToolResult(toolResult) : null;
+  const desktopFailureFields = desktopFailureResult && typeof desktopFailureResult === 'object'
+    ? desktopFailureResult as Record<string, unknown> : {};
+  const desktopFailure = isDesktopFailure
+    ? formatUnknownError(log.error || desktopFailureFields.error || desktopFailureFields.observationError
+      || desktopFailureFields.result || (typeof desktopFailureResult === 'string' ? desktopFailureResult : undefined),
+    'The computer action failed. This older response did not save an error reason.', 700)
+    : '';
 
   return (
     <div className="w-full">
@@ -3675,6 +3684,11 @@ const ActionChip = ({
           )}
         </span>
       </div>
+      {desktopFailure && (
+        <p className={`m-0 pb-2 pt-1 text-[12px] leading-relaxed text-[#D5AAA5] whitespace-pre-wrap break-words select-text ${inCard ? 'pl-7 pr-2' : 'pl-9 pr-3'}`}>
+          {desktopFailure}
+        </p>
+      )}
       <ActivityDisclosure open={Boolean(isExpanded && preview)} className="w-full">
             {preview && (preview.type === 'console_output'
               ? <InlineConsole command={preview.command || subtitle} content={preview.output || preview.content} exitCode={preview.exitCode} durationMs={preview.durationMs} flush />

@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs-extra';
 import { cuaDriverProvider, ensureCuaDriverDaemon, runCua, type CuaActionResult } from './cua-driver';
+import { decodeCuaResponse, type CuaResponse } from './cua-response';
 import { getPlatformShortcut, normalizeShortcutForPlatform } from './platform-shortcuts';
 import { isComputerUseDisabled } from '../builtin-agent-tool-policy';
 
@@ -76,38 +77,7 @@ function sessionLabel(chatId = ''): string {
   return `eterx-${createHash('sha256').update(chatId || 'desktop').digest('hex').slice(0, 20)}`;
 }
 
-function parseResponse(stdout: string): any {
-  const text = stdout.trim();
-  try { return JSON.parse(text); } catch { /* Some CLI versions prefix a log line. */ }
-  for (const line of text.split(/\r?\n/).reverse()) {
-    try { return JSON.parse(line); } catch { /* Continue to the JSON object. */ }
-  }
-  const start = text.indexOf('{');
-  if (start >= 0) {
-    try { return JSON.parse(text.slice(start)); } catch { /* Fail explicitly below. */ }
-  }
-  throw new Error('Cua Driver returned an unreadable response. Observe again before repeating input.');
-}
-
-function unwrapResponse(raw: any): any {
-  let result = raw?.structuredContent ?? raw;
-  if (Array.isArray(raw?.content) && !raw.structuredContent) {
-    const texts = raw.content.filter((block: any) => block.type === 'text').map((block: any) => String(block.text || ''));
-    for (const text of texts) {
-      try { result = JSON.parse(text); break; } catch { /* A text-only error is handled below. */ }
-    }
-    if (result === raw) result = { message: texts.join('\n').slice(0, 4000) };
-  }
-  if (raw?.isError || result?.isError || result?.success === false || result?.ok === false
-    || result?.error || (Array.isArray(result?.errors) && result.errors.length)
-    || [result?.status, result?.effect].some(value => ['error', 'failed', 'denied', 'refused', 'blocked', 'background_unavailable'].includes(String(value || '').toLowerCase()))) {
-    const reason = result?.error?.message || result?.error || result?.message || result?.reason || 'The driver refused this action.';
-    throw new Error(typeof reason === 'string' ? reason.slice(0, 600) : JSON.stringify(reason).slice(0, 600));
-  }
-  return result;
-}
-
-async function call(tool: string, input: Record<string, unknown>, options: ActionOptions, screenshotPath?: string, timeout = 15_000) {
+async function callResponse(tool: string, input: Record<string, unknown>, options: ActionOptions, screenshotPath?: string, timeout = 15_000): Promise<CuaResponse> {
   options.signal?.throwIfAborted();
   if (options.deadline != null) {
     const remaining = options.deadline - Date.now();
@@ -115,8 +85,39 @@ async function call(tool: string, input: Record<string, unknown>, options: Actio
     timeout = Math.min(timeout, remaining);
   }
   const args = ['call', tool];
-  if (screenshotPath) args.push('--screenshot-out-file', screenshotPath);
-  return unwrapResponse(parseResponse(await runCua(args, timeout, options.signal, JSON.stringify({ ...input, session: sessionLabel(options.chatId) }))));
+  const nativeFileOutput = screenshotPath && (tool === 'get_window_state' || tool === 'get_desktop_state');
+  // Ask the capture tool to write its pixels. The CLI's output flag only
+  // extracts image content blocks, which older builds can discard while
+  // printing structured metadata. Native file output avoids that handoff.
+  if (screenshotPath && !nativeFileOutput) args.push('--screenshot-out-file', screenshotPath);
+  return decodeCuaResponse(await runCua(args, timeout, options.signal, JSON.stringify({
+    ...input, ...(nativeFileOutput ? { screenshot_out_file: screenshotPath } : {}), session: sessionLabel(options.chatId),
+  })));
+}
+
+async function call(tool: string, input: Record<string, unknown>, options: ActionOptions, screenshotPath?: string, timeout = 15_000) {
+  return (await callResponse(tool, input, options, screenshotPath, timeout)).value;
+}
+
+async function readFrame(reply: CuaResponse, imagePath: string): Promise<Frame> {
+  let bytes: Buffer;
+  try { bytes = await fs.readFile(imagePath); }
+  catch (error: any) {
+    if (error?.code !== 'ENOENT') throw new Error('EterX could not read the requested temporary screenshot file.');
+    // This is another encoding of the SAME driver reply, not a second capture
+    // or another backend. Never read an arbitrary path supplied by a result.
+    if (!reply.image) throw new Error('Cua Driver completed the observation without delivering its screenshot file or image content. No screen image reached EterX.');
+    bytes = Buffer.from(reply.image.data, 'base64');
+  }
+  const png = bytes.length > 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const jpeg = bytes.length > 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+  if (!png && !jpeg) throw new Error('Cua Driver returned invalid screenshot bytes. Capture a fresh image before any further input.');
+  const metadata = reply.value && typeof reply.value === 'object' && !Array.isArray(reply.value) ? reply.value : {};
+  return {
+    metadata,
+    vision: { inlineData: { data: bytes.toString('base64'), mimeType: png ? 'image/png' : 'image/jpeg' } },
+    ...(png ? { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) } : {}),
+  };
 }
 
 function identity(target: Target): Record<string, unknown> {
@@ -190,7 +191,7 @@ async function capture(target: Target, options: ActionOptions, preview = false, 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eterx-cua-'));
   const imagePath = path.join(dir, 'screen.png');
   try {
-    const metadata = await call(target.scope === 'window' ? 'get_window_state' : 'get_desktop_state', {
+    const reply = await callResponse(target.scope === 'window' ? 'get_window_state' : 'get_desktop_state', {
       ...identity(target),
       max_image_dimension: preview ? 1280 : options.maxImageDimension || 1920,
       ...(target.scope === 'window' ? {
@@ -201,16 +202,7 @@ async function capture(target: Target, options: ActionOptions, preview = false, 
         }),
       } : {}),
     }, options, imagePath);
-    if (!(await fs.pathExists(imagePath))) return { metadata, vision: null };
-    const bytes = await fs.readFile(imagePath);
-    const png = bytes.length > 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-    const jpeg = bytes.length > 3 && bytes[0] === 255 && bytes[1] === 216;
-    if (!png && !jpeg) throw new Error('The driver returned an invalid screenshot.');
-    return {
-      metadata,
-      vision: { inlineData: { data: bytes.toString('base64'), mimeType: png ? 'image/png' : 'image/jpeg' } },
-      ...(png ? { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) } : {}),
-    };
+    return await readFrame(reply, imagePath);
   } finally {
     await fs.remove(dir).catch(() => {});
   }
@@ -402,11 +394,10 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eterx-cua-zoom-'));
       try {
         const imagePath = path.join(dir, 'region.jpg');
-        const detail = await call('zoom', { ...identity(state.target), x1: x, y1: y, x2: x + width, y2: y + height }, options, imagePath);
-        if (!(await fs.pathExists(imagePath))) throw new Error('No region screenshot was returned.');
-        const bytes = await fs.readFile(imagePath);
         state.frameHash = undefined;
-        return { ...response({ detail, target: state.target, next: 'This image is a padded detail view. Use see before pixel input; do not use detail-image coordinates on the full window.' }), vision: { inlineData: { data: bytes.toString('base64'), mimeType: bytes[0] === 137 ? 'image/png' : 'image/jpeg' } } };
+        const reply = await callResponse('zoom', { ...identity(state.target), x1: x, y1: y, x2: x + width, y2: y + height }, options, imagePath);
+        const frame = await readFrame(reply, imagePath);
+        return { ...response({ detail: frame.metadata, target: state.target, next: 'This image is a padded detail view. Use see before pixel input; do not use detail-image coordinates on the full window.' }), vision: frame.vision };
       } finally { await fs.remove(dir).catch(() => {}); }
     }
     if (['read', 'get_controls', 'find'].includes(action)) {

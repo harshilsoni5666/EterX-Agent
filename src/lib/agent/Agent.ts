@@ -251,7 +251,9 @@ function isRunCancelled(context: any): boolean {
   return context?.abortSignal?.aborted === true || isCancelled(context?.projectId || context?.chatId);
 }
 
-/** Honor worker pause/close at every provider iteration, not only before tools. */
+const activeSubAgentToolBatches = new WeakSet<object>();
+
+/** Honor worker pause/close at provider and tool-batch boundaries. */
 async function awaitSubAgentControlBoundary(context: any): Promise<void> {
   if (!context?.isSubAgent) return;
   const projectId = String(context?.projectId || context?.chatId || '').trim();
@@ -261,7 +263,11 @@ async function awaitSubAgentControlBoundary(context: any): Promise<void> {
   if (isRunCancelled(context) || isCancelled(projectId, agentName, agentId || undefined)) {
     throw new Error('CANCELLED_BY_USER');
   }
-  await awaitIfPaused(projectId, agentName, agentId || undefined);
+  // An individual parallel read must not release its worker's slot while a
+  // sibling tool is still executing. Pause the whole batch at its boundary.
+  if (!activeSubAgentToolBatches.has(context)) {
+    await awaitIfPaused(projectId, agentName, agentId || undefined, context);
+  }
   if (isRunCancelled(context) || isCancelled(projectId, agentName, agentId || undefined)) {
     throw new Error('CANCELLED_BY_USER');
   }
@@ -2608,6 +2614,8 @@ ${ message.text }
     if (isRunCancelled(context)) {
       return { error: 'Cancelled by user.' };
     }
+
+    await awaitSubAgentControlBoundary(context);
 
     const canonicalToolName = normalizeRegistryToolName(name);
     const tool = globalToolRegistry.getTool(canonicalToolName);
@@ -6156,9 +6164,16 @@ OUTPUT CONTRACT
     execute: (call: any, index: number) => Promise<T>,
     context: ProjectContext,
   ): Promise<T[]> {
-    return executeParallelToolCalls(calls, execute, {
-      shouldStop: () => isRunCancelled(context),
-    });
+    await awaitSubAgentControlBoundary(context);
+    const alreadyActive = activeSubAgentToolBatches.has(context);
+    activeSubAgentToolBatches.add(context);
+    try {
+      return await executeParallelToolCalls(calls, execute, {
+        shouldStop: () => isRunCancelled(context),
+      });
+    } finally {
+      if (!alreadyActive) activeSubAgentToolBatches.delete(context);
+    }
   }
 
   private isExploratoryToolCall(name: string, args: any): boolean {
@@ -8087,7 +8102,7 @@ OUTPUT CONTRACT
         const subAgentId = String((context as any).subAgentId || '').trim();
 
         if ((context as any).isSubAgent && subAgentName && subAgentProjectId) {
-          if (isCancelled(subAgentProjectId, subAgentName, subAgentId || undefined)) {
+          if (isRunCancelled(context) || isCancelled(subAgentProjectId, subAgentName, subAgentId || undefined)) {
             return {
               functionResponse: {
                 name: call.name,
@@ -8097,9 +8112,9 @@ OUTPUT CONTRACT
             };
           }
 
-          await awaitIfPaused(subAgentProjectId, subAgentName, subAgentId || undefined);
+          await awaitSubAgentControlBoundary(context);
 
-          if (isCancelled(subAgentProjectId, subAgentName, subAgentId || undefined)) {
+          if (isRunCancelled(context) || isCancelled(subAgentProjectId, subAgentName, subAgentId || undefined)) {
             return {
               functionResponse: {
                 name: call.name,

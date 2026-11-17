@@ -495,8 +495,6 @@ html[data-theme="light"] .eterx-workspace-change-status.is-deleted,html[data-the
 .eterx-workspace-diff-row.diff-removed { background:var(--ws-removed-bg); color:var(--ws-removed); }
 .eterx-workspace-diff-row code,.eterx-workspace-diff-cell code { tab-size:4; }
 .eterx-workspace-side-conversation { display:flex; flex-direction:column; flex:1 1 0%; min-height:0; min-width:0; overflow:clip; position:relative; container-type:inline-size; container-name:eterx-conversation; }
-/* Agent and model selectors use the viewport width, so let them extend past a narrow chat pane. */
-.eterx-conversation-pane:has(.eterx-agent-popout, .eterx-model-menu-popout) { overflow:visible !important; }
 .eterx-workspace-chat-navigation .eterx-workspace-chat-title { flex:1; min-width:0; justify-content:flex-start; }
 .eterx-workspace-chat-navigation button { display:flex; align-items:center; justify-content:center; min-width:29px; height:29px; padding:0 6px; border-radius:8px; color:var(--ws-muted); }
 .eterx-workspace-chat-title span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; font-size:12px; }
@@ -517,7 +515,7 @@ html[data-theme="light"] .eterx-workspace-change-status.is-deleted,html[data-the
 .eterx-workspace-chat-time { font-size:10px; color:var(--ws-muted); flex:0 0 auto; }
 .eterx-workspace-chat-loading { display:flex; align-items:center; gap:7px; padding:8px 14px; color:var(--ws-muted); font-size:12px; }
 .eterx-workspace-side-conversation .eterx-chat-feed[data-compressed] .eterx-chat-feed-content,.eterx-workspace-side-conversation .eterx-composer-shell[data-compressed],.eterx-workspace-side-conversation .eterx-queued-followup-rail { width:100% !important; min-width:0 !important; max-width:var(--eterx-reference-composer-max,740px) !important; margin-inline:auto; box-sizing:border-box; transform:none !important; }
-.eterx-workspace-side-conversation .eterx-chat-input-dock[data-compressed] { width:100% !important; left:0 !important; right:0 !important; transform:none !important; padding-right:calc(var(--eterx-conversation-gutter) + var(--ws-chat-scrollbar-space,0px)) !important; }
+.eterx-workspace-side-conversation .eterx-chat-input-dock[data-compressed] { transform:none !important; }
 @container eterx-workspace (max-width:480px) {
   .eterx-workspace-launcher { padding:22px 16px; }
   .eterx-workspace-launcher h2 { font-size:21px; }

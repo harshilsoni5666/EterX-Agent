@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { beginDesktopActivity, type DesktopActivity } from './desktop-activity';
 import { captureCuaPreview, endCuaSession, executeCuaScreenAction, ensureCuaDriverDaemon, type CuaActionResult } from './cua-driver';
 import { monitorEmitter } from '../monitor/emitter';
+import { formatUnknownError } from '../error-format';
 
 type DesktopSession = {
   key: string;
@@ -149,7 +150,8 @@ export async function desktopSessionStatus(context: any) {
 export async function executeDesktopAction(action: string, input: any, context: any): Promise<CuaActionResult & { action: string; desktopSession?: unknown }> {
   let actionResult: CuaActionResult | undefined;
   const response = (result: string, success = false): CuaActionResult & { action: string } => ({
-    success, action, result, provider: 'Cua Driver (native desktop)', vision: null, actionStatus: 'not_sent',
+    success, action, result, ...(!success ? { error: result } : {}),
+    provider: 'Cua Driver (native desktop)', vision: null, actionStatus: 'not_sent',
   });
   try {
     if (action === 'session_stop') {
@@ -193,7 +195,11 @@ export async function executeDesktopAction(action: string, input: any, context: 
       startPreview(session);
     }
     if (result.success) monitorEmitter.desktopAction(action, undefined, { provider: result.provider }, session.chatId);
-    return { ...result, action, desktopSession: { active: !session.closed, automaticCapture: session.previewEnabled,
+    // The action feed retains `error`, while full tool results may be omitted
+    // from its preview. Preserve a readable reason instead of a bare Failed row.
+    return { ...result, action,
+      ...(!result.success ? { error: formatUnknownError(result.error || result.observationError || result.result, 'The desktop action failed.', 700) } : {}),
+      desktopSession: { active: !session.closed, automaticCapture: session.previewEnabled,
       next: 'Inspect the returned screenshot, choose the next action, and call session_stop when desktop work is complete.' } };
   } catch (error: any) {
     return { ...response(String(error?.message || error).slice(0, 700)), actionStatus: actionResult?.actionStatus || 'not_sent' };

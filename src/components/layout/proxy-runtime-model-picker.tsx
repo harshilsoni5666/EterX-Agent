@@ -12,7 +12,7 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
   onSelect: (selection: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ left: 0, top: 0, width: 260, maxHeight: 280 });
+  const [position, setPosition] = useState({ left: 0, top: 0, width: 260, maxHeight: 280, transform: '' });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -21,30 +21,53 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
 
   useLayoutEffect(() => {
     if (!open) return;
+    let frame = 0;
     const update = () => {
+      frame = 0;
       const bounds = triggerRef.current?.getBoundingClientRect();
       if (!bounds) return;
-      const width = Math.min(280, window.innerWidth - 24);
-      const above = bounds.top - 20;
-      const below = window.innerHeight - bounds.bottom - 20;
+      // A portaled menu still belongs to its proxy window. Keep it inside
+      // that window's horizontal lane when both conversations are open.
+      const owner = triggerRef.current?.closest('.eterx-proxy-chat-window')?.getBoundingClientRect();
+      const left = Math.max(12, (owner?.left ?? 4) + 8);
+      const right = Math.min(window.innerWidth - 12, (owner?.right ?? window.innerWidth - 4) - 8);
+      const top = Math.max(12, (owner?.top ?? 4) + 8);
+      const bottom = Math.min(window.innerHeight - 12, (owner?.bottom ?? window.innerHeight - 4) - 8);
+      const width = Math.max(1, Math.min(280, right - left));
+      const above = bounds.top - top - 6;
+      const below = bottom - bounds.bottom - 6;
       const onTop = above >= Math.min(280, below);
-      const maxHeight = Math.max(48, Math.min(280, onTop ? above : below));
-      setPosition({
-        left: Math.max(12, Math.min(bounds.right - width, window.innerWidth - width - 12)),
-        top: onTop ? bounds.top - 8 : bounds.bottom + 8,
+      const next = {
+        left: Math.max(left, Math.min(bounds.right - width, right - width)),
+        top: onTop ? bounds.top - 6 : bounds.bottom + 6,
         width,
-        maxHeight,
-      });
-      if (menuRef.current) menuRef.current.style.transform = onTop ? 'translateY(-100%)' : '';
+        maxHeight: Math.max(1, Math.min(280, onTop ? above : below)),
+        transform: onTop ? 'translateY(-100%)' : '',
+      };
+      setPosition(previous => previous.left === next.left && previous.top === next.top
+        && previous.width === next.width && previous.maxHeight === next.maxHeight
+        && previous.transform === next.transform ? previous : next);
     };
+    const schedule = () => { if (!frame) frame = window.requestAnimationFrame(update); };
     update();
     const selected = menuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]');
-    (selected || menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitemradio"]'))?.focus();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
+    (selected || menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitemradio"]'))?.focus({ preventScroll: true });
+    if (selected && menuRef.current) {
+      menuRef.current.scrollTop = Math.max(0, selected.offsetTop - (menuRef.current.clientHeight - selected.offsetHeight) / 2);
+    }
+    const observer = new ResizeObserver(schedule);
+    if (triggerRef.current) observer.observe(triggerRef.current);
+    const owner = triggerRef.current?.closest('.eterx-proxy-chat-window');
+    if (owner) observer.observe(owner);
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    window.addEventListener('pointermove', schedule);
     return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+      window.removeEventListener('pointermove', schedule);
     };
   }, [open]);
 
@@ -57,8 +80,8 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
     return () => document.removeEventListener('pointerdown', dismiss);
   }, [open]);
 
-  const close = () => { setOpen(false); triggerRef.current?.focus(); };
-  return <div className="relative min-w-0 max-w-[160px] flex-1" onKeyDown={event => {
+  const close = () => { setOpen(false); triggerRef.current?.focus({ preventScroll: true }); };
+  return <div className="eterx-proxy-model-picker" onKeyDown={event => {
     if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); close(); }
   }}>
     <button
@@ -73,7 +96,7 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
       onKeyDown={event => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); }
       }}
-      className="flex h-[32px] w-full min-w-0 items-center gap-1 rounded-lg px-2 text-[12px] font-medium text-white/70 hover:bg-white/[0.06] hover:text-white focus-visible:outline focus-visible:outline-1 focus-visible:outline-white/40"
+      className="eterx-proxy-model-trigger"
     >
       <span className="min-w-0 truncate">{name}</span>
       <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
@@ -83,7 +106,7 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
       ref={menuRef}
       role="menu"
       aria-label="Proxy models"
-      className="fixed z-[10020] overflow-y-auto rounded-xl border border-white/10 bg-[#252525] p-1.5 text-white shadow-xl"
+      className="eterx-proxy-chat-model-menu eterx-scrollbar"
       style={position}
       onKeyDown={event => {
         const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') || []);
@@ -94,7 +117,7 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
             : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
           items[next]?.focus();
         }
-        if (event.key === 'Tab') setOpen(false);
+        if (event.key === 'Tab') close();
       }}
     >
       {entries.length ? entries.map(entry => {
@@ -107,15 +130,14 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
           aria-checked={selected}
           title={entry.modelId}
           onClick={() => { onSelect(key); close(); }}
-          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/[0.08] focus:bg-white/[0.08] focus:outline-hidden"
         >
           <span className="min-w-0 flex-1">
             <span className="block [overflow-wrap:anywhere] text-[12px]">{formatModelName(entry.modelId)}</span>
-            <span className="block text-[10px] text-white/45">{entry.provider}</span>
+            <span className="eterx-proxy-model-provider">{entry.provider}</span>
           </span>
-          {selected && <Check className="h-3.5 w-3.5 shrink-0 text-white/75" />}
+          {selected && <Check className="h-3.5 w-3.5 shrink-0 opacity-75" />}
         </button>;
-      }) : <p className="px-2.5 py-2 text-[12px] text-white/60">Add a model in Settings to use Proxy.</p>}
+      }) : <p className="px-2.5 py-2 text-[12px] text-[var(--muted-foreground)]">Add a model in Settings to use Proxy.</p>}
     </div>, document.body)}
   </div>;
 }
