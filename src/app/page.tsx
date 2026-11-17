@@ -15606,6 +15606,7 @@ function DeepWorkUI() {
         if (a) { a.status = 'paused'; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
       } else if (log.type === 'sub_agent_resume') {
         const a = agentMap.get(agentIdentity);
+        const reportedStatus = String(log.agentStatus || '').trim().toLowerCase();
         if (a && !['completed', 'error', 'closed'].includes(String(a.status))) {
           a.status = ['queued', 'waiting', 'paused'].includes(reportedStatus) ? reportedStatus : 'working';
           a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0);

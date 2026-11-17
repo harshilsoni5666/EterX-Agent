@@ -1,39 +1,30 @@
 {
   "$schema": "./docs/release-notes.schema.json",
-  "version": "0.1.47",
-  "summary": "This release improves chat continuity, side conversations, browser and desktop tools, and cross-platform updates.",
+  "version": "0.1.48",
+  "summary": "Improves chat controls and background task scheduling, refines Proxy and update panels, and includes a framework security update.",
   "sections": [
-    {
-      "kind": "new",
-      "items": [
-        {
-          "title": "Release notes in EterX",
-          "description": "Preview highlights in the update notice and read the full notes in Settings."
-        }
-      ]
-    },
     {
       "kind": "improved",
       "items": [
         {
-          "title": "Chat startup and recovery",
-          "description": "New chats briefly show startup status before Thinking. History recovery no longer blocks startup or saves; failed writes retry automatically. Activity markers track the answer or latest work note."
+          "title": "Model and agent menus",
+          "description": "Both selectors now open above the sidebar and chats, stay attached to their buttons during resizing, and support search, selection, Escape, and the thinking submenu."
         },
         {
-          "title": "Side chats and Proxy",
-          "description": "Models, reasoning, drafts, pinned files, and settings stay with each conversation. Proxy work resumes without repeating completed tasks."
+          "title": "Chat input controls",
+          "description": "The normal input uses one button for Live, Stop, and Send, including steering. The live typing bar shows Send only and enables it when connected with text ready to send."
         },
         {
-          "title": "Browser and computer tools",
-          "description": "Browser profiles persist across reconnects, with safer tab handling. Computer Use improves window targeting, text entry, dragging, and image delivery across supported providers."
+          "title": "Update panel order",
+          "description": "The latest version, status, and update actions appear first, followed by What’s New."
         },
         {
-          "title": "Terminal and workspace navigation",
-          "description": "Grouped waits return on the first task update. Search previews sources and opens links in the side browser; Recents spans folders and workspace selection persists."
+          "title": "Sub-agent scheduling",
+          "description": "Up to five sub-agents can execute at once. Stopped, completed, and historical workers no longer take slots; paused workers release slots at a safe boundary, and resumed workers wait for capacity. Slot counts use worker IDs, with follow-up cleanup races and queued-state display corrected."
         },
         {
-          "title": "Chat and code formatting",
-          "description": "Chat input and sent prompts share a background; expanded edits use the side-panel diff font."
+          "title": "Proxy in side chats",
+          "description": "Scrollbars stay at the far-right edge, the Proxy card and turn rail have more clearance, model and send controls are consistent, and floating menus stay within their pane."
         }
       ]
     },
@@ -41,8 +32,12 @@
       "kind": "fixed",
       "items": [
         {
-          "title": "Safer updates across Windows, macOS, and Linux",
-          "description": "Windows updates install silently and reopen EterX, including updates started by older clients. macOS can restore failed replacements; Linux keeps the previous AppImage until the new version starts. Stale installs are blocked and restart results are reported. System-wide Windows installs may need administrator approval."
+          "title": "Sub-agent resume status",
+          "description": "Resumed sub-agents retain their reported queued, waiting, or paused status in chat."
+        },
+        {
+          "title": "Framework security update",
+          "description": "EterX now uses a patched stable release of Next.js."
         }
       ]
     }
