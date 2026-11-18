@@ -14,7 +14,7 @@ Desktop screenshots are passed as native image inputs through the configured Gem
 
 Screenshots stay separate from JSON tool-result compaction. The model receives the image alongside window identity, capture metadata and accessible controls. Desktop observations and input results are not reused from the intelligent tool cache.
 
-Capture requests pass `screenshot_out_file` to the native capture tool so the driver writes pixels directly to EterX's temporary image file. The same response's MCP image blocks and CLI `screenshot_png_b64` encoding are also preserved separately from metadata. EterX reads only its own requested file path, validates the image bytes, and removes the temporary file afterward. This covers initial observations, previews and post-action screenshots with the same driver; missing pixels never become a text-only observation or an automatic input retry.
+EterX keeps a native MCP connection open and reads the installed driver's tool definitions. Drivers with fixed session scopes get separate window and desktop sessions. Each input uses the target format advertised by that tool. Screen pixels arrive directly as image content in the driver's response. EterX reads the image header before publishing the observation. When the driver refuses an operation, its error travels back on the same connection.
 
 Failed computer actions retain a readable error in the action feed. Driver process errors preserve their diagnostic reason with typed input and image payloads omitted, and a missing screenshot is reported as a capture-delivery failure rather than assumed to be a permission problem.
 
@@ -23,7 +23,7 @@ Gemini Live receives tool screenshots as visual frames. OpenAI Realtime receives
 ## Selecting and operating a window
 
 1. Use `list_apps` to discover window titles and exact `pid`/`window_id` pairs. A query can narrow large window lists.
-2. Use `session_start`, `see` or `see_window` with the exact pair or a unique app/window title. Observation selects the window without raising it. `focus_app` explicitly raises a window. An initial discovery call also includes a screen capture.
+2. Use `session_start`, `see` or `see_window` with the exact pair or a unique app/window title. Observation selects the window without raising it. `focus_app` explicitly raises a window. The first discovery call includes a screenshot when available. If the capture fails, the window list remains available with the capture error.
 3. Use current `element_token` values for accessible controls. Use coordinates from the returned screenshot for canvas input. Do not add display offsets or DPI scaling.
 4. Inspect the observation returned after input. When `actionStatus` is `sent`, input was delivered; this alone does not establish that the task succeeded. When it is `unknown`, observe before deciding whether another action is necessary.
 5. Continue choosing actions from the new screenshots. Call `session_stop` when desktop work is complete or when yielding control. A later native action can start another session within the same active task. Finishing the agent loop closes its native resources. Closing Live also retires its run identity so late requests cannot reopen the disconnected session.
@@ -32,7 +32,7 @@ The observe-act-observe session persists while the selected model decides its ne
 
 Each chat retains its selected target. `scope: "desktop"` explicitly selects the primary desktop capture; select an individual window to work on another display. The desktop overlay covers all connected displays. Actions are serialized across chats, and tokens belong to the latest observation of the selected target. Preview captures use a separate session so they do not replace the action's screenshot coordinates or tokens.
 
-The display preview refreshes automatically between actions. A new action interrupts an in-progress preview capture, and no preview is queued ahead of input. There is no one-minute idle cutoff while the task's session remains active. Preview frames go to the desktop monitor; model decisions use the screenshots returned with tool results. A missed or interrupted preview frame does not end the task. Each session has its own driver identity, so delayed cleanup cannot close a newer session's target.
+The monitor receives each agent observation. It also refreshes between actions for desktop captures and for drivers that advertise display-only window captures. On older drivers, reading a window again would invalidate its control tokens, so its preview refreshes with each agent observation. A preview runs independently of input. The monitor discards a preview that finishes after a newer observation. The run owns the session until desktop work stops or the task ends.
 
 Use `find` with a label or `get_controls` to locate fields. If a tree is truncated, narrow the query before increasing `max_elements`. Ambiguous matches are returned for selection, rather than choosing an arbitrary control.
 

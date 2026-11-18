@@ -30,6 +30,8 @@ import { formatUnknownError } from './error-format';
 import { contextMeasurementTime, contextUsageScopeKey } from '../context-usage-snapshot';
 import { getCodingMode } from '../code/coding-modes';
 import { sameUserAdmission, normalizeAdmissionId } from '../steering-delivery';
+import { normalizeChatPermissionMode, type ChatPermissionMode } from '../chat-permissions';
+import { runWithToolApprovals } from './tool-approval-runtime';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -199,6 +201,7 @@ interface QueuedUserFollowUp {
   prompt: string;
   mediaAttachments: any[];
   createdAt: number;
+  permissionMode?: ChatPermissionMode;
   steeringMessages?: Array<{ id: string; text: string; attachments?: any[]; createdAt?: number }>;
   runtimeOverride?: {
     mode: MainAgentMode;
@@ -2040,7 +2043,12 @@ class AgentRegistry {
           }
         }
         const providerMediaFiles = isExternalProvider ? mediaFiles : geminiNativeFiles;
-        const response = await orchestrator.executePipeline(
+        const response = await runWithToolApprovals({
+          chatId,
+          sessionId: String(pinnedContext?.agentSessionId || ''),
+          mode: normalizeChatPermissionMode(pinnedContext?.permissionMode),
+          signal: execution.abortController.signal,
+        }, () => orchestrator.executePipeline(
           userId,
           projectId,
           enrichedPrompt,
@@ -2081,7 +2089,7 @@ class AgentRegistry {
           userName,
           isExternalProvider ? undefined : lease!.apiKey,
           runtimeSettings
-        );
+        ));
 
         const responseText = response.finalAnswer || '';
         const wasCancelledByResponse = execution.cancelled || responseText === 'Stopped by user.';
@@ -2868,6 +2876,7 @@ class AgentRegistry {
     runtimeOverride?: QueuedUserFollowUp['runtimeOverride'],
     steeringMessages?: QueuedUserFollowUp['steeringMessages'],
     desktopAdmissionEpoch?: number,
+    permissionMode?: ChatPermissionMode,
   ): {
     accepted: boolean;
     status: 'queued' | 'starting' | 'not_found' | 'queue_full' | 'cancelled';
@@ -2940,6 +2949,7 @@ class AgentRegistry {
         : Date.now(),
       ...(runtimeOverride ? { runtimeOverride } : {}),
       ...(steeringMessages ? { steeringMessages } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
     };
     queue.push(item);
     // Network completion order is not user intent. Preserve the client-side
@@ -3116,7 +3126,12 @@ class AgentRegistry {
         history,
         next.runtimeOverride?.mode || current?.launchSpec.mode || 'think',
         current?.launchSpec.userId || 'default_user',
-        { ...queuedPinnedContext, autonomy: { ...queuedPinnedContext.autonomy, origin: undefined, proxyTaskId: undefined, proxyTaskPrompt: undefined }, steeringMessages: next.steeringMessages || [] },
+        {
+          ...queuedPinnedContext,
+          permissionMode: next.permissionMode ?? queuedPinnedContext.permissionMode,
+          autonomy: { ...queuedPinnedContext.autonomy, origin: undefined, proxyTaskId: undefined, proxyTaskPrompt: undefined },
+          steeringMessages: next.steeringMessages || [],
+        },
         next.mediaAttachments,
         current?.launchSpec.userName || 'Developer',
         runtimeSettings.preferredGeminiApiKey,

@@ -6,6 +6,8 @@
   --profile-hover: #252525;
   --profile-avatar: #292929;
   --profile-tooltip: #262626;
+  --activity-gap: 4px;
+  --activity-weekly-height: 132px;
   --activity-0: #303030;
   --activity-1: #073963;
   --activity-2: #075895;
@@ -55,7 +57,7 @@
 .periodRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 22px; margin: 9px 0 17px; color: var(--profile-subtle); font-size: 12px; font-variant-numeric: tabular-nums; }
 .periodRow button { border: 0; padding: 0; background: transparent; color: var(--profile-muted); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .periodRow button:hover { color: var(--profile-text); }
-.grid { display: grid; width: 100%; grid-template-columns: repeat(var(--activity-columns), minmax(0, 1fr)); grid-template-rows: repeat(7, auto); grid-auto-flow: column; gap: 4px; }
+.grid { display: grid; width: 100%; grid-template-columns: repeat(var(--activity-columns), minmax(0, 1fr)); grid-template-rows: repeat(7, auto); grid-auto-flow: column; gap: var(--activity-gap); }
 .cell, .placeholder { display: block; width: 100%; min-width: 0; aspect-ratio: 1; }
 .cell { --cell-color: var(--activity-0); padding: 0; border: 0; border-radius: 3px; background: var(--cell-color); cursor: pointer; transition: filter 100ms; }
 .cell[data-level='1'], .legend i[data-level='1'] { --cell-color: var(--activity-1); }
@@ -64,10 +66,10 @@
 .cell[data-level='4'], .legend i[data-level='4'] { --cell-color: var(--activity-4); }
 .cell:hover { filter: brightness(1.18); outline: 1px solid var(--profile-muted); outline-offset: 1px; }
 .root button:focus-visible { outline: 2px solid var(--profile-muted); outline-offset: 3px; }
-.weekly { grid-template-rows: 1fr; height: 132px; align-items: stretch; }
+.weekly { grid-template-rows: 1fr; height: var(--activity-weekly-height); align-items: stretch; }
 .weekly .cell { position: relative; height: 100%; aspect-ratio: auto; background: var(--activity-0); overflow: hidden; }
 .weekly .cell::after { position: absolute; content: ''; left: 0; right: 0; bottom: 0; height: var(--bar-height); border-radius: 3px 3px 0 0; background: var(--cell-color); }
-.months { display: grid; grid-template-columns: repeat(var(--activity-columns), minmax(0, 1fr)); gap: 4px; margin-top: 10px; color: var(--profile-subtle); font-size: 12px; }
+.months { display: grid; grid-template-columns: repeat(var(--activity-columns), minmax(0, 1fr)); gap: var(--activity-gap); margin-top: 10px; color: var(--profile-subtle); font-size: 12px; }
 .months span { min-width: 0; white-space: nowrap; }
 .months span:last-child { justify-self: end; }
 .chartFooter { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 20px; margin-top: 21px; color: var(--profile-subtle); font-size: 11px; }

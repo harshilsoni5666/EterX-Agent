@@ -129,6 +129,8 @@ import { mergeStreamingText, mergeVisibleNarrativeText } from '../lib/streaming-
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 import { isProjectFile, getFileIconPath } from '../lib/utils/file-icon-utils';
 import { appStorage, appStorageReady, flushAppStorage, flushDurableState, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../lib/client-storage';
+import { readEffectiveChatPermissionMode } from '../lib/chat-permission-preferences';
+import type { ChatPermissionMode } from '../lib/chat-permissions';
 import { isLocalModelProvider } from '../lib/agent/provider-runtime';
 import { resolveModelContextWindow as resolveClientContextWindow } from '../lib/agent/model-context-window';
 import { formatUnknownError } from '../lib/agent/error-format';
@@ -652,6 +654,7 @@ type QueuedFollowUpRemoval = { chatId: string; id: string; pending: boolean };
 const QUEUE_REMOVALS_STORAGE_KEY = 'eterx_queue_removals_v1';
 
 type QueuedRunOptions = {
+  permissionMode?: ChatPermissionMode;
   modelSelection: string;
   selectedAgent: SelectedAgentState;
   thinkingLevel: MainAgentThinkingLevel;
@@ -11903,6 +11906,7 @@ function DeepWorkUI() {
   ): Promise<boolean> => {
     const queuedMessage = message.trim();
     if (!targetChatId || (!queuedMessage && nextAttachments.length === 0)) return false;
+    const permissionMode = runOptions?.permissionMode ?? readEffectiveChatPermissionMode();
     // This helper is also called directly by Live/Proxy and by Stop handoff
     // recovery. Preserve the predecessor's accepted rows before reserving the
     // successor so queue admission order is identical for every entry point.
@@ -11949,7 +11953,7 @@ function DeepWorkUI() {
         serverBacked: false,
         rendererOwned,
         deliveryState: rendererOwned ? undefined : 'pending',
-        ...(runOptions ? { runOptions } : {}),
+        ...(runOptions ? { runOptions: { ...runOptions, permissionMode } } : {}),
       },
     ]);
     setPendingSteering(previous => previous.filter(item =>
@@ -12010,6 +12014,7 @@ function DeepWorkUI() {
           prompt: queuedMessage,
           mediaAttachments,
           createdAt,
+          permissionMode,
           ...(queuedModelEntry ? {
             mode: MODEL_PROVIDER_MODE[queuedModelEntry.provider],
             selectedModel: {
@@ -12716,6 +12721,7 @@ function DeepWorkUI() {
       modelSelection?: string;
       selectedAgent?: SelectedAgentState;
       thinkingLevel?: MainAgentThinkingLevel;
+      permissionMode?: ChatPermissionMode;
       /** Explicit execution target for background/gateway/scheduled dispatches. */
       workspacePath?: string | null;
       importFolder?: string;
@@ -12740,6 +12746,7 @@ function DeepWorkUI() {
     const originalComposerInput = currentInputValue;
     const originalComposerAttachments = [...attachments];
     if (!promptText && requestedAttachments.length === 0) return false;
+    const permissionMode = runOptionsOverride?.permissionMode ?? readEffectiveChatPermissionMode();
     // One send gesture owns one immutable identity before we decide whether it
     // becomes a new run, live steering, or queued successor. Reusing this ID
     // across every admission path prevents both dropped repeated prompts and
@@ -12895,6 +12902,7 @@ function DeepWorkUI() {
         requestedSelection,
       );
       const queuedRunOptions: QueuedRunOptions = {
+        permissionMode,
         modelSelection: runOptionsOverride?.modelSelection || composerContext.modelSelection,
         selectedAgent: requestedSelection,
         thinkingLevel: runOptionsOverride?.thinkingLevel || composerContext.thinkingLevel,
@@ -13625,6 +13633,7 @@ function DeepWorkUI() {
             mode: runAgentMode,
             model: runModelEntry?.modelId,
             runLocation: runLocationVal,
+            permissionMode,
             pinnedContext: {
               planMode: readChatPlanMode(chatIdToUse),
               swarmMode: readChatSwarmMode(chatIdToUse),
@@ -14002,6 +14011,7 @@ function DeepWorkUI() {
           strictModelSelection: Boolean(runModelEntry),
           pinnedContext: hasPinnedContext ? requestPinnedContext : null,
           runLocation: runLocationVal,
+          permissionMode,
           customAgentId: selectedCustomRuntimeId,
           customAgentName: selectedCustomRuntimeId ? runSelectedAgentName : null,
           runId: clientRunId,
@@ -14048,6 +14058,7 @@ function DeepWorkUI() {
 
           pendingTitleRequestsRef.current.delete(chatIdToUse);
           const retryRunOptions: QueuedRunOptions = {
+            permissionMode,
             modelSelection: runModelSelection,
             selectedAgent: runSelectedAgent,
             thinkingLevel: runThinkingLevel,
@@ -18562,6 +18573,7 @@ function DeepWorkUI() {
                       setInputValue={updateInputValue}
                       onInputValueChange={updateInputValueDraft}
                       isThinking={composerIsThinking}
+                      approvalRunActive={Boolean(isThinking || hasActiveSubAgentRuns)}
                       canStop={Boolean(canStopSelectedFeed)}
                       isRecording={isRecording && dictationTargetRef.current === 'main'}
                       dictationPhase={dictationTargetRef.current === 'main' ? dictationPhase : 'idle'}

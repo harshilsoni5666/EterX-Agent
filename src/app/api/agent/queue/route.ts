@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isChatPermissionMode } from '../../../../lib/chat-permissions';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
 import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
@@ -91,6 +92,11 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(jsonError('Unsupported queue action.', 400), session);
     }
 
+    const permissionMode = body.permissionMode;
+    if (permissionMode !== undefined && !isChatPermissionMode(permissionMode)) {
+      return attachAgentApiSessionCookie(jsonError('Invalid chat permission mode.', 400), session);
+    }
+
     const prompt = cleanContextText(body.prompt).trim();
     const mediaAttachments = normalizeMediaAttachments(body.mediaAttachments);
     if (!prompt && mediaAttachments.length === 0) {
@@ -143,6 +149,7 @@ export async function POST(req: NextRequest) {
       runtimeOverride,
       undefined,
       desktopAdmissionEpoch,
+      permissionMode,
     );
     const status = result.accepted ? 202 : result.status === 'queue_full' ? 429 : 409;
     const queueSnapshot = agentRegistry.getQueuedFollowUpSnapshot(chatId);

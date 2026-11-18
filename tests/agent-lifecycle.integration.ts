@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'fs-extra';
+import os from 'node:os';
 import path from 'node:path';
 import { taskStore } from '../src/lib/agent/task-store';
 import { SessionStateManager } from '../src/lib/agent/session';
@@ -8,6 +9,7 @@ import { getEterxWorkspaceDir } from '../src/lib/agent/storage-paths';
 import { normalizeHistory } from '../src/app/api/agent/_shared';
 import { buildSubAgentStrategy } from '../src/lib/agent/roles/sub_agent_strategy';
 import { buildProxyTaskHistory } from '../src/lib/agent/agent-registry';
+import { decideToolApproval, listPendingToolApprovals, requestToolApproval, runWithToolApprovals } from '../src/lib/agent/tool-approval-runtime';
 import { getSubAgentAssetName } from '../src/components/chat/agent-icons';
 import {
   awaitIfPaused,
@@ -189,6 +191,66 @@ function testProxyTaskHistoryIsolation(): void {
   ]);
 }
 
+async function testToolApprovalIsScopedToActionAndRun(): Promise<void> {
+  const chatId = 'permission-lifecycle';
+  const sessionId = 'approval-owner';
+  const abort = new AbortController();
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'eterx-approval-'));
+  const context = { workspacePath: workspace };
+  const command = { command: 'echo permission check' };
+  const ask = { chatId, sessionId, mode: 'ask' as const, signal: abort.signal };
+  const requests = () => listPendingToolApprovals(chatId, sessionId);
+
+  try {
+    await runWithToolApprovals(ask, async () => {
+      const request = requestToolApproval('workspace_run_command', command, context);
+      const [first] = requests();
+      assert.match(first.preview, /echo permission check/);
+      assert.deepEqual(listPendingToolApprovals(chatId, 'other-owner'), []);
+      assert.equal(decideToolApproval(chatId, 'other-owner', first.id, 'approve-once'), 'missing');
+      assert.equal(decideToolApproval(chatId, sessionId, first.id, 'approve-once'), 'accepted');
+      assert.equal(await request, null);
+      assert.equal(decideToolApproval(chatId, sessionId, first.id, 'approve-once'), 'accepted');
+
+      const repeated = requestToolApproval('workspace_run_command', command, context);
+      const parallel = requestToolApproval('workspace_run_command', command, context);
+      assert.equal(requests().length, 2);
+      assert.notEqual(requests()[0].id, first.id);
+      decideToolApproval(chatId, sessionId, requests()[0].id, 'approve-session');
+      assert.deepEqual(await Promise.all([repeated, parallel]), [null, null]);
+      assert.equal(await requestToolApproval('workspace_run_command', command, context), null);
+
+      const different = { command: 'echo a different action' };
+      const rejected = requestToolApproval('workspace_run_command', different, context);
+      decideToolApproval(chatId, sessionId, requests()[0].id, 'reject');
+      assert.equal((await rejected)?.executed, false);
+      assert.equal((await requestToolApproval('workspace_run_command', different, context))?.executed, false);
+      assert.deepEqual(requests(), []);
+    });
+
+    await runWithToolApprovals(ask, async () => {
+      const request = requestToolApproval('workspace_run_command', command, { ...context, subAgentId: 'worker', agentName: 'Worker' });
+      assert.equal(requests()[0].agent, 'Worker');
+      abort.abort();
+      assert.equal((await request)?.cancelled, true);
+      assert.deepEqual(requests(), []);
+    });
+
+    await runWithToolApprovals({ chatId, sessionId, mode: 'review' }, async () => {
+      assert.equal(await requestToolApproval('workspace_edit_file', { filename: 'note.txt' }, context), null);
+      const outside = requestToolApproval('workspace_edit_file', { filename: '../note.txt' }, context);
+      decideToolApproval(chatId, sessionId, requests()[0].id, 'reject');
+      assert.equal((await outside)?.executed, false);
+    });
+
+    const fullAccess = await runWithToolApprovals({ chatId, sessionId, mode: 'full' }, () =>
+      requestToolApproval('workspace_run_command', command, context));
+    assert.equal(fullAccess, null);
+  } finally {
+    await fs.rmdir(workspace);
+  }
+}
+
 async function main(): Promise<void> {
   await testStaleRunCannotCorruptSuccessor();
   await testExpectedRunCannotMutateLegacyTaskWithoutRunIdentity();
@@ -198,6 +260,7 @@ async function main(): Promise<void> {
   await testLongTracePollingStaysIncrementalAfterCompaction();
   testHistoryIntegrityAndSubAgentIdentityBounds();
   testProxyTaskHistoryIsolation();
+  await testToolApprovalIsScopedToActionAndRun();
   console.log('Agent lifecycle integration checks passed.');
 }
 

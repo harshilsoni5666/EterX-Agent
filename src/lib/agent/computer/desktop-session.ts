@@ -181,12 +181,11 @@ export async function executeDesktopAction(action: string, input: any, context: 
     let result = await executeCuaScreenAction(driverAction, input, options);
     if (!result) return response(`Native desktop action ${action} is unavailable. Use a supported native action; browser control is a separate tool.`);
     actionResult = result;
-    if (!session.observed && result.success && !result.vision) {
-      // Discovery can be the first call. Include the initial screen alongside
-      // its window list instead of making the model start a separate stream.
+    if (!session.observed && result.success && !result.vision && !result.observationError && !result.actionStatus) {
+      // Enumeration has its own result even when the companion capture fails.
       const initial = await executeCuaScreenAction('see', {}, options);
       if (initial) result = { ...result, vision: initial.vision, observation: initial.observation,
-        ...(!initial.success ? { observationError: String(initial.result), success: result.actionStatus === 'sent' } : {}) };
+        ...(!initial.success ? { observationError: String(initial.result) } : {}) };
     }
     if (action === 'stream_start' || action === 'session_start') session.previewEnabled = true;
     if (result.vision) {
@@ -200,7 +199,11 @@ export async function executeDesktopAction(action: string, input: any, context: 
     return { ...result, action,
       ...(!result.success ? { error: formatUnknownError(result.error || result.observationError || result.result, 'The desktop action failed.', 700) } : {}),
       desktopSession: { active: !session.closed, automaticCapture: session.previewEnabled,
-      next: 'Inspect the returned screenshot, choose the next action, and call session_stop when desktop work is complete.' } };
+      next: result.vision
+        ? 'Inspect the returned screenshot and choose the next action. Call session_stop when finished.'
+        : result.actionStatus === 'sent' || result.actionStatus === 'unknown'
+          ? 'Observe the target before deciding on further input. Do not repeat an action to recover a screenshot.'
+          : 'Use see with the intended scope or the exact pid and window_id from list_apps to obtain an image before input.' } };
   } catch (error: any) {
     return { ...response(String(error?.message || error).slice(0, 700)), actionStatus: actionResult?.actionStatus || 'not_sent' };
   }

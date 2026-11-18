@@ -8,6 +8,7 @@ import {
   activityDate, activityDayDistance, activityDayKey, mostUsedActivityValue,
   type ProfileActivityStats,
 } from '../../lib/profile-activity';
+import { ActivityGridSkeleton } from './settings-usage-skeleton';
 import styles from './settings-profile.module.css';
 
 type ActivityMode = 'daily' | 'weekly' | 'cumulative';
@@ -181,12 +182,12 @@ export function SettingsProfile({ name, onNameChange, stats, loading, error }: {
     <div className={styles.identity}>
       <div className={styles.avatar} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || 'U'}</div>
       <div className={styles.identityText}>
-        <input aria-label="Profile name" autoComplete="name" placeholder="Your name" value={name} onChange={event => onNameChange(event.target.value)} className={styles.name} />
+        <input data-settings-search-target="profile-name" aria-label="Profile name" autoComplete="name" placeholder="Your name" value={name} onChange={event => onNameChange(event.target.value)} className={styles.name} />
         <span className={styles.identityCaption}>Your activity, at a glance</span>
       </div>
     </div>
 
-    <section className={styles.activity} aria-labelledby={headingId} aria-busy={loading}>
+    <section data-settings-search-target="profile-token-activity" tabIndex={-1} className={styles.activity} aria-labelledby={headingId} aria-busy={loading}>
       <div className={styles.headingRow}>
         <h3 id={headingId}>Token activity</h3>
         <div className={styles.controls}>
@@ -203,20 +204,22 @@ export function SettingsProfile({ name, onNameChange, stats, loading, error }: {
         <span aria-live="polite">{periodLabel}</span>
         {canGoForward && <button type="button" onClick={() => setSelectedMonth(null)}>Back to today</button>}
       </div>
-      <p id={modeDescriptionId} className={styles.srOnly}>{mode === 'weekly' ? 'Each bar shows tokens in one calendar week within the displayed period.' : mode === 'cumulative' ? 'Each square shows all recorded tokens through that date, including earlier months.' : 'Each square shows tokens used that day. Columns are weeks, from Sunday to Saturday.'} Use arrow keys to explore dates.</p>
-      <div ref={gridRef} role="group" aria-label={`${mode} token activity, ${periodLabel}`} aria-describedby={modeDescriptionId}
-        className={`${styles.grid} ${mode === 'weekly' ? styles.weekly : ''}`} style={{ '--activity-columns': calendar.columns } as React.CSSProperties}
-        onMouseLeave={() => setTooltip(null)}>
-        {calendar.cells.map(cell => {
-          if (!cell.available) return <span key={cell.key} className={styles.placeholder} aria-hidden="true" />;
-          const level = cell.value <= 0 ? 0 : Math.min(4, Math.max(1, Math.ceil(cell.value / maximum * 4)));
-          return <button key={cell.key} type="button" data-day={cell.key} data-level={level} tabIndex={cell.key === activeKey ? 0 : -1}
-            className={styles.cell} aria-label={describeCell(cell)} aria-describedby={tooltip?.cell.key === cell.key ? tooltipId : undefined}
-            style={mode === 'weekly' ? { '--bar-height': `${cell.value > 0 ? Math.max(5, cell.value / maximum * 100) : 0}%` } as React.CSSProperties : undefined}
-            onMouseEnter={event => showTooltip(event.currentTarget, cell)} onFocus={event => { setFocusedKey(cell.key); showTooltip(event.currentTarget, cell); }}
-            onBlur={() => setTooltip(null)} onClick={event => showTooltip(event.currentTarget, cell)} onKeyDown={event => handleCellKeyDown(event, cell)} />;
-        })}
-      </div>
+      {loading ? <ActivityGridSkeleton cells={calendar.cells} columns={calendar.columns} weekly={mode === 'weekly'} /> : <>
+        <p id={modeDescriptionId} className={styles.srOnly}>{mode === 'weekly' ? 'Each bar shows tokens in one calendar week within the displayed period.' : mode === 'cumulative' ? 'Each square shows all recorded tokens through that date, including earlier months.' : 'Each square shows tokens used that day. Columns are weeks, from Sunday to Saturday.'} Use arrow keys to explore dates.</p>
+        <div ref={gridRef} role="group" aria-label={`${mode} token activity, ${periodLabel}`} aria-describedby={modeDescriptionId}
+          className={`${styles.grid} ${mode === 'weekly' ? styles.weekly : ''}`} style={{ '--activity-columns': calendar.columns } as React.CSSProperties}
+          onMouseLeave={() => setTooltip(null)}>
+          {calendar.cells.map(cell => {
+            if (!cell.available) return <span key={cell.key} className={styles.placeholder} aria-hidden="true" />;
+            const level = cell.value <= 0 ? 0 : Math.min(4, Math.max(1, Math.ceil(cell.value / maximum * 4)));
+            return <button key={cell.key} type="button" data-day={cell.key} data-level={level} tabIndex={cell.key === activeKey ? 0 : -1}
+              className={styles.cell} aria-label={describeCell(cell)} aria-describedby={tooltip?.cell.key === cell.key ? tooltipId : undefined}
+              style={mode === 'weekly' ? { '--bar-height': `${cell.value > 0 ? Math.max(5, cell.value / maximum * 100) : 0}%` } as React.CSSProperties : undefined}
+              onMouseEnter={event => showTooltip(event.currentTarget, cell)} onFocus={event => { setFocusedKey(cell.key); showTooltip(event.currentTarget, cell); }}
+              onBlur={() => setTooltip(null)} onClick={event => showTooltip(event.currentTarget, cell)} onKeyDown={event => handleCellKeyDown(event, cell)} />;
+          })}
+        </div>
+      </>}
       <div className={styles.months} style={{ '--activity-columns': calendar.columns } as React.CSSProperties} aria-hidden="true">
         {calendar.months.map((month, index) => <span key={month.key} title={month.date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
           style={{ gridColumn: `${month.column + 1} / ${calendar.months[index + 1] ? calendar.months[index + 1].column + 1 : -1}` }}>
@@ -229,7 +232,7 @@ export function SettingsProfile({ name, onNameChange, stats, loading, error }: {
       </div>
     </section>
 
-    <section className={styles.insights} aria-label="Activity insights" aria-busy={loading}>
+    <section data-settings-search-target="profile-insights" tabIndex={-1} className={styles.insights} aria-label="Activity insights" aria-busy={loading}>
       <div className={styles.headingRow}><h3>Insights</h3><span className={styles.allTime}>All time</span></div>
       <dl>
         <div><dt title="Share of recorded model calls, excluding background titles">Most used model</dt><dd title={topModel?.name}>{loading ? 'Loading…' : topModel ? <>{formatModelName(topModel.name)}<span className={styles.share}> · {topModel.percent}%</span></> : 'No recorded usage'}</dd></div>
@@ -239,7 +242,7 @@ export function SettingsProfile({ name, onNameChange, stats, loading, error }: {
       </dl>
     </section>
 
-    {tooltip && createPortal(<div id={tooltipId} role="tooltip" className={`${styles.root} ${styles.tooltip}`}
+    {!loading && tooltip && createPortal(<div id={tooltipId} role="tooltip" className={`${styles.root} ${styles.tooltip}`}
       style={{ left: tooltip.x, top: tooltip.y, transform: `translate(-50%, ${tooltip.below ? '0' : '-100%'})` }}>
       <span>{mode === 'weekly' ? `${tooltipDate(tooltip.cell.date)} – ${tooltipDate(tooltip.cell.end)}` : `${mode === 'cumulative' ? 'Through ' : ''}${tooltipDate(tooltip.cell.date)}`}</span>
       <strong>{new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(tooltip.cell.value)} {mode === 'cumulative' ? 'total tokens' : 'tokens'}</strong>

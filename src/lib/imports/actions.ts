@@ -227,8 +227,13 @@ export function adaptImportedAction(log: Data): Data[] {
     next.type = 'exploration'; next.text = /fetch/.test(name) ? 'Read web page' : 'Searched the web'; next.iconCategory = 'web_search';
     next.secondary = string(args.query || args.url) || string(args.search_query?.[0]?.q);
     if (Array.isArray(result.results)) { next.toolName = next.tool = 'web_search'; next.toolResult = result; }
-  } else if (/browser|computer|cua|screenshot/.test(originalName.toLowerCase())) {
+  } else if (/browser/i.test(originalName)) {
     next.type = 'browser'; next.iconCategory = 'browser'; next.text = /screenshot/.test(name) ? 'Captured screenshot' : 'Used browser'; next.secondary = string(args.title || args.url || args.action);
+  } else if (/computer|screen[_-]?agent|screenshot/i.test(originalName)) {
+    next.type = 'tool_call';
+    next.iconCategory = 'computer';
+    next.text = /screenshot/.test(name) ? 'Captured screenshot' : 'Used computer';
+    next.secondary = string(args.app || args.title || args.action);
   } else if (/spawnagent|subagent|agenttask|^task$|^agent$|sendmessagetothread|waitthreads|waitagent|sendmessage/.test(name)) {
     next.iconCategory = 'agent'; next.text = /wait/.test(name) ? 'Read agent progress' : /send/.test(name) ? 'Sent agent message' : 'Agent work'; next.secondary = string(args.description || args.task_name || args.title);
     const agents = Array.isArray(result.agents) ? result.agents : result.agent_id || result.agentId ? [{

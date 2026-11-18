@@ -86,7 +86,7 @@ export function LivePendingIndicator({ mode, activityVersion, className = '' }: 
 
   return (
     <div
-      className={`eterx-live-working-indicator eterx-live-feed-arrival flex h-6 w-fit max-w-full items-center ${className}`}
+      className={`eterx-live-working-indicator eterx-live-feed-arrival flex w-fit max-w-full items-center ${className}`}
       role="status"
       aria-live="polite"
       aria-atomic="true"
@@ -94,7 +94,7 @@ export function LivePendingIndicator({ mode, activityVersion, className = '' }: 
       <span className="eterx-thought-state-label">
         <Shimmer
           durationMs={2400}
-          className="eterx-thinking-shimmer min-w-0 truncate text-[15px] font-medium leading-[1.45] tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
+          className="eterx-thinking-shimmer min-w-0 truncate text-[15px] font-medium tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
         >
           {label}
         </Shimmer>

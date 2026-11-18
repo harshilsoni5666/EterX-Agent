@@ -13,9 +13,11 @@ import { createPortal } from 'react-dom';
 import { Info, ChevronLeft, BookText, BarChart3, Route, FolderCog, Network, Lightbulb } from 'lucide-react';
 import { CODING_MODES, getCodingMode, type CodingAgentId } from '../../lib/code/coding-modes';
 import { CodingModeDetails } from './coding-mode-details';
+import { ComposerPermissionSelector, ComposerToolApprovals } from './composer-permissions';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
+import { ProviderIconAsset } from '../ui/provider-icon';
 import { Tooltip } from '../ui/tooltip';
 import { DictationButton } from '../ui/dictation-button';
 import type { DictationPhase } from '../../lib/microphone';
@@ -368,6 +370,7 @@ export interface ChatInputProps {
   setInputValue: React.Dispatch<React.SetStateAction<string>>;
   onInputValueChange?: (value: string) => void;
   isThinking: boolean;
+  approvalRunActive?: boolean;
   canStop?: boolean;
   isRecording: boolean;
   dictationPhase?: DictationPhase;
@@ -1064,6 +1067,7 @@ const TaskTrackerDock = React.memo(({
 export const ChatInput: React.FC<ChatInputProps> = ({
   showVoiceControls = true,
   inputValue, inputValueRevision = 0, setInputValue, onInputValueChange, isThinking, canStop = false, isRecording, dictationPhase = isRecording ? 'listening' : 'idle', handleSend, handleStop, handleSteer = () => { },
+  approvalRunActive = isThinking,
   toggleSpeech, attachments, setAttachments, greeting, traceLogsLength,
   agentMode = 'think', onModeChange = () => { },
   thinkingLevel = 'low', onThinkingLevelChange = () => { },
@@ -1717,6 +1721,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     refreshStoredModelSettings();
     let disposed = false;
+    let refreshPending = false;
     const modelStorageKeys = new Set([
       MODEL_API_KEY_STORAGE_KEY, MODEL_API_KEY_PRESENCE_STORAGE_KEY,
       MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_OVERRIDE_STORAGE_KEY,
@@ -1727,7 +1732,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       if (disposed) return;
       const key = (event as CustomEvent | undefined)?.detail?.key;
       if (event?.type === 'eterx-folder-storage-updated' && key && !modelStorageKeys.has(key)) return;
-      refreshStoredModelSettings();
+      if (refreshPending) return;
+      refreshPending = true;
+      // Settings broadcasts are synchronous. Read the committed selection
+      // after the publisher yields, including changes in the same transaction.
+      queueMicrotask(() => {
+        refreshPending = false;
+        if (!disposed) refreshStoredModelSettings();
+      });
     };
 
     window.addEventListener('focus', onSettingsUpdated);
@@ -1942,10 +1954,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setSlashTrigger(prev => {
       const next = { start: lineStart, end: cursor, query: slashQuery.toLowerCase() };
       if (prev && prev.start === next.start && prev.end === next.end && prev.query === next.query) return prev;
-      setSlashActiveIndex(0);
       return next;
     });
   }, []);
+
+  React.useLayoutEffect(() => {
+    if (slashTrigger) setSlashActiveIndex(0);
+  }, [slashTrigger]);
 
   const filteredSlashCommands = useMemo(() => {
     if (!slashTrigger) return [];
@@ -2744,7 +2759,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   const getThinkingLevelOptions = useCallback((option: ChatModelOption | null) => {
     const target = getThinkingTarget(option);
-    return target ? getModelThinkingOptions(target.provider, target.modelName, target.capabilities) : [];
+    return target
+      ? getModelThinkingOptions(target.provider, target.modelName, target.capabilities, { includeLabelDetails: false })
+      : [];
   }, [getThinkingTarget]);
 
   const allModelOptions = modelOptions;
@@ -3221,6 +3238,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           isThinking={isThinking}
           isCompressed={isCompressed}
         />
+        {activeChatId && approvalRunActive && <ComposerToolApprovals key={activeChatId} chatId={activeChatId} />}
 
         <AnimatePresence>
           {showContextUsagePanel && contextUsage && contextUsage.contextWindow > 0 && (() => {
@@ -4413,6 +4431,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </div>
               )}
 
+              {showComposerControls && !isAgentBuilder && !executionContextLocked && !chatMode && <ComposerPermissionSelector />}
+
               {/* The Agent Builder uses the same turn-scoped model selection as every
                   other agent chat. Keeping this control mounted lets a builder chat
                   switch provider/model immediately for its next turn. */}
@@ -4444,19 +4464,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       label.scrollLeft += delta * (event.deltaMode === 1 ? 16 : 1);
                       event.stopPropagation();
                     }}>
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="eterx-agent-ui-icon eterx-selector-icon h-4 w-4 shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
-                      >
-                        <path d="m12 3-10 5 10 5 10-5-10-5Z" />
-                        <path d="m2 17 10 5 10-5" />
-                        <path d="m2 12 10 5 10-5" />
-                      </svg>
+                      {selectedModel ? (
+                        <ProviderIconAsset provider={selectedModel.provider} className="eterx-model-provider-icon size-4" />
+                      ) : (
+                        <svg
+                          aria-hidden="true"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="eterx-agent-ui-icon eterx-selector-icon h-4 w-4 shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
+                        >
+                          <path d="m12 3-10 5 10 5 10-5-10-5Z" />
+                          <path d="m2 17 10 5 10-5" />
+                          <path d="m2 12 10 5 10-5" />
+                        </svg>
+                      )}
                       <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {modelDisplayLabel}
                       </span>
@@ -4474,9 +4499,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <AnimatePresence initial={false}>
                 {showModelMenu && (
                   <AdaptiveMenu key="model-selector-menu" motionProps={{
-                    initial: { opacity: 0, clipPath: 'inset(5px 0px 5px 0px)', filter: 'blur(1px)' },
-                    animate: { opacity: 1, clipPath: 'inset(0px)', filter: 'blur(0px)' },
-                    exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px)', filter: 'blur(1px)' },
+                    initial: { opacity: 0 },
+                    animate: { opacity: 1 },
+                    exit: { opacity: 0 },
                     transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
                   }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome}
                     portalAnchorRef={modelSelectorRef}
@@ -4552,11 +4577,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   className={`group flex h-full w-full items-center gap-2 rounded-[9px] border px-2 py-1 text-left transition-colors duration-150 ${ selected ? 'border-white/[0.08] bg-white/[0.10] text-white font-medium shadow-none' : 'border-transparent text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.10] font-normal' }`}
                                   aria-pressed={selected}
                                 >
-                                  <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${ selected ? 'bg-white/[0.10] text-white' : 'text-white/30' }`}>
-                                    {selected && <Check className="h-3 w-3" strokeWidth={2.05} />}
-                                  </span>
-                                  <span className="flex min-w-0 flex-1 items-center gap-2">
-                                    <span className="min-w-0 truncate text-[12.5px] font-semibold leading-4 tracking-normal">
+                                  <ProviderIconAsset provider={option.provider} className="eterx-model-provider-icon size-[15px]" />
+                                  <span className="eterx-model-option-content flex min-w-0 flex-1 items-center">
+                                    <span className="eterx-model-option-name min-w-0 truncate text-[12.5px] font-semibold leading-4 tracking-normal">
                                       {optionLabel}
                                     </span>
                                     {optionThinkingLabel && (

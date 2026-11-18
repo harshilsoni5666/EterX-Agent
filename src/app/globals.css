@@ -5180,6 +5180,49 @@
 
 /* Settings is an editing surface: let users select/copy every label and value,
    and keep form controls interactive even when the window frame is draggable. */
+.eterx-settings-nav-frame {
+  --settings-nav-fade-size: 12px;
+  background-color: inherit;
+}
+
+.eterx-settings-nav-frame > nav {
+  scroll-padding-block: var(--settings-nav-fade-size);
+}
+
+.eterx-settings-nav-frame::before,
+.eterx-settings-nav-frame::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset-inline: 0 var(--settings-nav-scrollbar-width, 0px);
+  block-size: var(--settings-nav-fade-size);
+  background-color: inherit;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.eterx-settings-nav-frame::before {
+  inset-block-start: 0;
+  mask-image: linear-gradient(to bottom, #000, transparent);
+}
+
+.eterx-settings-nav-frame::after {
+  inset-block-end: 0;
+  mask-image: linear-gradient(to top, #000, transparent);
+}
+
+.eterx-settings-nav-frame[data-fade-top]::before,
+.eterx-settings-nav-frame[data-fade-bottom]::after {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .eterx-settings-nav-frame::before,
+  .eterx-settings-nav-frame::after {
+    transition: opacity 120ms ease-out;
+  }
+}
+
 .eterx-settings-panel,
 .eterx-settings-panel * {
   user-select: text !important;
@@ -11058,9 +11101,8 @@ body.eterx-gateway-view section.mt-8 > main {
   }
 }
 
-/* Main model menu: keep the compact check, thinking value, and chevron on
-   stable columns. The model name owns the flexible space, so short names do
-   not create an uneven gap before the fixed right-side controls. */
+/* Keep the provider icon next to the name and align the thinking controls
+   at the trailing edge. The model name takes up the remaining space. */
 .eterx-composer-shell .eterx-model-menu-popout {
   width: 240px !important;
   max-width: calc(100vw - 32px) !important;
@@ -11088,14 +11130,11 @@ body.eterx-gateway-view section.mt-8 > main {
   overflow: hidden !important;
 }
 
-.eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-row > button > span:first-child {
-  flex: 0 0 18px !important;
-  width: 18px !important;
-  height: 18px !important;
-  margin-right: 7px !important;
+.eterx-composer-shell .eterx-model-menu-popout .eterx-model-provider-icon {
+  margin-inline-end: 7px;
 }
 
-.eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-row > button > span:nth-child(2) {
+.eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-content {
   display: flex !important;
   flex: 1 1 auto !important;
   min-width: 0 !important;
@@ -11103,7 +11142,7 @@ body.eterx-gateway-view section.mt-8 > main {
   gap: 0 !important;
 }
 
-.eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-row > button > span:nth-child(2) > span:first-child {
+.eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-name {
   flex: 1 1 auto !important;
   min-width: 0 !important;
   overflow: hidden !important;
@@ -11966,7 +12005,7 @@ body.eterx-gateway-view section.mt-8 > main {
   padding: 1px 8px !important;
 }
 
-:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle .eterx-thinking-shimmer {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-state-label .eterx-thinking-shimmer {
   font-size: 12.5px !important;
   font-weight: 500 !important;
   line-height: 1.25 !important;

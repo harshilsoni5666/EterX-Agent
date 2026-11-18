@@ -389,13 +389,16 @@
   color: var(--activity-alert) !important;
 }
 
-/* Thought disclosures keep their label and adjacent chevron, with the same
-   full-row hit target and hover surface as commands. */
-:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle {
-  width: 100% !important;
+/* Pending statuses and thought disclosures share the row dimensions and text inset. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thought-toggle, .eterx-live-working-indicator) {
   min-height: 30px !important;
   height: 30px !important;
   padding: 1px 2px !important;
+}
+
+/* Thought disclosures keep the same full-row hit target and hover surface as commands. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle {
+  width: 100% !important;
   border-radius: 4px !important;
   background: transparent !important;
   cursor: pointer;
@@ -850,7 +853,7 @@
 }
 
 @media (pointer: coarse) {
-  :root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel, .eterx-thought-block) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row, .eterx-thought-toggle) {
+  :root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel, .eterx-thought-block) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row, .eterx-thought-toggle, .eterx-live-working-indicator) {
     min-height: 40px !important;
   }
   .eterx-activity-footer button { min-height: 40px; }

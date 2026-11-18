@@ -19,6 +19,8 @@ import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-ke
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../../../../lib/agent/self-improvement/engine';
+import { runWithToolApprovals } from '../../../../lib/agent/tool-approval-runtime';
+import { isChatPermissionMode, normalizeChatPermissionMode } from '../../../../lib/chat-permissions';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -47,10 +49,13 @@ export async function POST(req: NextRequest) {
     const activeSession = session;
 
     const body = await readJsonObject(req);
-    const { agentId, messages, model, mode, temperature, runLocation, pinnedContext } = body;
+    const { agentId, messages, model, mode, temperature, runLocation, pinnedContext, permissionMode } = body;
 
     if (!isSafeAgentId(agentId)) {
       return attachAgentApiSessionCookie(jsonError('A valid agentId is required.', 400), session);
+    }
+    if (permissionMode !== undefined && !isChatPermissionMode(permissionMode)) {
+      return attachAgentApiSessionCookie(jsonError('Invalid chat permission mode.', 400), session);
     }
 
     const chatId = isSafeChatId(body.chatId)
@@ -122,7 +127,9 @@ export async function POST(req: NextRequest) {
     // Stream events back
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
-      async start(controller) {
+      start: controller => runWithToolApprovals({
+        chatId, sessionId: agentSessionId, mode: normalizeChatPermissionMode(permissionMode), signal: req.signal,
+      }, async () => {
         let closed = false;
         const startedAt = Date.now();
         const experienceTrace: any[] = [];
@@ -202,7 +209,7 @@ export async function POST(req: NextRequest) {
           closed = true;
           try { controller.close(); } catch { }
         }
-      },
+      }),
     });
 
     return attachAgentApiSessionCookie(new Response(stream, {

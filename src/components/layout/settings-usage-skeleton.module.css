@@ -1,0 +1,64 @@
+.shimmer {
+  --usage-base: #2c2c2d;
+  --usage-glow: #444447;
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+}
+
+:global(:root[data-theme='light']) .shimmer {
+  --usage-base: #e2e3e3;
+  --usage-glow: #eff0ef;
+}
+
+.base { fill: var(--usage-base); }
+.shimmer stop { stop-color: var(--usage-glow); }
+.sweep { transform-box: fill-box; }
+
+@keyframes usageSweep {
+  from { transform: translateX(0); }
+  to { transform: translateX(310%); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sweep { animation: usageSweep 2.4s ease-in-out infinite; }
+}
+
+.heatmap {
+  position: relative;
+  padding-top: calc((100% + var(--activity-gap)) * var(--activity-rows) / var(--activity-columns) - var(--activity-gap));
+}
+
+.heatmap[data-weekly='true'] {
+  height: var(--activity-weekly-height);
+  padding-top: 0;
+}
+
+.heatmapCell {
+  x: calc((100% + var(--activity-gap)) * var(--activity-column) / var(--activity-columns));
+  y: calc((100% + var(--activity-gap)) * var(--activity-row) / var(--activity-rows));
+  width: calc((100% + var(--activity-gap)) / var(--activity-columns) - var(--activity-gap));
+  height: calc((100% + var(--activity-gap)) / var(--activity-rows) - var(--activity-gap));
+}
+
+.rows {
+  --usage-title-start: 12px;
+  --usage-title-end: calc(100% - 12px);
+  --usage-count-width: min(48px, 13%);
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+
+.rows[data-actions='true'] { --usage-title-start: 48px; }
+.rows[data-counts='true'] { --usage-title-end: 56%; }
+
+.rowTitle {
+  x: var(--usage-title-start);
+  width: clamp(0px, calc(var(--usage-title-end) - var(--usage-title-start)), var(--usage-title-width));
+}
+
+.rowInput, .rowOutput { width: var(--usage-count-width); }
+.rowInput { x: calc(100% - var(--usage-count-width) * 2 - 23px); }
+.rowOutput { x: calc(100% - var(--usage-count-width) - 12px); }

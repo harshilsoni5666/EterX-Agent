@@ -52,7 +52,7 @@ function AccessRow({
   onChange: (value: boolean) => void;
 }) {
   return (
-    <div className={styles.row}>
+    <div data-settings-search-target={id} tabIndex={-1} className={styles.row}>
       <div className={styles.copy}>
         <label className={styles.label} htmlFor={id}>{title}</label>
         <p className={styles.description} id={`${id}-description`}>{description}</p>
@@ -179,7 +179,7 @@ export function ComputerUseSettings({
           enabled={settings.browserAccess}
           onChange={value => onSettingChange('browserAccess', value)}
         />
-        <div className={styles.session}>
+        <div data-settings-search-target="browser-session" tabIndex={-1} className={styles.session}>
           <div className={styles.sessionHeading}>
             <span className={styles.label}>Browser session</span>
             {browserConnected && <span className={styles.sessionType}>{browserSession}</span>}
@@ -241,7 +241,7 @@ export function ComputerUseSettings({
         )}
         {desktopMessage && <p className={styles.runtimeMessage} role="status">{desktopMessage}</p>}
         <details className={styles.details}>
-          <summary>
+          <summary data-settings-search-target="computer-connection-details">
             <ChevronRight className={styles.disclosureIcon} size={14} aria-hidden="true" />
             <span>Connection details</span>
             <span className={styles.runtimeSummary}>{driver?.healthy ? 'Desktop runtime ready' : driver?.installed ? 'Setup required' : 'Runtime information'}</span>

@@ -2265,25 +2265,18 @@ export const previewBelongsToAction = (preview: any, action: any, timeline: any[
 
 const isLiveActionEvent = (log: any) => isFeedTraceOpen(log);
 
-const BROWSER_ACTIVITY_TOOL_NAMES = new Set([
-  'browser',
-  'browser_control',
-  'browser_use',
-  'computer',
-  'computer_control',
-  'computer_use',
-  'screen_agent',
-  'screenshot_capture',
-]);
+type ActivitySurface = 'browser' | 'computer';
+const browserTools = new Set(['browser', 'browser_control', 'browser_use']);
+const computerTools = new Set(['computer', 'computer_control', 'computer_use', 'screen_agent', 'screenshot_capture']);
 
-const isBrowserActivityAction = (log: any) => {
-  if (!log) return false;
-  if (log.type === 'browser') return true;
-  const toolName = String(normalizeToolTraceName(log.tool || log.toolName || log.name || ''))
+const activitySurface = (log: any): ActivitySurface | 'standard' => {
+  const toolName = String(normalizeToolTraceName(log?.tool || log?.toolName || log?.name || ''))
     .trim()
     .toLowerCase()
     .replace(/[\s-]+/g, '_');
-  return BROWSER_ACTIVITY_TOOL_NAMES.has(toolName);
+  if (computerTools.has(toolName) || log?.iconCategory === 'computer') return 'computer';
+  if (browserTools.has(toolName) || log?.type === 'browser') return 'browser';
+  return 'standard';
 };
 
 const isExplicitlySettledAction = (log: any) => isFeedTraceExplicitlySettled(log);
@@ -3582,15 +3575,20 @@ const ActionChip = ({
     if (preview) setIsExpanded(open => !open);
   };
   const actionFailed = !actionIsLive && (toolResultFailed(toolResult) || log.status === 'failed' || log.status === 'error');
-  const isDesktopFailure = actionFailed && ['computer', 'screen_agent'].includes(displayToolName);
-  const desktopFailureResult = isDesktopFailure ? parseToolResult(toolResult) : null;
-  const desktopFailureFields = desktopFailureResult && typeof desktopFailureResult === 'object'
-    ? desktopFailureResult as Record<string, unknown> : {};
-  const desktopFailure = isDesktopFailure
-    ? formatUnknownError(log.error || desktopFailureFields.error || desktopFailureFields.observationError
-      || desktopFailureFields.result || (typeof desktopFailureResult === 'string' ? desktopFailureResult : undefined),
+  const nativeAction = !actionIsLive && ['computer', 'screen_agent'].includes(displayToolName);
+  const desktopResult = nativeAction ? parseToolResult(toolResult) : null;
+  const desktopFields = desktopResult && typeof desktopResult === 'object' ? desktopResult as Record<string, unknown> : {};
+  const delivery = nativeAction && (log.actionStatus || desktopFields.actionStatus);
+  const observationError = nativeAction && (log.observationError || desktopFields.observationError);
+  const needsObservation = nativeAction && (log.observationRequired || desktopFields.observationRequired);
+  const desktopDetail = nativeAction && actionFailed
+    ? formatUnknownError(log.error || desktopFields.error || observationError
+      || desktopFields.result || (typeof desktopResult === 'string' ? desktopResult : undefined),
     'The computer action failed. This older response did not save an error reason.', 700)
-    : '';
+    : observationError ? formatUnknownError(observationError, 'Screenshot unavailable.', 700) : '';
+  const outcomeLabel = actionFailed ? (delivery === 'unknown' ? 'Delivery unknown' : 'Failed')
+    : needsObservation ? 'Screen captured · input pending'
+    : observationError ? (delivery === 'sent' ? 'Input sent · screenshot unavailable' : 'Screenshot unavailable') : '';
 
   return (
     <div className="w-full">
@@ -3678,15 +3676,15 @@ const ActionChip = ({
         )}
         {!hasFile && !subtitle && <span className="min-w-0" />}
         <span className="flex shrink-0 items-center justify-end gap-2 justify-self-end">
-          {actionFailed && <span className="eterx-tool-failure-label">Failed</span>}
+          {outcomeLabel && <span className={actionFailed ? 'eterx-tool-failure-label' : 'text-[11px] text-[#AAA49C]'}>{outcomeLabel}</span>}
           {preview && (
             <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-all ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : 'text-[#898176]' } group-hover:text-[#C8C1B8]`} />
           )}
         </span>
       </div>
-      {desktopFailure && (
-        <p className={`m-0 pb-2 pt-1 text-[12px] leading-relaxed text-[#D5AAA5] whitespace-pre-wrap break-words select-text ${inCard ? 'pl-7 pr-2' : 'pl-9 pr-3'}`}>
-          {desktopFailure}
+      {desktopDetail && (
+        <p className={`m-0 pb-2 pt-1 text-[12px] leading-relaxed whitespace-pre-wrap break-words select-text ${actionFailed ? 'text-[#D5AAA5]' : 'text-[#AAA49C]'} ${inCard ? 'pl-7 pr-2' : 'pl-9 pr-3'}`}>
+          {desktopDetail}
         </p>
       )}
       <ActivityDisclosure open={Boolean(isExpanded && preview)} className="w-full">
@@ -3935,23 +3933,25 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
   );
 };
 
-const BrowserActivityGroup = ({
+const ControlActivityGroup = ({
+  surface,
   items,
   isActive,
   keepOpenWhileRunning,
   allLogs,
 }: {
+  surface: ActivitySurface;
   items: any[];
   isActive: boolean;
   keepOpenWhileRunning: boolean;
   allLogs: any[];
 }) => {
-  const actionLogs = items.flatMap(item => item.kind === 'browser_action_group' ? item.logs : []);
+  const actionLogs = items.flatMap(item => item.kind === 'control_actions' ? item.logs : []);
   const latestAction = actionLogs[actionLogs.length - 1];
   const latestActivityLog = (() => {
     const tail = items[items.length - 1];
     if (tail?.kind === 'note') return tail.log;
-    if (tail?.kind === 'browser_action_group') return tail.logs?.[tail.logs.length - 1];
+    if (tail?.kind === 'control_actions') return tail.logs?.[tail.logs.length - 1];
     return latestAction;
   })();
   // A browser phase stays open between its individual tool calls. Completing
@@ -3977,7 +3977,8 @@ const BrowserActivityGroup = ({
   const currentActionIndex = activityIsActive
     ? (explicitLiveIndex >= 0 ? explicitLiveIndex : actionLogs.length - 1)
     : -1;
-  const BrowserIcon = MonitorPlayIcon;
+  const SurfaceIcon = surface === 'computer' ? MousePointerClickIcon : MonitorPlayIcon;
+  const label = surface === 'computer' ? 'Computer' : 'Browser';
   let actionIndex = 0;
 
   return (
@@ -3996,7 +3997,7 @@ const BrowserActivityGroup = ({
           {activityIsActive ? (
             <span className="eterx-trace-spinner" />
           ) : (
-            <BrowserIcon size={15} color="currentColor" />
+            <SurfaceIcon size={15} color="currentColor" />
           )}
         </span>
         <Shimmer
@@ -4005,7 +4006,7 @@ const BrowserActivityGroup = ({
           durationMs={3000}
           className="min-w-0 flex-1 truncate text-[12.75px] font-medium tracking-[-0.01em] text-[#D5CFC7]"
         >
-          Browser use
+          {label} use
         </Shimmer>
         <ChevronDown
           className={`h-3.5 w-3.5 shrink-0 text-[#8F897F] transition-transform duration-200 ${ open ? '' : '-rotate-90' }`}
@@ -4014,7 +4015,7 @@ const BrowserActivityGroup = ({
       </button>
 
       <ActivityDisclosure open={open} id={contentId} className="eterx-activity-disclosure">
-            <ActivityViewport active={activityIsActive} label="Browser activity" onInspect={() => { browserManuallyToggledRef.current = true; }}>
+            <ActivityViewport active={activityIsActive} label={`${label} activity`} onInspect={() => { browserManuallyToggledRef.current = true; }}>
             {items.map((item, itemIndex) => {
               if (item.kind === 'note') {
                 const noteIsLatest = itemIndex === items.length - 1;
@@ -4722,7 +4723,7 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
   const segs: any[] = [];
   let aBuf: any[] = [];
   let aBufFirstIdx = -1;
-  let aBufKind: 'browser' | 'standard' | null = null;
+  let aBufKind: ActivitySurface | 'standard' | null = null;
   const SPEC = new Set(['console_output', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm']);
   const flush = (idx: number) => {
     if (aBuf.length > 0) {
@@ -4774,7 +4775,8 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
         });
       });
       segs.push({
-        kind: aBufKind === 'browser' ? 'browser_action_group' : 'action_group',
+        kind: aBufKind === 'browser' || aBufKind === 'computer' ? 'control_actions' : 'action_group',
+        surface: aBufKind,
         logs: unique,
         firstIdx: aBufFirstIdx === -1 ? idx : aBufFirstIdx,
         lastIdx: idx,
@@ -4785,7 +4787,7 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
     }
   };
   const pushActionLog = (log: any, idx: number) => {
-    const nextKind = isBrowserActivityAction(log) ? 'browser' : 'standard';
+    const nextKind = activitySurface(log);
     if (aBuf.length > 0 && aBufKind !== nextKind) flush(idx - 1);
     if (aBuf.length === 0) aBufFirstIdx = idx;
     aBufKind = nextKind;
@@ -4897,7 +4899,7 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
   const displaySegs: any[] = [];
   for (let index = 0; index < segs.length; index += 1) {
     const segment = segs[index];
-    if (segment.kind !== 'browser_action_group') {
+    if (segment.kind !== 'control_actions') {
       displaySegs.push(segment);
       continue;
     }
@@ -4906,15 +4908,16 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
     let cursor = index + 1;
     while (cursor < segs.length) {
       const candidate = segs[cursor];
-      const isBrowserActions = candidate.kind === 'browser_action_group';
-      const isBrowserWorkNote = candidate.kind === 'note' && candidate.log?.type === 'work_note';
-      if (!isBrowserActions && !isBrowserWorkNote) break;
+      const sameSurface = candidate.kind === 'control_actions' && candidate.surface === segment.surface;
+      const workNote = candidate.kind === 'note' && candidate.log?.type === 'work_note';
+      if (!sameSurface && !workNote) break;
       items.push(candidate);
       cursor += 1;
     }
     const tail = items[items.length - 1];
     displaySegs.push({
-      kind: 'browser_phase',
+      kind: 'control_phase',
+      surface: segment.surface,
       items,
       firstIdx: segment.firstIdx,
       lastIdx: tail.lastIdx ?? tail.idx ?? segment.lastIdx,
@@ -4998,14 +5001,15 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
             />
           );
         }
-        if (seg.kind === 'browser_phase') {
-          const firstActions = seg.items.find((item: any) => item.kind === 'browser_action_group');
+        if (seg.kind === 'control_phase') {
+          const firstActions = seg.items.find((item: any) => item.kind === 'control_actions');
           if (!firstActions?.logs?.[0]) return null;
           const firstIdx = firstActions?.firstIdx ?? seg.firstIdx ?? i;
-          const phaseKey = `browser-${ getActionIdentity(firstActions.logs[0], firstIdx) }`;
+          const phaseKey = `${seg.surface}-${ getActionIdentity(firstActions.logs[0], firstIdx) }`;
           return (
-            <BrowserActivityGroup
+            <ControlActivityGroup
               key={phaseKey}
+              surface={seg.surface}
               items={seg.items}
               isActive={phaseIsActive}
               keepOpenWhileRunning={isThinking && isLast}

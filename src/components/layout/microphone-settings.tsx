@@ -27,8 +27,8 @@ type Props = {
 const formatSize = (bytes: number) => bytes >= 1_000_000_000
   ? `${(bytes / 1_000_000_000).toFixed(2)} GB` : `${Math.round(bytes / 1_000_000)} MB`;
 const isBusy = (state: ModelState) => ['preparing', 'downloading', 'verifying'].includes(state.status);
-const Row = ({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) => (
-  <div className="eterx-settings-stack-row flex flex-wrap items-center justify-between gap-4 border-b border-white/[0.07] px-5 py-4 last:border-b-0">
+const Row = ({ title, searchTarget, description, children }: { title: string; searchTarget: string; description?: string; children: React.ReactNode }) => (
+  <div data-settings-search-target={searchTarget} tabIndex={-1} className="eterx-settings-stack-row flex flex-wrap items-center justify-between gap-4 border-b border-white/[0.07] px-5 py-4 last:border-b-0">
     <div className="min-w-0 flex-1">
       <div className="eterx-setting-label text-[13px] font-medium text-[#F1F1F1]">{title}</div>
       {description && <div className="eterx-setting-description mt-1 text-[12px] leading-relaxed text-[#A7A7A7]">{description}</div>}
@@ -168,16 +168,16 @@ export function MicrophoneSettings({ microphoneDeviceId, language, modelId, onMi
   return (
     <div>
       <div className="eterx-settings-stack overflow-visible rounded-xl border border-white/[0.09] bg-[#202020]">
-        <Row title="Microphone" description="Used for voice chat and dictation">
+        <Row title="Microphone" searchTarget="microphone-device" description="Used for voice chat and dictation">
           <Select value={microphoneDeviceId} onChange={onMicrophoneChange} options={deviceOptions} className="w-[230px] max-w-full" />
           <button type="button" onClick={() => void loadDevices(true)} disabled={deviceBusy} aria-label="Refresh microphones and allow access" title="Refresh microphones" className="p-2 text-[#A7A7A7] hover:text-[#F1F1F1] disabled:opacity-50">
             <RefreshCw className={`h-4 w-4 ${deviceBusy ? 'animate-spin' : ''}`} />
           </button>
         </Row>
-        <Row title="Language" description="Language spoken during local dictation">
+        <Row title="Language" searchTarget="dictation-language" description="Language spoken during local dictation">
           <Select value={language} onChange={onLanguageChange} options={[{ value: 'auto', label: 'Auto-detect' }, ...languages]} className="w-[230px] max-w-full" />
         </Row>
-        <Row title="Speech model" description={selected ? `${selected.name} · ${selected.precision} · ${formatSize(selected.bytes)}` : modelId === 'large-v3-q5_0' ? 'Whisper Large v3 · Q5 · Default' : modelId}>
+        <Row title="Speech model" searchTarget="speech-model" description={selected ? `${selected.name} · ${selected.precision} · ${formatSize(selected.bytes)}` : modelId === 'large-v3-q5_0' ? 'Whisper Large v3 · Q5 · Default' : modelId}>
           <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} aria-controls="speech-model-manager" className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-4 py-2 text-[13px] font-medium text-[#F2F2F2] hover:bg-[#363636]">
             Manage models <ChevronDown className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
           </button>

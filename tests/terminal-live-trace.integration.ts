@@ -13,6 +13,7 @@ async function testCompletedCommandKeepsOwnership(): Promise<void> {
     source: 'terminal-live-test',
     shell,
     checkInMs: 5_000,
+    authorization: { cwd, env: process.env },
     context: {
       chatId: 'terminal-live-test-chat',
       runId: 'terminal-live-test-run',
@@ -21,6 +22,7 @@ async function testCompletedCommandKeepsOwnership(): Promise<void> {
     },
   });
 
+  assert.equal(result.success, true, `the fixture command must run before its trace can be checked: ${result.stderr || result.output}`);
   const finalTrace = traces.find(trace => trace.type === 'console_output' && trace.isStreaming === false);
   assert.ok(finalTrace, 'a completed command must emit one settled console trace');
   assert.equal(finalTrace.ownerTraceId, 'terminal-live-test-action');
@@ -41,6 +43,7 @@ async function testHandoffAndKillPreserveLiveLifecycle(): Promise<void> {
     shell,
     immediateHandoff: true,
     surviveRunSettlement: true,
+    authorization: { cwd, env: process.env },
     context: {
       chatId: 'terminal-live-kill-chat',
       runId: 'terminal-live-kill-run',

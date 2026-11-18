@@ -8,13 +8,18 @@ import { ScratchRetentionControl } from './scratch-retention-control';
 import { beginModelCatalogRequest } from '../../lib/model-catalog-client';
 import { useDesktopUpdates } from '../../lib/desktop-updates';
 import { UpdateWhatsNew } from '../updates/release-notes';
+import { ProviderIconAsset } from '../ui/provider-icon';
 import { AgentToolsSettings } from './agent-tools-settings';
 import { ComputerUseSettings } from './computer-use-settings';
 import { MicrophoneSettings } from './microphone-settings';
 import { SettingsProfile } from './settings-profile';
+import { TokenUsageRowsSkeleton } from './settings-usage-skeleton';
 import { ImportSettings } from './import-settings';
+import { SettingsSearch, type SettingsSearchTabInfo } from './settings-search';
+import { SETTINGS_TAB_HEADING, type SettingsSearchResult, type SettingsSearchTab } from './settings-search-index';
+import searchStyles from './settings-search.module.css';
 import { buildProfileActivity, EMPTY_PROFILE_ACTIVITY, type ProfileActivityStats } from '../../lib/profile-activity';
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MAIN_AGENT_MODEL_OPTIONS, getModelThinkingOptions, normalizeModelThinkingCapabilities, type MainAgentMode, type MainAgentProvider, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
@@ -49,7 +54,6 @@ import {
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
 import {
-  type LucideIcon,
   SlidersHorizontal,
   CircleUserRound,
   Palette,
@@ -373,9 +377,8 @@ export interface AppSettings {
   groundingSearch: boolean;
   streamResponses: boolean;
   maxRetries: number;
-  defaultPermissions: boolean;
+  alwaysFullAccess: boolean;
   autoReview: boolean;
-  fullAccess: boolean;
   shellIntegration: boolean;
   autoOpenEditedFiles: boolean;
   contextCompactionEnabled: boolean;
@@ -453,9 +456,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   groundingSearch: true,
   streamResponses: true,
   maxRetries: 0,
-  defaultPermissions: true,
+  alwaysFullAccess: false,
   autoReview: true,
-  fullAccess: false,
   shellIntegration: true,
   autoOpenEditedFiles: true,
   contextCompactionEnabled: true,
@@ -530,6 +532,7 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
     ? Math.max(0, Math.min(3, Math.floor(configuredRetries)))
     : DEFAULT_SETTINGS.maxRetries;
   next.selfImprovementEnabled = stored.selfImprovementEnabled !== false;
+  next.alwaysFullAccess = stored.alwaysFullAccess === true;
   next.showTokenCount = stored.showTokenCount !== false;
   next.contextWindowSizeSelection = resolveSavedContextBudget(stored);
   next.contextWindowSizeSelectionTouched = next.contextWindowSizeSelection !== 'model_max';
@@ -571,29 +574,28 @@ const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linu
   return [{ value: 'auto', label: 'Smart (auto-detect)' }];
 };
 
-type Tab =
-  | 'agents'
-  | 'import'
-  | 'general'
-  | 'profile'
-  | 'appearance'
-  | 'configuration'
-  | 'personalization'
-  | 'shortcuts'
-  | 'tokens'
-  | 'mcp'
-  | 'hooks'
-  | 'context'
-  | 'models'
-  | 'api'
-  | 'live-convo'
-  | 'git'
-  | 'environments'
-  | 'worktrees'
-  | 'browser'
-  | 'computer'
-  | 'updates'
-  | 'archives';
+type Tab = SettingsSearchTab | 'shortcuts' | 'hooks' | 'worktrees' | 'archives';
+
+const SETTINGS_TABS: readonly SettingsSearchTabInfo[] = [
+  { id: 'general', label: 'General', icon: SlidersHorizontal },
+  { id: 'profile', label: 'Profile', icon: CircleUserRound },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'import', label: 'Import', icon: ArrowDownToLine },
+  { id: 'configuration', label: 'Configuration', icon: ShieldCheck },
+  { id: 'agents', label: 'Agents', icon: Users },
+  { id: 'personalization', label: 'Personalization', icon: Wand2 },
+  { id: 'mcp', label: 'MCP servers', icon: Plug },
+  { id: 'tokens', label: 'Tokens', icon: Coins },
+  { id: 'context', label: 'Context', icon: BookText },
+  { id: 'models', label: 'Models', icon: Brain },
+  { id: 'api', label: 'API', icon: Key },
+  { id: 'live-convo', label: 'Live Convo', icon: Mic },
+  { id: 'git', label: 'Git', icon: Cable },
+  { id: 'environments', label: 'Environments', icon: SquareTerminal },
+  { id: 'browser', label: 'External service', icon: Globe },
+  { id: 'computer', label: 'Computer use', icon: LaptopMinimal },
+  { id: 'updates', label: 'Updates', icon: RefreshCw },
+];
 
 type LegacyTab = 'agent' | 'advanced' | 'account' | 'connections';
 
@@ -764,91 +766,6 @@ const PROVIDER_ACCENT: Record<string, string> = {
   anthropic: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
 };
 
-// These are checked-in brand assets fetched from the providers or established
-// brand libraries. Missing entries intentionally use the neutral provider glyph
-// below instead of displaying an invented provider-specific logo.
-const PROVIDER_ICON_PATH: Record<string, string> = {
-  gemini: '/icons/providers/gemini.svg',
-  openai: '/icons/providers/openai.svg',
-  anthropic: '/icons/providers/anthropic.svg',
-  grok: '/icons/providers/grok.svg',
-  deepseek: '/icons/providers/deepseek.ico',
-  mistral: '/icons/providers/mistral.ico',
-  groq: '/icons/providers/groq.svg',
-  cerebras: '/icons/providers/cerebras.svg',
-  sambanova: '/icons/providers/sambanova.ico',
-  together: '/icons/providers/together-favicon.ico',
-  fireworks: '/icons/providers/fireworks.ico',
-  openrouter: '/icons/providers/openrouter.svg',
-  perplexity: '/icons/providers/perplexity.svg',
-  cohere: '/icons/providers/cohere.ico',
-  deepinfra: '/icons/providers/deepinfra.ico',
-  replicate: '/icons/providers/replicate.svg',
-  novita: '/icons/providers/novita.ico',
-  huggingface: '/icons/providers/huggingface.ico',
-  elevenlabs: '/icons/providers/elevenlabs.svg',
-  deepgram: '/icons/providers/deepgram.ico',
-  hume: '/icons/providers/hume.ico',
-  cartesia: '/icons/providers/cartesia.ico',
-  playht: '/icons/providers/playht.ico',
-  ollama: '/icons/providers/ollama.svg',
-  lmstudio: '/icons/providers/lmstudio.ico',
-  vllm: '/icons/providers/vllm.ico',
-  llamacpp: '/icons/providers/llamacpp.svg',
-  cloudflare: '/icons/providers/cloudflare.svg',
-  nvidia: '/icons/providers/nvidia.ico',
-  qwen: '/icons/providers/qwen.svg',
-  mimo: '/icons/providers/mimo.ico',
-  tokenhub: '/icons/providers/tokenhub.ico',
-  zai: '/icons/providers/zai.svg',
-  kimi: '/icons/providers/kimi.ico',
-  stepfun: '/icons/providers/stepfun.svg',
-  minimax: '/icons/providers/minimax.ico',
-  ollamacloud: '/icons/providers/ollama.svg',
-  arcee: '/icons/providers/arcee.ico',
-  gmi: '/icons/providers/gmi.ico',
-  kilo: '/icons/providers/kilo.ico',
-  opencode: '/icons/providers/opencode.svg',
-  upstage: '/icons/providers/upstage.png',
-  custom: '/icons/providers/custom.svg',
-};
-
-const PROVIDER_ICON_COLOR: Record<string, string> = {
-  openai: '#10A37F',
-  anthropic: '#D97757',
-  grok: '#D4D4D8',
-  deepseek: '#5786FE',
-  mistral: '#FA520F',
-  groq: '#F55036',
-  openrouter: '#94A3B8',
-  perplexity: '#1FB8CD',
-  replicate: '#A3A3A3',
-  elevenlabs: '#D4D4D8',
-  ollama: '#D4D4D8',
-  vllm: '#30A2FF',
-  llamacpp: '#A6CE39',
-  cloudflare: '#F38020',
-  qwen: '#6950EF',
-  kimi: '#F2488C',
-  minimax: '#E73562',
-  ollamacloud: '#D4D4D8',
-  opencode: '#22C55E',
-  custom: '#607D8B',
-};
-
-const PROVIDER_ICON_INTRINSIC_COLOR = new Set(['gemini', 'groq', 'cerebras', 'llamacpp', 'stepfun', 'zai', 'custom']);
-
-const PROVIDER_ICON_MASK_SIZE: Record<string, string> = {
-  gemini: '76%',
-  mistral: '82%',
-  openai: '86%',
-  openrouter: '84%',
-  groq: '86%',
-  anthropic: '82%',
-  llamacpp: '92% auto',
-};
-
-
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -890,6 +807,8 @@ const applyUiDensity = (fontSize: AppSettings['fontSize']) => {
   document.documentElement.style.setProperty('--eterx-ui-font-size', values.size);
   document.documentElement.style.setProperty('--eterx-ui-line-height', values.lineHeight);
 };
+
+type TokenUsageStatus = 'loading' | 'ready' | 'error' | 'refresh-error';
 
 type TokenChatSummary = {
   id: string;
@@ -1001,12 +920,12 @@ const normalizeSettingsTab = (tab: any): Tab => {
 };
 
 // ─── Custom Toggle ─────────────────────────────────────
-const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; disabled?: boolean }> = ({ enabled, onChange, disabled }) => (
+const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; disabled?: boolean; label?: string }> = ({ enabled, onChange, disabled, label }) => (
   <button
     type="button"
     role="switch"
     aria-checked={enabled}
-    aria-label={enabled ? 'Enabled' : 'Disabled'}
+    aria-label={label ?? (enabled ? 'Enabled' : 'Disabled')}
     disabled={disabled}
     onClick={() => !disabled && onChange(!enabled)}
     className={`relative w-[42px] h-[24px] rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] shrink-0 ${ disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
@@ -1029,7 +948,7 @@ const SettingRow: React.FC<{
   children: React.ReactNode;
   danger?: boolean;
 }> = ({ icon, title, description, children, danger }) => (
-  <div data-danger={danger || undefined} className={`eterx-setting-row mb-2 flex items-center justify-between rounded-lg border px-5 py-4 group ${ danger ? 'border-red-500/20 bg-red-500/10' : 'border-white/[0.08] bg-[#202020]' }`}>
+  <div data-danger={danger || undefined} data-settings-search-target={title} tabIndex={-1} className={`eterx-setting-row mb-2 flex items-center justify-between rounded-lg border px-5 py-4 group ${ danger ? 'border-red-500/20 bg-red-500/10' : 'border-white/[0.08] bg-[#202020]' }`}>
     <div className="flex items-start gap-3 flex-1 min-w-0 mr-4">
       <div className={`hidden sm:flex mt-0.5 p-1.5 rounded-md shrink-0 ${ danger ? 'bg-red-500/10 text-red-400' : 'text-[#A8A8A8] group-hover:text-[#F1F1F1]' } transition-colors`}>
         {icon}
@@ -1056,7 +975,7 @@ const InfoHint: React.FC<{ text: string; className?: string }> = ({ text, classN
 );
 
 const SectionHeader: React.FC<{ title: string; badge?: string; info?: string }> = ({ title, badge, info }) => (
-  <div className="flex items-center gap-2 mb-4 mt-10 first:mt-0">
+  <div data-settings-search-target={title} tabIndex={-1} className="flex items-center gap-2 mb-4 mt-10 first:mt-0">
     <span className="text-[14px] font-semibold text-[#F1F1F1] tracking-tight">{title}</span>
     {info && <InfoHint text={info} />}
     {badge && (
@@ -1074,12 +993,13 @@ const SettingsStack: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
 const SettingsStackRow: React.FC<{
   title: string;
+  searchTarget?: string;
   description?: string;
   children?: React.ReactNode;
   tall?: boolean;
   info?: string;
-}> = ({ title, description, children, tall, info }) => (
-  <div className={`eterx-settings-stack-row flex ${tall ? 'flex-col items-start gap-3' : 'items-center justify-between gap-6'} border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-4' : 'py-3.5'}`}>
+}> = ({ title, searchTarget = title, description, children, tall, info }) => (
+  <div data-settings-search-target={searchTarget} tabIndex={-1} className={`eterx-settings-stack-row flex ${tall ? 'flex-col items-start gap-3' : 'items-center justify-between gap-6'} border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-4' : 'py-3.5'}`}>
     <div className={`min-w-0 ${tall ? 'w-full' : 'flex-1'}`}>
       <div className="eterx-setting-label flex items-center gap-2 text-[13px] font-medium leading-tight text-[#F1F1F1]">
         <span>{title}</span>
@@ -1581,25 +1501,6 @@ const ApiKeyPoolEditor: React.FC<{
   );
 };
 
-const ProviderIconAsset: React.FC<{ provider: string; className?: string }> = ({ provider, className = 'h-4 w-4' }) => {
-  const iconPath = PROVIDER_ICON_PATH[provider];
-  if (!iconPath) return <Key className={className} />;
-  if (/\.(?:ico|png|jpe?g|webp)$/i.test(iconPath) || PROVIDER_ICON_INTRINSIC_COLOR.has(provider)) {
-    return <img aria-hidden="true" alt="" className={`shrink-0 object-contain ${className}`} src={iconPath} />;
-  }
-  return (
-    <span
-      aria-hidden="true"
-      className={`inline-block shrink-0 bg-current ${className}`}
-      style={{
-        color: PROVIDER_ICON_COLOR[provider],
-        WebkitMask: `url(${iconPath}) center / ${PROVIDER_ICON_MASK_SIZE[provider] || '84%'} no-repeat`,
-        mask: `url(${iconPath}) center / ${PROVIDER_ICON_MASK_SIZE[provider] || '84%'} no-repeat`,
-      }}
-    />
-  );
-};
-
 const ProviderMark: React.FC<{ provider: string; className?: string }> = ({ provider, className = '' }) => (
   <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.045] ${className}`}>
     <ProviderIconAsset provider={provider} className="h-4 w-4" />
@@ -2055,13 +1956,17 @@ const ApiKeyRow: React.FC<{
 // ═══════════════════════════════════════════════════════
 export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen, onClose, initialTab = 'general', onTabChange, standalone = false }) => {
   const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
+  const [searchDestination, setSearchDestination] = useState<SettingsSearchResult | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualTopic, setManualTopic] = useState('model-selection');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [terminalPlatform, setTerminalPlatform] = useState<'unknown' | 'windows' | 'mac' | 'linux'>('unknown');
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setSearchDestination(null);
+      return;
+    }
     setManualOpen(false);
     setActiveTab(normalizeSettingsTab(initialTab));
   }, [initialTab, isOpen]);
@@ -2101,8 +2006,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [contextChatsLoading, setContextChatsLoading] = useState(false);
   const [tokenStats, setTokenStats] = useState<ProfileActivityStats>(EMPTY_PROFILE_ACTIVITY);
   const [tokenChats, setTokenChats] = useState<TokenChatSummary[]>([]);
-  const [tokenStatsLoading, setTokenStatsLoading] = useState(false);
-  const [tokenStatsError, setTokenStatsError] = useState('');
+  const [tokenUsageStatus, setTokenUsageStatus] = useState<Record<'profile' | 'tokens', TokenUsageStatus>>({ profile: 'loading', tokens: 'loading' });
   const [selectedTokenChatId, setSelectedTokenChatId] = useState('');
   const [hoveredToken, setHoveredToken] = useState<{
     value: number;
@@ -2130,12 +2034,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showBatmanEgg] = useState(false);
   const [eggQuoteIndex] = useState(0);
-  const [defaultPermsActive, setDefaultPermsActive] = useState(true);
-  const [fullAccessActive, setFullAccessActive] = useState(true);
   const [gatewayConfig, setGatewayConfig] = useState<any>(null);
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const apiKeysRef = useRef<Record<string, string>>({});
   const settingsDialogRef = useRef<HTMLDivElement>(null);
+  const settingsNavRef = useRef<HTMLElement>(null);
+  const settingsBodyRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
   const searchSettingsRef = useRef<SearchSettings>(DEFAULT_SEARCH_SETTINGS);
   const imageSettingsRef = useRef<ImageSettings>(DEFAULT_IMAGE_SETTINGS);
@@ -2312,20 +2216,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       ? previous
       : { ...previous, terminalShell: 'auto' });
   }, [availableTerminalShells]);
-
-  const handleToggleDefaultPerms = useCallback((v: boolean) => {
-    if (!v) {
-      setDefaultPermsActive(false);
-      setTimeout(() => setDefaultPermsActive(true), 1000);
-    }
-  }, []);
-
-  const handleToggleFullAccess = useCallback((v: boolean) => {
-    if (!v) {
-      setFullAccessActive(false);
-      setTimeout(() => setFullAccessActive(true), 1000);
-    }
-  }, []);
 
   const keysChangedRef = useRef(false);
 
@@ -2550,6 +2440,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   useEffect(() => {
     if (!isOpen || (activeTab !== 'profile' && activeTab !== 'tokens')) return;
+    const usageTab = activeTab;
     let cancelled = false;
     const controller = new AbortController();
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2557,11 +2448,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     let lastSnapshotText: string | null = null;
     let lastStatisticsDay = '';
 
+    const updateUsageStatus = (getStatus: (previous: TokenUsageStatus) => TokenUsageStatus) => {
+      setTokenUsageStatus(previous => {
+        const status = getStatus(previous[usageTab]);
+        return status === previous[usageTab] ? previous : { ...previous, [usageTab]: status };
+      });
+    };
+
     const refreshTokenStats = () => {
       if (cancelled || !isAppVisible()) return;
       if (refreshInFlight) return refreshInFlight;
       refreshInFlight = (async () => {
-       if (lastSnapshotText === null) setTokenStatsLoading(true);
+       if (lastSnapshotText === null) updateUsageStatus(status => status === 'error' ? 'loading' : status);
        try {
       const snapshot = await requestJson('/api/chats', { cache: 'no-store', signal: controller.signal }, 15_000)
         .then(response => response.ok ? response.json() : Promise.reject(new Error('Unable to load chats')));
@@ -2569,8 +2467,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const snapshotText = JSON.stringify(snapshot);
       const statisticsDay = new Date().toDateString();
       if (cancelled) return;
-      setTokenStatsError('');
-      if (snapshotText === lastSnapshotText && statisticsDay === lastStatisticsDay) return;
+      if (snapshotText === lastSnapshotText && statisticsDay === lastStatisticsDay) {
+        updateUsageStatus(() => 'ready');
+        return;
+      }
       if (!Array.isArray(snapshot?.chats)) throw new Error('Invalid chat snapshot');
       const chats = snapshot.chats;
       const uniqueProviderUsageLogs = (logs: any[]) => uniqueModelUsageLogs(logs)
@@ -2650,15 +2550,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       }
       lastSnapshotText = snapshotText;
       lastStatisticsDay = statisticsDay;
+      updateUsageStatus(() => 'ready');
        } catch {
          // Keep the last successful snapshot visible during transient API or
          // desktop startup failures instead of replacing real cells with an
          // empty grid.
-         if (!cancelled) setTokenStatsError(lastSnapshotText === null
-           ? 'Unable to load activity. Retrying automatically…'
-           : 'Unable to refresh. Showing the last loaded activity.');
+         if (!cancelled) updateUsageStatus(status => status === 'ready' || status === 'refresh-error' ? 'refresh-error' : 'error');
        } finally {
-         if (!cancelled) setTokenStatsLoading(false);
          refreshInFlight = null;
        }
       })();
@@ -3647,6 +3545,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     onClose();
   }, [performSync, onClose]);
 
+  const openSearchResult = useCallback((result: SettingsSearchResult) => {
+    setManualOpen(false);
+    setActiveTab(result.tab);
+    setSearchDestination({ ...result });
+    onTabChange?.(result.tab);
+  }, [onTabChange]);
+
   const updateApiKey = useCallback((name: string, value: string) => {
     const trimmed = value.trim();
     settingsRevisionRef.current += 1;
@@ -3842,9 +3747,68 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     setHasChanges(true);
   }, [persistDesktopRuntimeSettings]);
 
+  useLayoutEffect(() => {
+    const nav = settingsNavRef.current;
+    const frame = nav?.parentElement;
+    if (!isOpen || !nav || !frame) return;
+
+    const updateFades = () => {
+      const { clientHeight, scrollHeight, scrollTop } = nav;
+      const maxScrollTop = scrollHeight - clientHeight;
+      frame.toggleAttribute('data-fade-top', maxScrollTop > 1 && scrollTop > 1);
+      frame.toggleAttribute('data-fade-bottom', maxScrollTop - scrollTop > 1);
+    };
+    const updateLayout = () => {
+      frame.style.setProperty('--settings-nav-scrollbar-width', `${nav.offsetWidth - nav.clientWidth}px`);
+      updateFades();
+    };
+
+    updateLayout();
+    nav.addEventListener('scroll', updateFades, { passive: true });
+    const observer = new ResizeObserver(updateLayout);
+    observer.observe(nav);
+    return () => {
+      observer.disconnect();
+      nav.removeEventListener('scroll', updateFades);
+    };
+  }, [isOpen]);
+
+  useLayoutEffect(() => {
+    if (!isOpen || !searchDestination || searchDestination.tab !== activeTab || manualOpen) return;
+    const body = settingsBodyRef.current;
+    if (!body) return;
+
+    const findTarget = (name: string) => body.querySelector<HTMLElement>(
+      `[data-settings-search-target="${CSS.escape(name)}"]`,
+    );
+    const heading = findTarget(SETTINGS_TAB_HEADING);
+    const exactTarget = findTarget(searchDestination.target);
+    const fallback = searchDestination.fallbackTarget ? findTarget(searchDestination.fallbackTarget) : null;
+    const target = exactTarget?.offsetHeight ? exactTarget : fallback || heading;
+    if (!target) return;
+
+    if (target === heading) {
+      body.scrollTop = 0;
+    } else {
+      const targetBounds = target.getBoundingClientRect();
+      const offset = targetBounds.top - body.getBoundingClientRect().top;
+      body.scrollTop += offset - Math.max(12, (body.clientHeight - targetBounds.height) / 2);
+      target.dataset.settingsSearchHighlight = 'true';
+    }
+    target.focus({ preventScroll: true });
+    settingsDialogRef.current?.querySelector('.eterx-settings-tab[data-active="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+    const timeout = window.setTimeout(() => setSearchDestination(null), 2200);
+    return () => {
+      window.clearTimeout(timeout);
+      delete target.dataset.settingsSearchHighlight;
+    };
+  }, [activeTab, isOpen, manualOpen, searchDestination]);
+
   // Close on escape
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('[data-import-dialog]')) handleClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.isComposing && !e.defaultPrevented && !document.querySelector('[data-import-dialog]')) handleClose(); };
     if (isOpen) window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen, handleClose]);
@@ -3853,6 +3817,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!isOpen || typeof document === 'undefined') return;
     previouslyFocusedElementRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const focusFrame = window.requestAnimationFrame(() => {
+      if (settingsDialogRef.current?.contains(document.activeElement)) return;
       const firstFocusable = settingsDialogRef.current?.querySelector<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
       );
@@ -3994,27 +3959,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     : [{ value: 'auto', label: 'Auto (Provider default)' }];
   const selectedLiveVoiceUnavailable = selectedLiveVoice !== 'auto' && liveVoiceOptions.length > 0
     && !liveVoiceOptions.some(option => option.value === selectedLiveVoice);
-
-  const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
-    { id: 'general', label: 'General', icon: SlidersHorizontal },
-    { id: 'profile', label: 'Profile', icon: CircleUserRound },
-    { id: 'appearance', label: 'Appearance', icon: Palette },
-    { id: 'import', label: 'Import', icon: ArrowDownToLine },
-    { id: 'configuration', label: 'Configuration', icon: ShieldCheck },
-    { id: 'agents', label: 'Agents', icon: Users },
-    { id: 'personalization', label: 'Personalization', icon: Wand2 },
-    { id: 'mcp', label: 'MCP servers', icon: Plug },
-    { id: 'tokens', label: 'Tokens', icon: Coins },
-    { id: 'context', label: 'Context', icon: BookText },
-    { id: 'models', label: 'Models', icon: Brain },
-    { id: 'api', label: 'API', icon: Key },
-    { id: 'live-convo', label: 'Live Convo', icon: Mic },
-    { id: 'git', label: 'Git', icon: Cable },
-    { id: 'environments', label: 'Environments', icon: SquareTerminal },
-    { id: 'browser', label: 'External service', icon: Globe },
-    { id: 'computer', label: 'Computer use', icon: LaptopMinimal },
-    { id: 'updates', label: 'Updates', icon: RefreshCw },
-  ];
 
   const providerKeyCount = (provider: string) => {
     const providerKeys = splitApiKeyPool(apiKeys[provider]);
@@ -4409,6 +4353,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
             {/* Panel */}
             <motion.div
+              ref={settingsDialogRef}
+              role={standalone ? undefined : 'dialog'}
+              aria-label={standalone ? undefined : 'Settings'}
+              aria-modal={standalone ? undefined : true}
+              tabIndex={-1}
               initial={{ opacity: 0, y: standalone ? 0 : 16, scale: standalone ? 1 : 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: standalone ? 0 : 10, scale: standalone ? 1 : 0.98 }}
@@ -4430,44 +4379,50 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                     <span className="text-[13px] font-medium leading-none">Back to app</span>
                   </button>
                 </div>
-                <nav className="flex gap-1 overflow-x-auto px-2 pb-2 pt-1.5 sm:pt-2 sm:block sm:flex-1 sm:space-y-1 sm:overflow-y-auto sm:overflow-x-hidden sm:pb-2 eterx-scrollbar">
-                  {tabs.map(tab => (
-                    <button
-                      key={tab.id}
-                      data-active={activeTab === tab.id}
-                      onClick={() => { setManualOpen(false); setActiveTab(tab.id); onTabChange?.(tab.id); }}
-                      className={`eterx-settings-tab flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
-                        ? 'bg-[#313131] text-[#F5F5F5]'
-                        : 'text-[#F0F0F0] hover:bg-white/[0.045]'
-                        }`}
-                    >
-                      <span className="grid h-5 w-5 shrink-0 place-items-center text-current">
-                        <tab.icon className="h-4 w-4" strokeWidth={1.9} />
-                      </span>
-                      <span className="min-w-0 truncate leading-5">{tab.label}</span>
-                    </button>
-                  ))}
-                </nav>
+                <div className="eterx-settings-nav-frame relative flex min-h-0 sm:flex-1">
+                  <nav ref={settingsNavRef} className="eterx-scrollbar flex w-full min-w-0 gap-1 overflow-x-auto px-2 pb-2 pt-1.5 sm:block sm:space-y-1 sm:overflow-y-auto sm:overflow-x-hidden sm:pt-2">
+                    {SETTINGS_TABS.map(tab => (
+                      <button
+                        key={tab.id}
+                        data-active={activeTab === tab.id}
+                        onClick={() => {
+                          setManualOpen(false);
+                          setSearchDestination(null);
+                          setActiveTab(tab.id);
+                          onTabChange?.(tab.id);
+                        }}
+                        className={`eterx-settings-tab flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
+                          ? 'bg-[#313131] text-[#F5F5F5]'
+                          : 'text-[#F0F0F0] hover:bg-white/[0.045]'
+                          }`}
+                      >
+                        <span className="grid h-5 w-5 shrink-0 place-items-center text-current">
+                          <tab.icon className="h-4 w-4" strokeWidth={1.9} />
+                        </span>
+                        <span className="min-w-0 truncate leading-5">{tab.label}</span>
+                      </button>
+                    ))}
+                  </nav>
+                </div>
               </div>
 
               {/* ─── Content ─── */}
               <div className="relative z-20 flex-1 flex flex-col min-w-0 overflow-hidden border-l border-t border-white/[0.08] bg-[#151515]">
-                {/* Header */}
-                <div className="h-11 shrink-0 border-b border-white/[0.075] bg-[#151515]" />
+                <SettingsSearch tabs={SETTINGS_TABS} activeTab={activeTab} onSelect={openSearchResult} />
 
                 {/* Scrollable Body */}
-                <div className={`flex-1 eterx-scrollbar px-6 ${activeTab === 'tokens' ? 'overflow-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
+                <div ref={settingsBodyRef} className={`${searchStyles.body} min-h-0 flex-1 eterx-scrollbar px-6 ${activeTab === 'tokens' ? 'overflow-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
                   <div className={`mx-auto w-full ${manualOpen || activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : activeTab === 'agents' ? 'max-w-[860px]' : 'max-w-[560px]'} pb-8`}>
                       <div className="mb-6 flex items-center justify-between gap-4">
-                        <h3 className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">
-                          {manualOpen ? 'User manual' : tabs.find(t => t.id === activeTab)?.label}
+                        <h3 data-settings-search-target={SETTINGS_TAB_HEADING} tabIndex={-1} className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">
+                          {manualOpen ? 'User manual' : SETTINGS_TABS.find(t => t.id === activeTab)?.label}
                           {activeTab === 'models' && (
                             <span className="ml-2 text-[11px] font-normal tracking-normal text-[#8E8A84]">
                               (For fetching models, please add at least one API key for that provider.)
                             </span>
                           )}
                         </h3>
-                        {activeTab === 'tokens' && <div className="flex items-center gap-3"><span className="text-[12px] text-[#999]">Show token count</span><Toggle enabled={settings.showTokenCount} onChange={value => updateSetting('showTokenCount', value)} /></div>}
+                        {activeTab === 'tokens' && <div data-settings-search-target="token-count" tabIndex={-1} className="flex items-center gap-3"><span className="text-[12px] text-[#999]">Show token count</span><Toggle enabled={settings.showTokenCount} onChange={value => updateSetting('showTokenCount', value)} /></div>}
                       </div>
 
                       {/* ═══ GENERAL TAB ═══ */}
@@ -4526,7 +4481,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         <div>
                           <SectionHeader title="Work mode" />
                           <p className="-mt-2 mb-5 text-[14px] text-[#A5A5A5]">Choose how EterX-Agent should shape responses for your work.</p>
-                          <div className="mb-12 grid gap-4 md:grid-cols-2">
+                          <div data-settings-search-target="work-mode" tabIndex={-1} className="mb-12 grid gap-4 md:grid-cols-2">
                             {[
                               { id: 'everyday' as const, title: 'General', description: 'Direct user-to-agent workflows for planning, writing, and routine tasks.', icon: SquareCheck },
                               { id: 'specialist' as const, title: 'Autonomous', description: 'Proxy-agent takes responsibility and collaborates with the main agent to complete goals autonomously on your behalf.', icon: Sparkle },
@@ -4562,17 +4517,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="Permissions" />
                           <SettingsStack>
-                            <SettingsStackRow title="Default permissions" description="By default, EterX can read and edit files in its workspace. It can ask for additional access when needed." tall>
-                              <div className="flex items-center gap-3">
-                                <span className="eterx-settings-coming-soon text-[12.5px] font-medium text-white/40 select-none">Coming Soon...</span>
-                                <Toggle enabled={defaultPermsActive} onChange={handleToggleDefaultPerms} />
-                              </div>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Full access" description="When EterX runs with full access, it can edit any file on your computer and run commands with network access." tall>
-                              <div className="flex items-center gap-3">
-                                <span className="eterx-settings-coming-soon text-[12.5px] font-medium text-white/40 select-none">Coming Soon...</span>
-                                <Toggle enabled={fullAccessActive} onChange={handleToggleFullAccess} />
-                              </div>
+                            <SettingsStackRow title="Always full access" description="Use Full access for new requests and hide the permission selector in the message bar.">
+                              <Toggle label="Always full access" enabled={settings.alwaysFullAccess} onChange={value => updateSetting('alwaysFullAccess', value)} />
                             </SettingsStackRow>
                           </SettingsStack>
 
@@ -4713,7 +4659,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         </div>
                       )}
 
-                      {activeTab === 'agents' && <AgentToolsSettings />}
+                      {activeTab === 'agents' && (
+                        <div data-settings-search-target="agent-tools" tabIndex={-1}><AgentToolsSettings /></div>
+                      )}
                       {activeTab === 'import' && <ImportSettings />}
 
                       {activeTab === 'appearance' && (
@@ -4809,6 +4757,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           />
                           <div className="rounded-xl border border-white/[0.09] bg-[#202020] p-4">
                             <textarea
+                              data-settings-search-target="compaction-instructions"
+                              aria-label="Context compaction instructions"
                               value={settings.contextCompactionInstructions}
                               onChange={event => updateSetting('contextCompactionInstructions', event.target.value.slice(0, 12000))}
                               placeholder="Add details the context compactor should preserve or emphasize..."
@@ -4825,7 +4775,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             title="Per-chat context"
                             info="Overrides are stored by exact chat ID. Selecting a larger budget here never changes any other chat."
                           />
-                          <div className="rounded-xl border border-white/[0.09] bg-[#202020] p-4">
+                          <div data-settings-search-target="chat-context" tabIndex={-1} className="rounded-xl border border-white/[0.09] bg-[#202020] p-4">
                             {contextChats.length > 0 ? (
                               <div className="space-y-4">
                                 <div>
@@ -4903,10 +4853,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             name={settings.userName || ''}
                             onNameChange={value => updateSetting('userName', value)}
                             stats={tokenStats}
-                            loading={tokenStatsLoading}
-                            error={tokenStatsError}
+                            loading={tokenUsageStatus.profile === 'loading'}
+                            error={tokenUsageStatus.profile === 'error' ? 'Unable to load activity. Retrying automatically…'
+                              : tokenUsageStatus.profile === 'refresh-error' ? 'Unable to refresh. Showing the last loaded activity.' : ''}
                           /> : (() => {
+                              const loading = tokenUsageStatus.tokens === 'loading';
+                              const loadFailed = tokenUsageStatus.tokens === 'error';
                               const selected = tokenChats.find(chat => chat.id === selectedTokenChatId) || tokenChats[0];
+                              const listClassName = `min-h-0 flex-1 pr-1 ${loading ? 'overflow-hidden' : 'overflow-y-auto eterx-scrollbar'}`;
                               const hoverChat = (
                                 event: React.MouseEvent,
                                 value: number,
@@ -4929,11 +4883,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 x: event.clientX,
                                 y: event.clientY,
                               });
-                              return <><div className="mt-4 flex h-[calc(100vh-230px)] min-h-[340px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
-                                <div className="flex min-h-0 flex-1 flex-col border-b border-white/[0.08] p-2">
+                              return <>
+                              <span className="sr-only" role="status">{loading ? 'Loading token usage…' : ''}</span>
+                              <div aria-busy={loading} className="mt-4 flex h-[calc(100vh-230px)] min-h-[340px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
+                                <div data-settings-search-target="chat-token-usage" tabIndex={-1} className="flex min-h-0 flex-1 flex-col border-b border-white/[0.08] p-2">
                                   <div className="px-3 py-2 text-[11px] font-medium tracking-[0.02em] text-[#777]">All chats</div>
-                                  <div className="min-h-0 flex-1 overflow-y-auto eterx-scrollbar pr-1">
-                                    {tokenChats.length > 0 ? tokenChats.map(chat => (
+                                  <div className={listClassName}>
+                                    {loading ? <TokenUsageRowsSkeleton showCounts={settings.showTokenCount} />
+                                      : loadFailed ? <div role="status" className="px-3 py-8 text-center text-[13px] text-[#777]">Unable to load token usage. Retrying automatically…</div>
+                                      : tokenChats.length > 0 ? tokenChats.map(chat => (
                                       <button key={chat.id} type="button" onClick={event => { setSelectedTokenChatId(chat.id); hoverChat(event, chat.totalTokens, chat.recentRunUsage, chat.model, new Date(chat.updatedAt || Date.now()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), { scope: 'chat', promptTokens: chat.promptTokens, cachedTokens: chat.cachedTokens, uncachedPromptTokens: chat.uncachedPromptTokens, outputTokens: chat.outputTokens }); }} onMouseEnter={event => hoverChat(event, chat.totalTokens, chat.recentRunUsage, chat.model, new Date(chat.updatedAt || Date.now()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), { scope: 'chat', promptTokens: chat.promptTokens, cachedTokens: chat.cachedTokens, uncachedPromptTokens: chat.uncachedPromptTokens, outputTokens: chat.outputTokens })} onMouseLeave={() => setHoveredToken(null)} className={`mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${selectedTokenChatId === chat.id ? 'bg-white/[0.10]' : 'hover:bg-white/[0.055]'}`}>
                                         <span className="min-w-0 truncate text-[13px] text-[#E8E8E8]">{chat.title}</span>
                                         {settings.showTokenCount && <span className="shrink-0 inline-flex items-center gap-2 text-[11px] text-[#888]" title="Provider-reported input and output tokens"><span>Input {formatTokenMetric(chat.promptTokens)}</span><span className="text-[#555]" aria-hidden="true">|</span><span>Output {formatTokenMetric(chat.outputTokens)}</span></span>}
@@ -4941,10 +4899,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     )) : <div className="px-3 py-8 text-center text-[13px] text-[#777]">No saved chats yet.</div>}
                                   </div>
                                 </div>
-                                <div className="flex min-h-0 flex-1 flex-col p-2">
-                                  <div className="flex items-center justify-between px-3 py-2"><span className="text-[11px] font-medium tracking-[0.02em] text-[#777]">Action usage</span><span className="max-w-[55%] truncate text-[12px] text-[#888]">{selected?.title || 'Choose a chat'}</span></div>
-                                  <div className="min-h-0 flex-1 overflow-y-auto eterx-scrollbar pr-1">
-                                    {selected?.actions?.length ? selected.actions.slice().reverse().map(action => (
+                                <div data-settings-search-target="action-token-usage" tabIndex={-1} className="flex min-h-0 flex-1 flex-col p-2">
+                                  <div className="flex min-h-[34px] items-center justify-between px-3 py-2"><span className="text-[11px] font-medium tracking-[0.02em] text-[#777]">Action usage</span>{!loading && !loadFailed && <span className="max-w-[55%] truncate text-[12px] text-[#888]">{selected?.title || 'Choose a chat'}</span>}</div>
+                                  <div className={listClassName}>
+                                    {loading ? <TokenUsageRowsSkeleton actions showCounts={settings.showTokenCount} />
+                                      : loadFailed ? null
+                                      : selected?.actions?.length ? selected.actions.slice().reverse().map(action => (
                                       <button key={action.id} type="button" onClick={event => hoverChat(event, action.tokens, action.tokens, action.model, action.label, { scope: 'action', promptTokens: action.promptTokens, cachedTokens: action.cachedTokens, uncachedPromptTokens: action.uncachedPromptTokens, outputTokens: action.outputTokens })} onMouseEnter={event => hoverChat(event, action.tokens, action.tokens, action.model, action.label, { scope: 'action', promptTokens: action.promptTokens, cachedTokens: action.cachedTokens, uncachedPromptTokens: action.uncachedPromptTokens, outputTokens: action.outputTokens })} onMouseLeave={() => setHoveredToken(null)} className="mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-white/[0.055]">
                                         <span className="min-w-0 truncate"><span className="mr-2 normal-case text-[10px] tracking-[0.04em] text-[#666]">{action.kind.charAt(0).toUpperCase() + action.kind.slice(1).toLowerCase()}</span><span className="text-[13px] text-[#D8D8D8]">{action.label}</span></span>
                                         {settings.showTokenCount && <span className="shrink-0 inline-flex items-center gap-2 text-[11px] text-[#888]" title="Provider-reported input and output tokens"><span>Input {formatTokenMetric(action.promptTokens)}</span><span className="text-[#555]" aria-hidden="true">|</span><span>Output {formatTokenMetric(action.outputTokens)}</span></span>}
@@ -4953,7 +4913,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   </div>
                                 </div>
                               </div>
-                              {hoveredToken?.model && <div role="tooltip" className="pointer-events-none fixed z-[10000] w-max max-w-[240px] rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-[12px] text-[var(--foreground)]" style={{ left: Math.max(8, Math.min(hoveredToken.x + 10, window.innerWidth - 256)), top: Math.max(8, hoveredToken.y - 180) }}>
+                              {!loading && !loadFailed && hoveredToken?.model && <div role="tooltip" className="pointer-events-none fixed z-[10000] w-max max-w-[240px] rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-[12px] text-[var(--foreground)]" style={{ left: Math.max(8, Math.min(hoveredToken.x + 10, window.innerWidth - 256)), top: Math.max(8, hoveredToken.y - 180) }}>
                                 <div className="space-y-1">
                                   <div className="flex justify-between gap-6"><span>Processed</span><strong>{formatTokenMetric(hoveredToken.value)}</strong></div>
                                   {hoveredToken.scope !== 'action' && <div className="flex justify-between gap-6"><span>Recent run</span><strong>{formatTokenMetric(hoveredToken.recentRunUsage || 0)}</strong></div>}
@@ -5111,6 +5071,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               </div>
                             </SettingsStackRow>
                             <SettingsStackRow
+                              searchTarget="exact-model"
                               title={selectedConnectionProvider === 'openrouter' ? 'Exact OpenRouter model' : selectedConnectionProvider === 'groq' ? 'Exact Groq model' : 'Exact model ID'}
                               description={selectedConnectionProvider === 'openrouter'
                                 ? 'Paste any OpenRouter slug, for example openai/gpt-5.5 or anthropic/claude-opus-4.8.'
@@ -5452,14 +5413,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               description="Control live microphone input capture and speaker output."
                             >
                               <div className="flex items-center gap-6">
-                                <label className="flex items-center gap-2 text-[13px] text-[#E0E0E0] cursor-pointer">
+                                <label data-settings-search-target="mic-input" tabIndex={-1} className="flex items-center gap-2 text-[13px] text-[#E0E0E0] cursor-pointer">
                                   <Toggle
                                     enabled={settings.liveConvoAudioInput ?? true}
                                     onChange={(v) => updateSetting('liveConvoAudioInput', v)}
                                   />
                                   Mic Input
                                 </label>
-                                <label className="flex items-center gap-2 text-[13px] text-[#E0E0E0] cursor-pointer">
+                                <label data-settings-search-target="speaker-output" tabIndex={-1} className="flex items-center gap-2 text-[13px] text-[#E0E0E0] cursor-pointer">
                                   <Toggle
                                     enabled={settings.liveConvoAudioOutput ?? true}
                                     onChange={(v) => updateSetting('liveConvoAudioOutput', v)}
@@ -5476,6 +5437,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             Custom system directives sent to the live API session to define how the live agent speaks and behaves during realtime interaction.
                           </p>
                           <textarea
+                            data-settings-search-target="live-instructions"
+                            aria-label="Live system instructions"
                             value={settings.liveConvoSystemInstruction || ''}
                             onChange={(e) => updateSetting('liveConvoSystemInstruction', e.target.value)}
                             placeholder="e.g. You are a fast, concise live voice coding assistant. Speak directly, avoid long intros, and answer code questions immediately."
@@ -5550,6 +5513,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <SectionHeader title="Custom instructions" />
                           <p className="-mt-2 mb-4 text-[14px] leading-relaxed text-[#A5A5A5]">Tell EterX more about you, your workflow preferences, and how you want it to behave.</p>
                           <textarea
+                            data-settings-search-target="personal-instructions"
+                            aria-label="Custom instructions"
                             value={settings.customInstructions || ''}
                             onChange={(event) => updateSetting('customInstructions', event.target.value)}
                             placeholder="Add your custom instructions..."
@@ -5642,7 +5607,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
 
                           <SettingsStack>
-                            <SettingsStackRow title="Primary provider" description="This external provider runs after enabled built-in search, or first when built-in search is off. Enabled fallbacks follow in order.">
+                            <SettingsStackRow title="Primary provider" searchTarget="search-provider" description="This external provider runs after enabled built-in search, or first when built-in search is off. Enabled fallbacks follow in order.">
                               <ModernSelect
                                 value={searchSettings.provider}
                                 onChange={(value) => {
@@ -5664,6 +5629,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </SettingsStackRow>
                             {(
                               <SettingsStackRow
+                                searchTarget="search-endpoint"
                                 title={selectedSearchMeta.requiresEndpoint ? 'Service URL' : 'Custom endpoint'}
                                 description={selectedSearchMeta.requiresEndpoint ? `Required for ${selectedSearchMeta.label}. Enter the base URL of the service instance.` : 'Only needed for a private relay or custom deployment.'}
                                 tall
@@ -5706,7 +5672,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 })}
                               </div>
                             </SettingsStackRow>
-                            <SettingsStackRow title="Provider credentials" description={selectedSearchMeta.credentialDescription || (selectedSearchMeta.requiresKey ? `Up to three ${selectedSearchMeta.label} keys. Keys are tried in order and rotate after a successful request.` : 'This provider does not require a credential.')} tall>
+                            <SettingsStackRow title="Provider credentials" searchTarget="search-credentials" description={selectedSearchMeta.credentialDescription || (selectedSearchMeta.requiresKey ? `Up to three ${selectedSearchMeta.label} keys. Keys are tried in order and rotate after a successful request.` : 'This provider does not require a credential.')} tall>
                               {selectedSearchMeta.requiresKey || searchSettings.provider === 'firecrawl_selfhosted' ? (
                                 <ApiKeyPoolEditor
                                   key={`search-${searchSettings.provider}`}
@@ -5725,7 +5691,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-emerald-300/10 text-emerald-300"><Check className="h-4 w-4" /></div>
                                     <div className="min-w-0"><div className="text-[12px] font-medium text-[#E5E5E5]">No API key required</div><div className="mt-0.5 truncate text-[11px] text-[#777]">The endpoint and live response are the connection check.</div></div>
                                   </div>
-                                  <button type="button" onClick={() => void testSearchConnection(searchSettings.provider)} disabled={searchProbe.provider === searchSettings.provider && searchProbe.status === 'testing'} className="shrink-0 rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{searchProbe.provider === searchSettings.provider && searchProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
+                                  <button type="button" data-settings-search-target="test-search-connection" onClick={() => void testSearchConnection(searchSettings.provider)} disabled={searchProbe.provider === searchSettings.provider && searchProbe.status === 'testing'} className="shrink-0 rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{searchProbe.provider === searchSettings.provider && searchProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
                                 </div>
                               )}
                             </SettingsStackRow>
@@ -5760,7 +5726,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <span>Keys: <span className="font-medium text-[#D7D7D7]">{(imageSettings.apiKeys[imageSettings.provider] || []).length}/3</span></span>
                           </div>
                           <SettingsStack>
-                            <SettingsStackRow title="Primary provider" description="The first real image request uses this provider and its selected model.">
+                            <SettingsStackRow title="Primary provider" searchTarget="image-provider" description="The first real image request uses this provider and its selected model.">
                               <ModernSelect
                                 value={imageSettings.provider}
                                 onChange={value => {
@@ -5780,7 +5746,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 }))}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Model" description="Choose a suggested model or enter the exact model ID available to your account.">
+                            <SettingsStackRow title="Model" searchTarget="image-model" description="Choose a suggested model or enter the exact model ID available to your account.">
                               <div className="flex w-full flex-col gap-2">
                               <ModernSelect
                                 value={selectedImageModel}
@@ -5797,7 +5763,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               />
                               </div>
                             </SettingsStackRow>
-                            <SettingsStackRow title="Custom endpoint" description="Optional base URL for your provider account or private relay." tall>
+                            <SettingsStackRow title="Custom endpoint" searchTarget="image-endpoint" description="Optional base URL for your provider account or private relay." tall>
                               <input
                                 aria-label="Image service endpoint"
                                 value={imageSettings.baseURLs[imageSettings.provider] || ''}
@@ -5813,7 +5779,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               {selectedImageMeta.supportsAspectRatio && <span className="rounded-full border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-[#BDBDBD]">{IMAGE_CAPABILITY_LABELS.ratio}</span>}
                               <span className="rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-emerald-200">Provider-native</span>
                             </div>
-                            <SettingsStackRow title="Provider credentials" description={`Up to three ${selectedImageMeta.authLabel} values. An empty pool uses a matching model-provider key when available, then environment credentials. Keys rotate after success.`} tall>
+                            <SettingsStackRow title="Provider credentials" searchTarget="image-credentials" description={`Up to three ${selectedImageMeta.authLabel} values. An empty pool uses a matching model-provider key when available, then environment credentials. Keys rotate after success.`} tall>
                               <ApiKeyPoolEditor
                                 key={`image-${imageSettings.provider}`}
                                 provider={imageSettings.provider}
@@ -5827,7 +5793,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               />
                             </SettingsStackRow>
                           </SettingsStack>
-                          <div className="mt-3 overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
+                          <div data-settings-search-target="image-fallbacks" tabIndex={-1} className="mt-3 overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
                             {IMAGE_PROVIDER_IDS.filter(provider => provider !== imageSettings.provider).map(provider => {
                               const enabled = imageSettings.fallbackProviders.includes(provider);
                               const order = imageSettings.fallbackProviders.indexOf(provider);
@@ -5843,7 +5809,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             })}
                           </div>
                           <div className="mt-3 flex justify-end">
-                            <button type="button" onClick={() => void testImageConnection(imageSettings.provider)} disabled={imageProbe.provider === imageSettings.provider && imageProbe.status === 'testing'} className="rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{imageProbe.provider === imageSettings.provider && imageProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
+                            <button type="button" data-settings-search-target="test-image-connection" onClick={() => void testImageConnection(imageSettings.provider)} disabled={imageProbe.provider === imageSettings.provider && imageProbe.status === 'testing'} className="rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{imageProbe.provider === imageSettings.provider && imageProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
                           </div>
                           {imageProbe.message && imageProbe.provider === imageSettings.provider && <div className={`mt-3 rounded-xl border px-4 py-3 text-[12px] leading-5 ${imageProbe.status === 'success' ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : imageProbe.status === 'failed' ? 'border-red-400/20 bg-red-400/[0.06] text-red-200' : 'border-white/[0.08] bg-white/[0.03] text-[#B8B8B8]'}`}>{imageProbe.message}</div>}
 
@@ -5859,7 +5825,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <span>Keys: <span className="font-medium text-[#D7D7D7]">{(videoSettings.apiKeys[videoSettings.provider] || []).length}/3</span></span>
                           </div>
                           <SettingsStack>
-                            <SettingsStackRow title="Primary provider" description="The first video request uses this provider and its selected model.">
+                            <SettingsStackRow title="Primary provider" searchTarget="video-provider" description="The first video request uses this provider and its selected model.">
                               <ModernSelect
                                 value={videoSettings.provider}
                                 onChange={value => {
@@ -5871,7 +5837,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 options={VIDEO_PROVIDER_IDS.map(provider => ({ value: provider, label: VIDEO_PROVIDER_META[provider].label, description: VIDEO_PROVIDER_META[provider].description }))}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Custom endpoint" description="Optional base URL for your provider account or private relay." tall>
+                            <SettingsStackRow title="Custom endpoint" searchTarget="video-endpoint" description="Optional base URL for your provider account or private relay." tall>
                               <input
                                 aria-label="Video service endpoint"
                                 value={videoSettings.baseURLs[videoSettings.provider] || ''}
@@ -5880,7 +5846,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 className="h-10 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden focus:border-sky-300/35"
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Model" description="Choose a suggested model or enter an exact current model ID for FAL and Replicate catalogs.">
+                            <SettingsStackRow title="Model" searchTarget="video-model" description="Choose a suggested model or enter an exact current model ID for FAL and Replicate catalogs.">
                               <div className="flex w-full flex-col gap-2">
                                 <ModernSelect
                                   value={selectedVideoModel}
@@ -5903,7 +5869,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               {selectedVideoMeta.supportsAudioOutput && <span className="rounded-full border border-sky-300/15 bg-sky-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-sky-200">Synced audio</span>}
                               <span className="rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-emerald-200">Provider-native</span>
                             </div>
-                            <SettingsStackRow title="Provider credentials" description={`Up to three ${selectedVideoMeta.authLabel} values. An empty pool uses a matching model-provider key when available, then environment credentials. Keys rotate after success.`} tall>
+                            <SettingsStackRow title="Provider credentials" searchTarget="video-credentials" description={`Up to three ${selectedVideoMeta.authLabel} values. An empty pool uses a matching model-provider key when available, then environment credentials. Keys rotate after success.`} tall>
                               <ApiKeyPoolEditor
                                 key={`video-${videoSettings.provider}`}
                                 provider={videoSettings.provider}
@@ -5917,7 +5883,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               />
                             </SettingsStackRow>
                           </SettingsStack>
-                          <div className="mt-3 overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
+                          <div data-settings-search-target="video-fallbacks" tabIndex={-1} className="mt-3 overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
                             {VIDEO_PROVIDER_IDS.filter(provider => provider !== videoSettings.provider).map(provider => {
                               const enabled = videoSettings.fallbackProviders.includes(provider);
                               const order = videoSettings.fallbackProviders.indexOf(provider);
@@ -5933,7 +5899,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             })}
                           </div>
                           <div className="mt-3 flex justify-end">
-                            <button type="button" onClick={() => void testVideoConnection(videoSettings.provider)} disabled={videoProbe.provider === videoSettings.provider && videoProbe.status === 'testing'} className="rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{videoProbe.provider === videoSettings.provider && videoProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
+                            <button type="button" data-settings-search-target="test-video-connection" onClick={() => void testVideoConnection(videoSettings.provider)} disabled={videoProbe.provider === videoSettings.provider && videoProbe.status === 'testing'} className="rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{videoProbe.provider === videoSettings.provider && videoProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
                           </div>
                           {videoProbe.message && videoProbe.provider === videoSettings.provider && <div className={`mt-3 rounded-xl border px-4 py-3 text-[12px] leading-5 ${videoProbe.status === 'success' ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : videoProbe.status === 'failed' ? 'border-red-400/20 bg-red-400/[0.06] text-red-200' : 'border-white/[0.08] bg-white/[0.03] text-[#B8B8B8]'}`}>{videoProbe.message}</div>}
 
@@ -6145,7 +6111,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             )}
                           </div>
 
-                          <div className="flex flex-wrap gap-3">
+                            <div data-settings-search-target="update-actions" tabIndex={-1} className="flex flex-wrap gap-3">
                             {updateState.status === 'installing' ? (
                               <SoftButton disabled>Restarting to update...</SoftButton>
                             ) : updateState.status === 'ready' || (
@@ -6205,7 +6171,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <p className="mt-2 text-[11px] text-[#555]">Next automatic check around {new Date(updateState.nextCheckAt).toLocaleTimeString()}</p>
                           )}
                           </div>
-                          <UpdateWhatsNew state={updateState} />
+                          <div data-settings-search-target="release-notes" tabIndex={-1}><UpdateWhatsNew state={updateState} /></div>
                         </div>
                       )}
 

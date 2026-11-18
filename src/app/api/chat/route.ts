@@ -32,6 +32,7 @@ import { isModelProvider } from '../../../lib/agent/model-selector-store';
 import { resolveChatMediaForRequest } from '../../../lib/chat-media-store';
 import { formatUnknownError } from '../../../lib/agent/error-format';
 import { getCodingMode } from '../../../lib/code/coding-modes';
+import { isChatPermissionMode, normalizeChatPermissionMode } from '../../../lib/chat-permissions';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
       pinnedContext = null, 
       userName = 'Developer',
       runLocation = 'local',
+      permissionMode,
       customAgentId = null,
       customAgentName = null,
       runId,
@@ -94,6 +96,9 @@ export async function POST(req: NextRequest) {
     const ownerError = requireChatOwner(chatId, session.sessionId);
     if (ownerError) {
       return attachAgentApiSessionCookie(ownerError, session);
+    }
+    if (permissionMode !== undefined && !isChatPermissionMode(permissionMode)) {
+      return attachAgentApiSessionCookie(jsonError('Invalid chat permission mode.', 400), session);
     }
 
     // Register the originals before the background run starts. Later turns in
@@ -154,6 +159,7 @@ export async function POST(req: NextRequest) {
       ...(safeModelThinkingCapability ? { modelThinkingCapability: safeModelThinkingCapability } : {}),
       ...(safeModelWireCapabilities.length > 0 ? { modelWireCapabilities: safeModelWireCapabilities } : {}),
       agentSessionId: session.sessionId,
+      permissionMode: normalizeChatPermissionMode(permissionMode),
       runLocation: typeof runLocation === 'string' ? runLocation : 'local',
     };
     if (codingMode) {

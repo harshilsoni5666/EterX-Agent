@@ -305,13 +305,17 @@ export function getModelThinkingOptions(
   provider: MainAgentProvider,
   modelName: string,
   discovered?: ModelThinkingCapabilities | null,
+  { includeLabelDetails = true }: { includeLabelDetails?: boolean } = {},
 ): ModelThinkingOption[] {
   const capability = resolveModelThinkingCapabilities(provider, modelName, discovered);
   if (!capability?.parameter) return [];
   return MAIN_AGENT_THINKING_LEVEL_OPTIONS.filter(option => capability.levels.includes(option.id)).flatMap(option => {
     const level = option.id;
-    if (capability.wireValues?.[level] === 'default') return [{ ...option, label: 'On (provider default)' }];
+    if (capability.wireValues?.[level] === 'default') {
+      return [{ ...option, label: includeLabelDetails ? 'On (provider default)' : 'On' }];
+    }
     if (capability.kind === 'toggle' || ['enable_thinking', 'thinking.type', 'reasoning.enabled', 'chat_template_kwargs.enable_thinking', 'chat_template_kwargs.thinking'].includes(capability.parameter!)) return [{ ...option, label: level === 'off' ? 'Off' : 'On' }];
+    if (!includeLabelDetails) return [option];
     if (capability.parameter === 'thinkingBudget' && level !== 'off') {
       const budget = level === 'low' ? 1024 : level === 'high' ? 24576 : 8192;
       return [{ ...option, label: `${option.label} (${budget.toLocaleString('en-US')} tokens)` }];

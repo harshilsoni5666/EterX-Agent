@@ -1,5 +1,5 @@
 import { isRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
-import { splitComputerToolResult } from './computer/tool-vision';
+import { desktopTraceOutcome, splitComputerToolResult } from './computer/tool-vision';
 import { randomUUID as desktopRunUUID } from 'crypto';
 import { isRuntimeSwarmMode } from './swarm-mode';
 import { swarmCoordinator, SWARM_LIMITS, SWARM_MODE_INSTRUCTION } from './swarm-coordinator';
@@ -87,6 +87,7 @@ import { CONTEXT_CONTINUITY_OPERATING_POLICY } from './context-operating-policy'
 import { WORKSPACE_EDIT_POLICY } from './workspace-edit-contract';
 import { monitorEmitter } from './monitor/emitter';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
+import { requestToolApproval } from './tool-approval-runtime';
 import { settleAutonomousCompletion } from './autonomy/user-proxy-runtime';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 
@@ -2702,6 +2703,7 @@ ${ message.text }
       const actionEndedAt = Date.now();
       const settledEvent = {
         ...publishedActionEvent,
+        ...desktopTraceOutcome(canonicalToolName, output),
         toolArgs: effectiveArgs,
         status: cancelled ? 'stopped' : failed ? 'failed' : 'completed',
         isLive: false,
@@ -2763,6 +2765,8 @@ ${ message.text }
     if (!capabilityDecision.allowed) {
       return recordRejectedTool({ error: capabilityDecision.reason || `Tool ${ canonicalToolName } is not allowed` });
     }
+    const blockedTool = await requestToolApproval(canonicalToolName, effectiveArgs, context);
+    if (blockedTool) return recordRejectedTool(blockedTool);
 
     const admittedTraceFields = buildToolTraceFields(canonicalToolName, effectiveArgs, label);
     publishedActionEvent = {
@@ -8390,7 +8394,7 @@ OUTPUT CONTRACT
           toolArgs: effectiveArgs,
         };
 
-        const actionAdmitted = !(
+        const toolEligible = !(
           (plannerToolsDisabled && plannerHiddenTools.has(call.name))
           || ((context as any).disableSubAgents && call.name === 'spawn_sub_agent')
           || preflightError
@@ -8398,6 +8402,8 @@ OUTPUT CONTRACT
           || (governorDecision && !governorDecision.allowed)
           || !executeTool
         );
+        const blockedTool = toolEligible ? await requestToolApproval(canonicalToolName, effectiveArgs, context) : null;
+        const actionAdmitted = toolEligible && !blockedTool;
 
         // Plan-control tools emit a tracker-backed lifecycle from inside the
         // tool. It is the only user-visible identity for that operation.
@@ -8425,6 +8431,7 @@ OUTPUT CONTRACT
           const actionEndedAt = Date.now();
           const settledEvent = {
             ...admittedActionEvent,
+            ...desktopTraceOutcome(canonicalToolName, rawOutput),
             toolArgs: effectiveArgs,
             status: cancelled ? 'stopped' : failed ? 'failed' : 'completed',
             isLive: false,
@@ -8494,6 +8501,8 @@ OUTPUT CONTRACT
             error: `EXECUTION_GOVERNOR: ${ governorDecision.reason || 'This repeated action is blocked.' }`,
             recovery: governorDecision.recovery,
           };
+        } else if (blockedTool) {
+          toolOutput = blockedTool;
         } else if (executeTool) {
           // === INTELLIGENT CACHE: Check for cached result first ===
           const cacheScope = this.getToolCacheScope(context);

@@ -38,14 +38,14 @@ export type CuaActionResult = {
   actionStatus?: 'not_sent' | 'sent' | 'unknown';
 };
 
-const PROVIDER = 'Cua Driver (background desktop control)';
+const PROVIDER = 'Cua Driver (native desktop)';
 const STATUS_TTL_MS = 15_000;
 let statusCache: { expiresAt: number; value: CuaDriverStatus } | null = null;
 let statusPromise: Promise<CuaDriverStatus> | null = null;
 let daemonPromise: Promise<CuaDriverStatus> | null = null;
 let daemonCache: { expiresAt: number; value: CuaDriverStatus } | null = null;
 
-function driverCommand(): string {
+export function driverCommand(): string {
   const configured = String(process.env.ETERX_CUA_DRIVER_CMD || '').trim();
   if (configured) return configured;
 

@@ -71,6 +71,7 @@ import {
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
+import { requestToolApproval } from './tool-approval-runtime';
 import { executeParallelToolCalls } from './parallel-tool-calls';
 import { buildFilePreviewTraceId, buildLineDiffPreview, languageFromFilename } from './tool-trace';
 import { compactContextAtBoundary, isContextCapacityError } from './resilience/context-compaction';
@@ -1919,6 +1920,9 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         return { error: capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed` };
       }
     }
+
+    const blockedTool = await requestToolApproval(canonicalToolName, effectiveArgs, context);
+    if (blockedTool) return blockedTool;
 
     const editTargets = canonicalToolName === 'workspace_edit_file'
       ? (Array.isArray(effectiveArgs?.files) ? effectiveArgs.files : effectiveArgs?.filename ? [effectiveArgs] : [])

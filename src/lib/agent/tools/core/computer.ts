@@ -15,7 +15,8 @@ import { formatUnknownError } from '../../error-format';
 
 async function executePortableComputerAction(action: string, input: any, ctx: any, chatId?: string) {
   const { screenAgentTool } = await import('./screen_agent');
-  const appName = String(input.app || (['type_into', 'read_text', 'click_in'].includes(action) ? '' : input.text) || '').trim();
+  const acceptsAppText = ['find_app', 'connect', 'launch_app', 'focus_app', 'see_window', 'get_controls'].includes(action);
+  const appName = String(input.app || (acceptsAppText ? input.text : '') || '').trim();
   const invoke = (screenAction: string, extra: Record<string, any> = {}) => (
     screenAgentTool as any
   ).execute({ ...input, app: appName || undefined, ...extra, action: screenAction, chatId }, ctx);
@@ -47,24 +48,25 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
     const needle = appName.toLowerCase();
     if (!listed.success) return { ...listed, action };
     if (!needle) return { success: false, action, result: 'An app name or window title is required.' };
-    const matches = apps.filter((app: any) => JSON.stringify(app).toLowerCase().includes(needle));
+    const matches = apps.filter((app: any) => [app.app_name, app.title].some(value => String(value || '').toLowerCase().includes(needle)));
     return matches.length
-      ? { success: true, action, result: matches.length === 1 ? matches[0] : { matches, next: 'Select an exact pid and window_id.' } }
-      : { success: false, action, result: `App not found: "${appName}"` };
+      ? { ...listed, action, result: matches.length === 1 ? matches[0] : { matches, next: 'Select an exact pid and window_id.' } }
+      : { ...listed, success: false, action, error: `No open window matches "${appName}".`, result: [] };
   }
 
   if (action === 'connect') {
     if (!appName) return { success: false, action, result: 'An app name or window title is required.' };
     const listed = await invoke('list_apps');
     if (!listed.success) return { ...listed, action };
-    const exists = Array.isArray(listed.result) && listed.result.some((app: any) => JSON.stringify(app).toLowerCase().includes(appName.toLowerCase()));
+    const exists = Array.isArray(listed.result) && listed.result.length > 0;
     const connected = exists ? await invoke('see', { scope: 'window' }) : await invoke('launch_app', { text: appName });
     if (connected.success) monitorEmitter.appConnected(appName, undefined, appName, chatId);
     return { ...connected, action };
   }
 
   if (action === 'type_into' || action === 'click_in') {
-    const control = String(input.control || input.filter || (action === 'click_in' ? input.text : '') || '').trim();
+    const hasPoint = input.x != null || input.y != null;
+    const control = String(input.control || input.filter || (action === 'click_in' && !hasPoint ? input.text : '') || '').trim();
     if (control && !input.element_token) {
       const found = await invoke('find', { query: control });
       if (!found.success) return { ...found, action };
@@ -99,13 +101,13 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
   };
   const mapped = screenAction[action];
   if (!mapped) return { success: false, action, result: `Action ${action} is not supported by the portable desktop provider.` };
-  return { ...(await invoke(mapped, { text: action === 'read_text' ? input.text : appName })), action };
+  return { ...(await invoke(mapped)), action };
 }
 
 export const computerTool: ToolDefinition = {
   name: 'computer',
   description: `Inspect and control native desktop apps on Windows, macOS and Linux when Computer Use is enabled for this task.
-Native control persists between actions. session_start or see begins the observe-act-observe loop, input returns an updated screenshot, and session_stop ends control when the desktop work is complete or you yield to the user. Task completion also closes the session. Desktop preview refreshes automatically while you decide; it does not invalidate your action tokens. Browser tools and sessions are separate.
+Native control persists between actions. session_start or see starts observation. Inspect the screenshot after each input and use session_stop when desktop work is complete or you yield to the user. Task completion also closes the session. The monitor receives each observation. Browser tools and sessions are separate.
 Start with list_apps, then see_window with a unique app/title or exact pid and window_id. The returned observation and screenshot refer to that window; selecting it does not raise it. focus_app explicitly raises it.
 get_controls returns accessibility labels, roles and element_token values. read_text reads the selected window. click_in and type_into accept a fresh element_token or a unique control name; ambiguous matches are returned for selection. Pixel input uses coordinates from the latest screenshot of that same target.
 connect selects an existing app window or requests an app launch. launch_app reports the actual launch state; a launch request alone does not prove a window is ready. In the desktop app, open_file opens an absolute file/folder/application path and open_url opens an HTTP(S) URL with its default app. Select and observe the resulting window before input. get_active reports the foreground window and selected target. see captures the selected target; scope=desktop explicitly returns to the desktop. stream_start/stream_stop control the preview; get_stats reports runtime information.
@@ -152,6 +154,8 @@ Desktop and browser access are separate settings. Use screen_agent for detailed 
     }).nullable().optional(),
     observation: z.record(z.string(), z.any()).optional(),
     observationError: z.string().optional(),
+    observationRequired: z.boolean().optional(),
+    desktopSession: z.record(z.string(), z.any()).optional(),
     provider: z.string().optional(),
     actionStatus: z.enum(['not_sent', 'sent', 'unknown']).optional(),
   }),

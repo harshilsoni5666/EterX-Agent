@@ -1,34 +1,36 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { setTimeout as delay } from 'timers/promises';
-import os from 'os';
 import path from 'path';
-import fs from 'fs-extra';
-import { cuaDriverProvider, ensureCuaDriverDaemon, runCua, type CuaActionResult } from './cua-driver';
-import { decodeCuaResponse, type CuaResponse } from './cua-response';
+import { cuaDriverProvider, ensureCuaDriverDaemon, type CuaActionResult } from './cua-driver';
+import { CuaConnection } from './cua-connection';
+import { CuaToolError, type CuaResponse } from './cua-response';
+import { MAX_DESKTOP_IMAGE_BASE64_LENGTH } from './tool-vision';
 import { getPlatformShortcut, normalizeShortcutForPlatform } from './platform-shortcuts';
 import { isComputerUseDisabled } from '../builtin-agent-tool-policy';
 
 type Target = { scope: 'desktop' } | { scope: 'window'; pid: number; window_id: number; app?: string; title?: string };
 type Vision = NonNullable<CuaActionResult['vision']>;
-type Frame = { vision: Vision | null; metadata: Record<string, any>; width?: number; height?: number };
+type Frame = { vision: Vision; metadata: Record<string, any>; width?: number; height?: number };
 type Session = {
   target: Target;
-  updatedAt: number;
   observation?: Record<string, any>;
   tokens: Set<string>;
   frameHash?: string;
-  started?: boolean;
-  previewStarted?: boolean;
+  connections: Map<string, CuaConnection>;
+  frameConnection?: CuaConnection;
 };
 type ActionOptions = {
   chatId?: string; signal?: AbortSignal; deadline?: number; maxElements?: number; maxImageDimension?: number;
+  preview?: boolean;
+  onDispatch?: () => void;
+  defaultTypingDelay?: boolean;
   openTarget?: (kind: 'url' | 'path', target: string) => Promise<unknown>;
 };
 
 // Desktop state is shared by OS processes. Serialize complete observe/action
 // transactions, including calls from different chats, and retain state per chat.
 const runtime = globalThis as typeof globalThis & {
-  __eterxCuaActions?: { tail: Promise<void>; sessions: Map<string, Session>; pending?: number; previewController?: AbortController };
+  __eterxCuaActions?: { tail: Promise<void>; sessions: Map<string, Session>; pending?: number };
 };
 const shared: NonNullable<typeof runtime.__eterxCuaActions> = runtime.__eterxCuaActions ||= { tail: Promise.resolve(), sessions: new Map() };
 
@@ -61,62 +63,106 @@ async function exclusive<T>(work: () => Promise<T>, signal?: AbortSignal): Promi
 }
 
 function sessionFor(chatId = ''): Session {
-  const now = Date.now();
-  for (const [id, state] of shared.sessions) {
-    if (now - state.updatedAt > 30 * 60_000) shared.sessions.delete(id);
-  }
   const existing = shared.sessions.get(chatId);
-  if (existing) { existing.updatedAt = now; return existing; }
-  if (shared.sessions.size >= 128) shared.sessions.delete(shared.sessions.keys().next().value!);
-  const state: Session = { target: { scope: 'desktop' }, updatedAt: now, tokens: new Set() };
+  if (existing) { existing.connections ||= new Map(); return existing; }
+  // The owning run closes its native sessions on stop, cancellation or exit.
+  // A paused preview or another active chat must not evict this selection.
+  const state: Session = { target: { scope: 'desktop' }, tokens: new Set(), connections: new Map() };
   shared.sessions.set(chatId, state);
   return state;
 }
 
-function sessionLabel(chatId = ''): string {
-  return `eterx-${createHash('sha256').update(chatId || 'desktop').digest('hex').slice(0, 20)}`;
+async function releaseSession(chatId: string) {
+  const state = shared.sessions.get(chatId);
+  shared.sessions.delete(chatId);
+  await Promise.allSettled(Array.from(state?.connections?.values() || [], connection => connection.close()));
 }
 
-async function callResponse(tool: string, input: Record<string, unknown>, options: ActionOptions, screenshotPath?: string, timeout = 15_000): Promise<CuaResponse> {
+const captureOptions = new Set(['max_image_dimension', 'include_screenshot', 'include_accessibility_tree',
+  'screenshot_format', 'display_only', 'tree_format', 'max_depth', 'max_elements', 'query']);
+
+async function callResponse(tool: string, input: Record<string, unknown>, options: ActionOptions, timeout = 15_000): Promise<CuaResponse> {
   options.signal?.throwIfAborted();
-  if (options.deadline != null) {
-    const remaining = options.deadline - Date.now();
+  const requestOptions = () => {
+    const remaining = options.deadline == null ? timeout : Math.min(timeout, options.deadline - Date.now());
     if (remaining <= 0) throw new Error('The desktop observation deadline expired.');
-    timeout = Math.min(timeout, remaining);
+    return { signal: options.signal, timeout: remaining };
+  };
+  const state = options.preview ? shared.sessions.get(options.chatId || '') : sessionFor(options.chatId);
+  if (!state) throw new Error('Native desktop session ended.');
+  const { target, ...args } = input;
+  const selected = target as { kind: 'desktop' | 'window'; pid?: number; window_id?: number } | undefined;
+  const scope = selected?.kind || (tool === 'get_cursor_position' || tool === 'get_desktop_state' ? 'desktop' : 'window');
+  const key = `${options.preview ? 'preview' : 'action'}-${scope}`;
+  let connection = state.connections.get(key);
+  if (!connection || connection.closed) {
+    const status = await ensureCuaDriverDaemon();
+    options.signal?.throwIfAborted();
+    if (!status.installed || !status.daemonRunning) throw new CuaToolError(status.message, true);
+    connection = await CuaConnection.open(`eterx-${randomUUID()}`, scope, requestOptions());
+    if (shared.sessions.get(options.chatId || '') !== state || options.signal?.aborted) {
+      await connection.close();
+      throw new Error('Native desktop session ended.');
+    }
+    state.connections.set(key, connection);
   }
-  const args = ['call', tool];
-  const nativeFileOutput = screenshotPath && (tool === 'get_window_state' || tool === 'get_desktop_state');
-  // Ask the capture tool to write its pixels. The CLI's output flag only
-  // extracts image content blocks, which older builds can discard while
-  // printing structured metadata. Native file output avoids that handoff.
-  if (screenshotPath && !nativeFileOutput) args.push('--screenshot-out-file', screenshotPath);
-  return decodeCuaResponse(await runCua(args, timeout, options.signal, JSON.stringify({
-    ...input, ...(nativeFileOutput ? { screenshot_out_file: screenshotPath } : {}), session: sessionLabel(options.chatId),
-  })));
+  if (selected && connection.supports(tool, 'target')) {
+    args.target = selected;
+  } else if (selected && (!args.element_token || connection.requires(tool, 'pid') || connection.requires(tool, 'window_id'))) {
+    if (scope === 'window' && connection.supports(tool, 'pid') && connection.supports(tool, 'window_id')) {
+      args.pid = selected.pid;
+      args.window_id = selected.window_id;
+    } else if (scope === 'desktop' && connection.supports(tool, 'scope')) args.scope = 'desktop';
+    else throw new CuaToolError(`This driver cannot address the selected ${scope} with ${tool}.`, true);
+  }
+  if (tool === 'launch_app' && typeof args.name === 'string') {
+    const name = args.name;
+    let field = 'name';
+    if (path.isAbsolute(name) && connection.supports(tool, 'path')) field = 'path';
+    else if (process.platform === 'win32' && /^[^!\s]+![^!\s]+$/.test(name) && connection.supports(tool, 'aumid')) field = 'aumid';
+    else if (process.platform === 'darwin' && /^[\w-]+(?:\.[\w-]+){2,}$/.test(name) && connection.supports(tool, 'bundle_id')) field = 'bundle_id';
+    if (field !== 'name') { delete args.name; args[field] = name; }
+  }
+  if (selected?.kind === 'desktop') {
+    if (args.delivery_mode === 'background') throw new CuaToolError('Desktop input addresses the foreground. Select a window for background delivery.', true);
+    if (connection.supports(tool, 'delivery_mode')) args.delivery_mode = 'foreground';
+    else delete args.delivery_mode; // A desktop-scoped action intrinsically targets the foreground.
+  } else if (!args.delivery_mode && connection.requires(tool, 'delivery_mode')) {
+    args.delivery_mode = 'background';
+  }
+  if (tool === 'get_window_state' || tool === 'get_desktop_state') {
+    for (const field of captureOptions) if (!connection.supports(tool, field)) delete args[field];
+  }
+  if (!connection.supports(tool, 'capture_id')) delete args.capture_id;
+  if (options.defaultTypingDelay && !connection.supports(tool, 'delay_ms')) delete args.delay_ms;
+  for (const field of Object.keys(args)) {
+    if (!connection.supports(tool, field)) throw new CuaToolError(`The installed driver's ${tool} tool does not support ${field} for this target.`, true);
+  }
+  return connection.call(tool, args, requestOptions(), options.onDispatch);
 }
 
-async function call(tool: string, input: Record<string, unknown>, options: ActionOptions, screenshotPath?: string, timeout = 15_000) {
-  return (await callResponse(tool, input, options, screenshotPath, timeout)).value;
+async function call(tool: string, input: Record<string, unknown>, options: ActionOptions, timeout = 15_000) {
+  return (await callResponse(tool, input, options, timeout)).value;
 }
 
-async function readFrame(reply: CuaResponse, imagePath: string): Promise<Frame> {
-  let bytes: Buffer;
-  try { bytes = await fs.readFile(imagePath); }
-  catch (error: any) {
-    if (error?.code !== 'ENOENT') throw new Error('EterX could not read the requested temporary screenshot file.');
-    // This is another encoding of the SAME driver reply, not a second capture
-    // or another backend. Never read an arbitrary path supplied by a result.
-    if (!reply.image) throw new Error('Cua Driver completed the observation without delivering its screenshot file or image content. No screen image reached EterX.');
-    bytes = Buffer.from(reply.image.data, 'base64');
-  }
-  const png = bytes.length > 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-  const jpeg = bytes.length > 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
-  if (!png && !jpeg) throw new Error('Cua Driver returned invalid screenshot bytes. Capture a fresh image before any further input.');
+function readFrame(reply: CuaResponse): Frame {
   const metadata = reply.value && typeof reply.value === 'object' && !Array.isArray(reply.value) ? reply.value : {};
+  const data = reply.image?.data;
+  if (!data) {
+    const reason = metadata.screenshot_error || metadata.degraded_reason || metadata.message;
+    throw new Error(reason ? `Cua Driver could not supply the screenshot. ${String(reason).slice(0, 600)}` : 'Cua Driver returned no screenshot for this target.');
+  }
+  if (data.length > MAX_DESKTOP_IMAGE_BASE64_LENGTH) throw new Error('The captured image exceeds the EterX image limit. Select the target window or request a smaller maxWidth on drivers that support it.');
+  // The provider accepts this base64 directly. Only the header needs decoding.
+  const header = Buffer.from(data.slice(0, 48), 'base64');
+  const png = data.length > 48 && header.length >= 24 && header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && header.toString('ascii', 12, 16) === 'IHDR';
+  const jpeg = data.length > 48 && header[0] === 255 && header[1] === 216 && header[2] === 255;
+  if (!png && !jpeg) throw new Error('Cua Driver returned invalid screenshot bytes. Capture a fresh image before any further input.');
   return {
     metadata,
-    vision: { inlineData: { data: bytes.toString('base64'), mimeType: png ? 'image/png' : 'image/jpeg' } },
-    ...(png ? { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) } : {}),
+    vision: { inlineData: { data, mimeType: png ? 'image/png' : 'image/jpeg' } },
+    width: png ? header.readUInt32BE(16) : metadata.screenshot_width,
+    height: png ? header.readUInt32BE(20) : metadata.screenshot_height,
   };
 }
 
@@ -153,7 +199,8 @@ function asWindow(window: any): Target {
 
 async function windows(options: ActionOptions): Promise<any[]> {
   const result = await call('list_windows', {}, options);
-  const items = Array.isArray(result) ? result : Array.isArray(result?.windows) ? result.windows : [];
+  const items = Array.isArray(result) ? result : result?.windows;
+  if (!Array.isArray(items)) throw new Error('Cua Driver did not return a window list.');
   return items.filter((window: any) => window.title !== 'EterX Computer Use Overlay');
 }
 
@@ -188,24 +235,18 @@ async function resolveTarget(input: any, state: Session, options: ActionOptions,
 }
 
 async function capture(target: Target, options: ActionOptions, preview = false, query?: string): Promise<Frame> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eterx-cua-'));
-  const imagePath = path.join(dir, 'screen.png');
-  try {
-    const reply = await callResponse(target.scope === 'window' ? 'get_window_state' : 'get_desktop_state', {
-      ...identity(target),
-      max_image_dimension: preview ? 1280 : options.maxImageDimension || 1920,
-      ...(target.scope === 'window' ? {
-        include_screenshot: true, include_accessibility_tree: !preview, screenshot_format: 'png',
-        ...(preview ? { display_only: true } : {
-          tree_format: 'elements', max_depth: 25, max_elements: options.maxElements || (query ? 2000 : 250),
-          ...(query ? { query } : {}),
-        }),
-      } : {}),
-    }, options, imagePath);
-    return await readFrame(reply, imagePath);
-  } finally {
-    await fs.remove(dir).catch(() => {});
-  }
+  const reply = await callResponse(target.scope === 'window' ? 'get_window_state' : 'get_desktop_state', {
+    ...identity(target),
+    max_image_dimension: preview ? 1280 : options.maxImageDimension || 1920,
+    ...(target.scope === 'window' ? {
+      include_screenshot: true, include_accessibility_tree: !preview, screenshot_format: 'png',
+      ...(preview ? { display_only: true } : {
+        tree_format: 'elements', max_depth: 25, max_elements: options.maxElements || (query ? 2000 : 250),
+        ...(query ? { query } : {}),
+      }),
+    } : {}),
+  }, options);
+  return readFrame(reply);
 }
 
 function snapshot(state: Session, frame: Frame): Record<string, any> {
@@ -216,13 +257,14 @@ function snapshot(state: Session, frame: Frame): Record<string, any> {
     parent_index: element.parent_index,
     depth: element.depth,
     role: element.role,
-    text: String(element.label || element.name || '').slice(0, 1000),
+    text: String(element.label || element.name || element.text || element.title || '').slice(0, 1000),
     value: typeof element.value === 'string' ? element.value.slice(0, 2000) : element.value,
     enabled: element.enabled ?? element.is_enabled,
     actions: element.actions,
   }));
   state.tokens = new Set(elements.map((element: any) => element.element_token).filter((token: any): token is string => typeof token === 'string'));
-  state.frameHash = frame.vision ? createHash('sha256').update(frame.vision.inlineData.data).digest('hex') : undefined;
+  state.frameHash = createHash('sha256').update(frame.vision.inlineData.data).digest('hex');
+  state.frameConnection = state.connections.get(`action-${state.target.scope}`);
   state.observation = {
     target: state.target,
     snapshot_id: raw.snapshot_id,
@@ -241,17 +283,23 @@ function snapshot(state: Session, frame: Frame): Record<string, any> {
 }
 
 async function observe(state: Session, options: ActionOptions, query?: string): Promise<CuaActionResult> {
-  // The driver may replace its snapshot before file delivery fails. Do not
-  // retain an older coordinate frame or token after an unsuccessful read.
+  // A capture can replace the driver's snapshot even if its image is lost.
   state.tokens.clear();
   state.observation = undefined;
   state.frameHash = undefined;
+  // Legacy accessibility caches are shared by window, even across MCP connections.
+  if (state.target.scope === 'window') {
+    for (const other of shared.sessions.values()) {
+      if (other !== state && sameTarget(other.target, state.target)) {
+        other.tokens.clear();
+        other.frameHash = undefined;
+      }
+    }
+  }
   const frame = await capture(state.target, options, false, query);
   const observation = snapshot(state, frame);
-  const readable = Boolean(frame.vision);
-  if (!readable) state.tokens.clear();
   return {
-    success: readable, provider: cuaDriverProvider(), result: readable ? 'Current target observed.' : 'The target could not be observed. Check desktop permissions and whether the screen is unlocked.',
+    success: true, provider: cuaDriverProvider(), result: 'Current target observed.',
     observation, vision: frame.vision,
     ...(!frame.vision ? { observationError: 'No screenshot was returned. Desktop control requires a visual observation; restore screen capture before acting.' } : {}),
   };
@@ -275,15 +323,15 @@ function point(input: any, state: Session, end = false): Record<string, number> 
   return { x, y };
 }
 
-function address(input: any, state: Session, needsPoint = false, bindCapture = false): Record<string, unknown> {
+function address(input: any, state: Session, needsPoint = false): Record<string, unknown> {
   if (input.element_token) {
     if (input.x != null || input.y != null) throw new Error('Use either an element_token or x and y, not both.');
     if (!state.tokens.has(input.element_token)) throw new Error('This element_token is stale or belongs to another chat/window. Read the target again.');
-    return { element_token: input.element_token };
+    return { ...inputTarget(state.target), element_token: input.element_token };
   }
   const target = inputTarget(state.target);
   if (needsPoint || input.x != null || input.y != null) {
-    return { ...target, ...point(input, state), ...(bindCapture && state.observation?.capture_id ? { capture_id: state.observation.capture_id } : {}) };
+    return { ...target, ...point(input, state), ...(state.observation?.capture_id ? { capture_id: state.observation.capture_id } : {}) };
   }
   return target;
 }
@@ -307,11 +355,14 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
   const state = sessionFor(options.chatId);
   const response = (result: unknown, success = true): CuaActionResult => ({ success, result, provider, vision: null });
   let dispatched = false;
-  const mutate = async (tool: string, args: Record<string, unknown>, timeout = 15_000) => {
+  const onDispatch = () => {
     options.signal?.throwIfAborted();
     if (isComputerUseDisabled()) throw new Error('Computer Use was turned off.');
     dispatched = true;
-    const result = await call(tool, args, options, undefined, timeout);
+  };
+  const mutate = async (tool: string, args: Record<string, unknown>, timeout = 15_000) => {
+    const result = await call(tool, args, { ...options, onDispatch,
+      defaultTypingDelay: tool === 'type_text' && input.delay_ms == null && !input.speed }, timeout);
     // Input and observation have separate outcomes. A failed screenshot never
     // converts an already delivered click/type into an invitation to repeat it.
     state.tokens.clear();
@@ -319,18 +370,13 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
     state.frameHash = undefined;
     try {
       const observed = await observe(state, options);
-      return { ...observed, success: true, result, actionStatus: 'sent' as const,
-        ...(!observed.success ? { observationError: String(observed.result) } : {}) };
+      return { ...observed, result, actionStatus: 'sent' as const };
     } catch (error: any) {
       return { ...response(result), actionStatus: 'sent' as const, observationError: String(error?.message || error).slice(0, 600) };
     }
   };
 
   try {
-    if (!state.started) {
-      await call('start_session', {}, options);
-      state.started = true;
-    }
     if (action === 'list_apps') {
       const listed = await windows(options);
       const query = String(input.query || input.filter || input.app || '').trim().toLowerCase();
@@ -343,38 +389,35 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
     if (action === 'get_active') return response({ activeWindow: frontmost(await windows(options)), selectedTarget: state.target });
     if (action === 'clipboard_get') return response(await call('clipboard_read', { include_text: true }, options));
     if (action === 'clipboard_set') {
-      dispatched = true;
-      const result = await call('clipboard_write', { text: String(input.text ?? '') }, options);
-      return { ...response(result), actionStatus: 'sent' };
+      return await mutate('clipboard_write', { text: String(input.text ?? '') });
     }
     if (action === 'open_file' || action === 'open_url') {
       if (!options.openTarget) throw new Error('Opening files and URLs requires the EterX desktop app.');
       const target = String((action === 'open_file' ? input.path : input.url) || input.text || '').trim();
       if (!target) throw new Error(action === 'open_file' ? 'An absolute file, folder or application path is required.' : 'An HTTP or HTTPS URL is required.');
-      options.signal?.throwIfAborted();
-      if (isComputerUseDisabled()) throw new Error('Computer Use was turned off.');
-      dispatched = true;
+      onDispatch();
       const opened = await options.openTarget(action === 'open_file' ? 'path' : 'url', target);
       bind(state, { scope: 'desktop' });
       try { return { ...(await observe(state, options)), success: true, result: opened, actionStatus: 'sent' }; }
       catch (error: any) { return { ...response(opened), actionStatus: 'sent', observationError: String(error?.message || error) }; }
     }
     if (action === 'launch_app') {
-      const name = String(input.app || input.text || '').trim();
+      const name = String(input.path || input.app || input.text || '').trim();
       if (!name) throw new Error('An app name, bundle identifier or application path is required.');
-      dispatched = true;
-      const launched = await call('launch_app', { name }, options);
-      const opened = Array.isArray(launched.windows) ? launched.windows : [];
-      if (opened.length === 1) {
-        bind(state, asWindow(opened[0]));
-        try { return { ...(await observe(state, options)), success: true, result: launched, actionStatus: 'sent' }; }
-        catch (error: any) { return { ...response(launched), actionStatus: 'sent', observationError: String(error?.message || error) }; }
-      }
-      // Never leave subsequent input bound to the app that preceded a launch.
+      const launched = await call('launch_app', { name }, { ...options, onDispatch });
       bind(state, { scope: 'desktop' });
-      const result = { ...launched, next: 'Use list_apps to select the opened window before acting.' };
-      try { return { ...(await observe(state, options)), success: true, result, actionStatus: 'sent' }; }
-      catch (error: any) { return { ...response(result), actionStatus: 'sent', observationError: String(error?.message || error) }; }
+      try {
+        const opened = Array.isArray(launched?.windows) ? launched.windows : [];
+        if (opened.length === 1) {
+          // Windows releases report the process on the launch result. macOS
+          // also reports the actual owner on each returned window.
+          bind(state, asWindow({ ...opened[0], pid: opened[0].pid ?? launched.pid }));
+        }
+        const result = state.target.scope === 'window' ? launched : { ...launched, next: 'Select the opened window with list_apps before window input.' };
+        return { ...(await observe(state, options)), success: true, result, actionStatus: 'sent' };
+      } catch (error: any) {
+        return { ...response(launched), actionStatus: 'sent', observationError: String(error?.message || error) };
+      }
     }
     if (action === 'focus_app') {
       if (!input.app && !input.text && input.pid == null) throw new Error('Select an app or exact window to focus.');
@@ -391,14 +434,10 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
       const x = finite(input.x, 'x'), y = finite(input.y, 'y');
       const width = finite(input.width, 'width'), height = finite(input.height, 'height');
       if (x < 0 || y < 0 || width <= 0 || height <= 0) throw new Error('Provide a positive window region within its screenshot.');
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eterx-cua-zoom-'));
-      try {
-        const imagePath = path.join(dir, 'region.jpg');
-        state.frameHash = undefined;
-        const reply = await callResponse('zoom', { ...identity(state.target), x1: x, y1: y, x2: x + width, y2: y + height }, options, imagePath);
-        const frame = await readFrame(reply, imagePath);
-        return { ...response({ detail: frame.metadata, target: state.target, next: 'This image is a padded detail view. Use see before pixel input; do not use detail-image coordinates on the full window.' }), vision: frame.vision };
-      } finally { await fs.remove(dir).catch(() => {}); }
+      state.frameHash = undefined;
+      const reply = await callResponse('zoom', { ...identity(state.target), x1: x, y1: y, x2: x + width, y2: y + height }, options);
+      const frame = readFrame(reply);
+      return { ...response({ detail: frame.metadata, target: state.target, next: 'This image is a padded detail view. Use see before pixel input.' }), vision: frame.vision };
     }
     if (['read', 'get_controls', 'find'].includes(action)) {
       const query = String(input.query || input.filter || (action === 'find' ? input.text : '') || '').trim().toLowerCase();
@@ -406,6 +445,7 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
       const observed = await observe(state, options, query || undefined);
       const elements = (observed.observation?.elements || []).filter((item: any) => !query || `${item.text} ${item.value ?? ''}`.toLowerCase().includes(query));
       return { ...observed, success: observed.success && (action !== 'find' || elements.length > 0),
+        ...(action === 'find' && !elements.length ? { error: `No accessible control matched "${query}" in the selected window.` } : {}),
         result: action === 'read' ? elements.map((item: any) => `${item.text}${item.value != null ? `: ${item.value}` : ''}`).join('\n') || observed.observation?.tree || 'No accessible text was returned; use the screenshot.'
           : { matches: elements, target: state.target, tip: 'Use a returned element_token. If several controls match, select one from this observation; do not guess.' } };
     }
@@ -439,7 +479,7 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
       return { ...(last || response('')), success: false, result: 'The expected state was not observed before the timeout.' };
     }
 
-    if (!state.frameHash || !state.observation || Date.now() - state.observation.capturedAt > 120_000) {
+    if (!state.frameHash || !state.observation || !state.frameConnection || state.frameConnection.closed || Date.now() - state.observation.capturedAt > 120_000) {
       const observed = await observe(state, options);
       return { ...observed, actionStatus: 'not_sent', observationRequired: true,
         result: observed.success
@@ -465,7 +505,7 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
       return await mutate('set_window_frame', { ...identity(state.target), x, y, width, height });
     }
     if (['click', 'right_click', 'double_click'].includes(action)) {
-      const payload = address(input, state, !input.element_token, true);
+      const payload = address(input, state, !input.element_token);
       // The universal click endpoint supports desktop right/double clicks;
       // dedicated right_click requires a window on some driver versions.
       const tool = input.element_token && action !== 'click' ? action : 'click';
@@ -501,30 +541,24 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
       const start = point(input, state), end = point(input, state, true);
       return await mutate('drag', { ...inputTarget(state.target), ...delivery, ...modifiers,
         from_x: start.x, from_y: start.y, to_x: end.x, to_y: end.y,
+        ...(state.observation?.capture_id ? { capture_id: state.observation.capture_id } : {}),
         ...(input.duration_ms != null ? { duration_ms: input.duration_ms } : {}),
       });
     }
     return response(`Action ${action} is not supported by Cua Driver.`, false);
   } catch (error: any) {
     if (dispatched) { state.observation = undefined; state.tokens.clear(); state.frameHash = undefined; }
-    return { ...response(String(error?.message || error).slice(0, 700), false), actionStatus: dispatched ? 'unknown' : 'not_sent' };
+    const refused = error instanceof CuaToolError && error.inputRefused;
+    return { ...response(String(error?.message || error).slice(0, 700), false), actionStatus: dispatched && !refused ? 'unknown' : 'not_sent' };
   }
 }
 
 export async function executeCuaScreenAction(action: string, input: any, options: ActionOptions = {}): Promise<CuaActionResult | null> {
   if (!ACTIONS.has(action)) return null;
-  if (shared.previewController) {
-    const reason = new Error('Preview yielded to a desktop action.');
-    reason.name = 'DesktopPreviewYield';
-    shared.previewController.abort(reason);
-  }
   try {
     return await exclusive(async () => {
-      const status = await ensureCuaDriverDaemon();
       options.signal?.throwIfAborted();
       if (isComputerUseDisabled()) return { success: false, provider: cuaDriverProvider(), result: 'Computer Use was turned off.', vision: null, actionStatus: 'not_sent' as const };
-      if (!status.installed) return null;
-      if (!status.daemonRunning) return { success: false, provider: cuaDriverProvider(), result: status.message, vision: null, actionStatus: 'not_sent' as const };
       return execute(action, input, options);
     }, options.signal);
   } catch (error: any) {
@@ -534,37 +568,21 @@ export async function executeCuaScreenAction(action: string, input: any, options
 
 /** Display-only frames never replace the tokens or coordinate frame an agent read. */
 export async function captureCuaPreview(chatId: string, signal?: AbortSignal): Promise<Frame | null> {
-  // Previews are expendable; never queue them in front of a pending action.
-  if (shared.pending) return null;
-  const controller = new AbortController();
-  const previewSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-  shared.previewController = controller;
-  try { return await exclusive(async () => {
-    if (isComputerUseDisabled()) return null;
-    const state = shared.sessions.get(chatId);
-    if (!state) return null;
-    state.updatedAt = Date.now();
-    const previewOptions = { chatId: `${chatId}:preview`, signal: previewSignal, deadline: Date.now() + 5000 };
-    if (!state.previewStarted) {
-      await call('start_session', {}, previewOptions);
-      state.previewStarted = true;
-    }
-    // Desktop capture has no display_only parameter. A separate lifecycle
-    // session keeps its preview pixels out of the agent's action frame.
-    return capture(state.target, previewOptions, true);
-  }, previewSignal); }
-  catch (error: any) {
-    if (error?.name === 'DesktopPreviewYield') return null;
-    throw error;
-  } finally {
-    if (shared.previewController === controller) shared.previewController = undefined;
-  }
+  if (shared.pending || isComputerUseDisabled()) return null;
+  const state = shared.sessions.get(chatId);
+  if (!state?.observation) return null;
+  const { target, observation } = state;
+  // Legacy window reads replace other clients' control tokens. The monitor
+  // already receives every agent observation on those installations.
+  if (target.scope === 'window' && !state.connections.get('action-window')?.supports('get_window_state', 'display_only')) return null;
+  const frame = await capture(target, { chatId, preview: true, signal, deadline: Date.now() + 5000 }, true);
+  // Display-only capture has its own connection and never holds the input
+  // queue. An older preview cannot overwrite a newer action in the monitor.
+  return !shared.pending && shared.sessions.get(chatId) === state && state.observation === observation && sameTarget(state.target, target) ? frame : null;
 }
 
 export async function endCuaSession(chatId: string): Promise<void> {
-  await exclusive(async () => {
-    shared.sessions.delete(chatId);
-    await call('end_session', {}, { chatId }, undefined, 3000).catch(() => {});
-    await call('end_session', {}, { chatId: `${chatId}:preview` }, undefined, 3000).catch(() => {});
-  });
+  // The owner has aborted pending input. Its dedicated connections can close
+  // immediately even while another chat owns the action queue.
+  await releaseSession(chatId);
 }

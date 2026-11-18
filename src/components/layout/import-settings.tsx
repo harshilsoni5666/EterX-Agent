@@ -203,7 +203,7 @@ export function ImportSettings() {
     <section className={styles.section}>
       <div className={styles.sectionHeading}><h4>Automatic sync</h4><span className={styles.eyebrow}>Local &amp; Private</span></div>
       <div className={styles.card}>
-        <div className={styles.settingRow}>
+        <div data-settings-search-target="import-auto-sync" tabIndex={-1} className={styles.settingRow}>
           <span className={styles.settingIcon}><RefreshCw size={17} /></span>
           <div className={styles.grow}><strong>Keep imports in sync</strong><p>{status?.autoSync ? 'Selected sources refresh while EterX is open.' : 'Paused. Your imported content and selections are kept.'}</p></div>
           <Toggle checked={Boolean(status?.autoSync)} label="Keep imports in sync" disabled={!status || busy || !configuredSources.some(source => source && !source.uploaded)} onChange={value => { void configure({ autoSync: value }); }} />
@@ -212,13 +212,13 @@ export function ImportSettings() {
       </div>
     </section>
 
-    <section className={styles.section}>
+    <section data-settings-search-target="import-sources" tabIndex={-1} className={styles.section}>
       <div className={styles.sectionHeading}><h4>Import from another AI app</h4><button type="button" className={styles.textButton} disabled={busy} onClick={() => { void run(async () => { await load(); }); }} aria-label="Refresh detected sources"><RefreshCw size={13} /> Refresh</button></div>
       <div className={styles.card}>
         {IMPORT_PROVIDERS.map(provider => {
           const source = status?.sources[provider];
           const detected = status?.available[provider]?.detected;
-          return <div className={styles.provider} data-provider={provider} key={provider}>
+          return <div data-settings-search-target={`import-${provider}`} tabIndex={-1} className={styles.provider} data-provider={provider} key={provider}>
             <div className={styles.providerMain}>
               <SourceMark provider={provider} />
               <div className={styles.grow}><div className={styles.providerName}>{IMPORT_LABELS[provider]}<span className={styles.badge} data-ready={Boolean(source || detected)}>{source ? source.uploaded ? 'File import' : status?.autoSync && source.enabled ? 'Sync on' : 'Imported' : detected ? 'Detected' : 'Choose source'}</span></div><p>{sourceDescription[provider]}</p></div>
@@ -243,7 +243,7 @@ export function ImportSettings() {
     {status?.pendingPreview && !preview && !pending && <div className={styles.progress}><ArrowDownToLine size={17} /><div className={styles.grow}><strong>{IMPORT_LABELS[status.pendingPreview.provider]} content is ready</strong><p>Continue selecting items from your latest scan.</p></div><button type="button" className={styles.secondary} onClick={() => openPreview(status.pendingPreview!)}>Review items</button><button type="button" className={styles.textButton} onClick={() => { void run(async () => { await importRequest({ action: 'discard', previewId: status.pendingPreview!.id }); await load(); }); }}>Dismiss</button></div>}
     {lastReport && <section className={styles.result} aria-live="polite"><div className={styles.resultHeading}><CheckCircle2 size={17} /><strong>{IMPORT_LABELS[lastReport.provider]} import saved</strong><span>{formatTime(lastReport.completedAt)}</span></div><div className={styles.resultStats}><span><b>{lastReport.created}</b> new chats</span><span><b>{lastReport.updated}</b> updated</span><span><b>{lastReport.setup}</b> setup items</span>{lastReport.skipped > 0 && <span><b>{lastReport.skipped}</b> skipped</span>}</div><p>Open imported conversations from Recents or their sidebar folder and continue chatting.</p><Notices warnings={lastReport.warnings} /></section>}
 
-    {!!status?.setup.length && <section className={styles.section}>
+    {!!status?.setup.length && <section data-settings-search-target="imported-setup" tabIndex={-1} className={styles.section}>
       <div className={styles.sectionHeading}><h4>Imported setup</h4><span className={styles.muted}>{status.setup.length} items</span></div>
       <label className={styles.search}><Search size={15} /><input value={setupSearch} onChange={event => setSetupSearch(event.target.value)} placeholder="Find a skill, instruction, agent, or server" aria-label="Search imported setup" /></label>
       <div className={`${styles.card} ${styles.setupList}`}>{setupItems.map(item => {

@@ -48,22 +48,33 @@ function contentText(value: any): string {
     .map((block: any) => block.text).join('\n');
 }
 
+export class CuaToolError extends Error {
+  constructor(message: string, readonly inputRefused = false) { super(message); }
+}
+
 /** Keep image content separate from metadata; unwrapping must not discard pixels. */
 export function decodeCuaResponse(stdout: string): CuaResponse {
   const text = stdout.trim();
-  let value = parseCuaJson(text);
+  const value = parseCuaJson(text);
   if (value === undefined) {
     // Successful CLI actions can print a plain confirmation instead of JSON.
     // An empty/malformed response is never proof of successful execution.
     if (!text || /^[\[{]/.test(text)) throw new Error('Cua Driver returned an empty or unreadable response. Observe before repeating input.');
     return { value: { message: text.slice(0, 4000) } };
   }
+  return decodeCuaToolResult(value);
+}
+
+export function decodeCuaToolResult(value: any): CuaResponse {
   let image: CuaResponse['image'];
   for (let depth = 0; depth < 8; depth += 1) {
     if (failed(value)) {
       const structured = value.structuredContent ?? value.structured_content;
-      throw new Error(formatUnknownError(value.error || value.errors || structured?.error || structured?.message || structured?.reason
-        || value.message || value.reason || contentText(value), 'The desktop driver refused this action.', 700));
+      const code = String(structured?.code || value.code || '');
+      const message = formatUnknownError(value.error || value.errors || contentText(value) || structured?.error || structured?.message
+        || structured?.reason || value.message || value.reason || structured?.suggestion || code, 'The desktop driver refused this action.', 650);
+      const refused = /^(desktop_coordinate_scope_required|desktop_escalation_required|desktop_scope_disabled|window_scope_disabled|invalid_capture_scope|capture_scope_conflict|invalid_target|stale_element_token|stale_capture_id)$/.test(code);
+      throw new CuaToolError(code && !message.includes(code) ? `${message} (${code})` : message, refused);
     }
     if (!value || typeof value !== 'object' || Array.isArray(value)) return { value, image };
     if ((value.jsonrpc === '2.0' || typeof value.ok === 'boolean') && 'result' in value) {
@@ -107,16 +118,16 @@ export function cuaProcessFailure(stdout: string, stderr: string, stdin?: string
     } catch (error: any) { detail = String(error?.message || ''); }
   }
   detail ||= stderr.trim() || stdout.trim();
-  if (stdin) {
-    try {
-      const input = JSON.parse(stdin);
-      for (const key of ['text', 'value']) {
-        if (typeof input[key] !== 'string' || !input[key]) continue;
-        for (const form of new Set([JSON.stringify(input[key]).slice(1, -1), input[key]])) {
-          detail = detail.split(form).join('[input omitted]');
-        }
-      }
-    } catch { /* No input values to include in diagnostics. */ }
+  return cuaDiagnostic(detail, stdin ? parseCuaJson(stdin) : undefined);
+}
+
+export function cuaDiagnostic(detail: string, input?: Record<string, unknown>): string {
+  for (const key of ['text', 'value']) {
+    const value = input?.[key];
+    if (typeof value !== 'string' || !value) continue;
+    for (const form of new Set([JSON.stringify(value).slice(1, -1), value])) {
+      detail = detail.split(form).join('[input omitted]');
+    }
   }
   return detail.replace(/\x1b\[[0-9;]*m/g, '').replace(/[A-Za-z0-9+/]{512,}={0,2}/g, '[image data omitted]')
     .replace(/\s+/g, ' ').trim().slice(0, 650);

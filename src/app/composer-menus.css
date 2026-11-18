@@ -405,8 +405,8 @@
   max-height: none !important;
 }
 
-:root .eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-row > button > span:first-child {
-  background: transparent !important;
+:root .eterx-composer-shell .eterx-model-provider-icon {
+  --provider-icon-neutral: currentColor;
 }
 
 :root .eterx-composer-shell .eterx-agent-popout button:not(:disabled):is(:hover, [aria-pressed="true"]),
