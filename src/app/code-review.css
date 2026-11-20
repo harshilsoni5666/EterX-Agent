@@ -58,14 +58,11 @@
 
 /* Keep the surrounding UI neutral so code and changes carry the color. */
 :root[data-theme="dark"] {
-  --background: #111111;
   --foreground: #ECECEC;
   --muted: #242424;
   --muted-foreground: #A0A0A0;
   --border: #FFFFFF14;
   --input-bg: #2B2B2B;
-  --sidebar-bg: #101010;
-  --sidebar-shell-bg: #101010;
   --sidebar-surface-bg: #161718;
   --sidebar-surface-border: #FFFFFF0A;
   --sidebar-surface-shadow: none;
@@ -75,7 +72,6 @@
   --sidebar-strong-text: #EFEFEF;
   --sidebar-icon: #A1A3A5;
   --sidebar-working-text: #E5E5E5;
-  --sidebar-profile-bg: #101010;
   --sidebar-active-bg: #2A2C2D;
   --sidebar-active-border: transparent;
   --sidebar-active-text: #F2F2F2;

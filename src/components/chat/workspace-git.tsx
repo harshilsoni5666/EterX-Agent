@@ -65,7 +65,9 @@ export function WorkspaceGit({ owner, tab, isActive, workspacePath, roots, roots
   const [selectedRoot, setSelectedRoot] = useState(tab.root || tab.git?.root || '');
   const root = workspacePath || selectedRoot || roots[0] || '';
   const rootRef = useRef(root); rootRef.current = root;
-  const [view, setView] = useState<GitView>(tab.git?.view || 'changes');
+  const [view, setView] = useState<GitView>(tab.gitNavigation?.view || tab.git?.view || 'changes');
+  const focusCommit = useRef(false);
+  const commitInput = useRef<HTMLTextAreaElement>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>(tab.git?.drafts || {});
   const [draftsLoaded, setDraftsLoaded] = useState('');
   const draftStorageKey = 'eterx_git_commit_drafts_' + owner;
@@ -118,6 +120,19 @@ export function WorkspaceGit({ owner, tab, isActive, workspacePath, roots, roots
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { if (tab.root) setSelectedRoot(tab.root); }, [tab.root]);
+  useEffect(() => {
+    if (!tab.gitNavigation || !isActive) return;
+    setView(tab.gitNavigation.view);
+    setFilter('');
+    setSelection(null);
+    focusCommit.current = Boolean(tab.gitNavigation.focusCommit);
+    updateWorkspaceTab(owner, tab.id, { gitNavigation: undefined });
+  }, [isActive, owner, tab.id, tab.gitNavigation]);
+  useEffect(() => {
+    if (!focusCommit.current || !isActive || !commitInput.current || busy || view !== 'changes') return;
+    focusCommit.current = false;
+    commitInput.current.focus();
+  }, [isActive, current, view, busy, tab.gitNavigation]);
   useEffect(() => {
     if (!preferences.ready) return;
     try {
@@ -370,7 +385,7 @@ export function WorkspaceGit({ owner, tab, isActive, workspacePath, roots, roots
               {view !== 'changes' && listLoading && <div className="eterx-git-progress" role="status"><Loader2 size={14} className="animate-spin" />Loading {view}…</div>}
             </div>
             {view === 'changes' && <form className="eterx-git-commit-form" onSubmit={event => { event.preventDefault(); if (canCommit) void perform(action('commit', { message: commitMessage }), 'Committing…'); }}>
-              <label htmlFor={'commit-message-' + tab.id}>Commit message</label><textarea id={'commit-message-' + tab.id} placeholder="Describe what changed…" rows={3} value={commitMessage} maxLength={20_000} disabled={!!busy} onChange={event => setDrafts(previous => ({ ...previous, [draftKey]: event.target.value }))} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+              <label htmlFor={'commit-message-' + tab.id}>Commit message</label><textarea ref={commitInput} id={'commit-message-' + tab.id} placeholder="Describe what changed…" rows={3} value={commitMessage} maxLength={20_000} disabled={!!busy} onChange={event => setDrafts(previous => ({ ...previous, [draftKey]: event.target.value }))} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
               <div><span>{conflicts.length ? `${conflicts.length} conflict${conflicts.length === 1 ? '' : 's'} to resolve` : `${staged.length} staged · ${unstaged.length} unstaged`}</span><button type="submit" className="eterx-git-primary" disabled={!canCommit}><Check size={14} />Commit staged</button></div>
             </form>}
           </div>

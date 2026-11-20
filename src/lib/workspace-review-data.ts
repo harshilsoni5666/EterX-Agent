@@ -1,8 +1,48 @@
 import type { FilePanelProps } from '../components/chat/file-panel';
-import { resolveTouchPath, workspacePathKey } from './workspace-paths';
+import { isWithinWorkspace, resolveTouchPath, workspacePathKey } from './workspace-paths';
 import { numberDiffLines } from './diff-line-numbers';
 type ReviewChange = FilePanelProps & { status?: string };
 type Line = NonNullable<FilePanelProps['diffLines']>[number];
+
+export type WorkspaceReviewScope = 'chat' | 'working' | 'branch';
+export type RepositoryReviewFile = FilePanelProps & { relativePath?: string; status?: string; directory?: boolean; repositoryRoot?: string; baseRef?: string };
+type ReviewProject = { root: string; branch: string; upstream: string; baseRef: string; references: string[]; gitDirectory: string };
+export type RepositoryReview = ReviewProject & {
+  projects?: Array<ReviewProject & { scopeRoot: string }>;
+  warnings?: string[];
+  files: RepositoryReviewFile[];
+  truncated?: boolean;
+};
+
+export async function readWorkspaceRepositoryReview(
+  roots: string[], scope: Exclude<WorkspaceReviewScope, 'chat'>, baseRefs: Record<string, string>, signal: AbortSignal,
+): Promise<RepositoryReview> {
+  const api = (window as any).electronAPI;
+  if (!api?.workspaceReviewList) throw new Error('Open the EterX desktop app to review project changes.');
+  const files = new Map<string, RepositoryReviewFile>();
+  const projects: NonNullable<RepositoryReview['projects']> = [];
+  const warnings: string[] = [];
+  let truncated = false;
+  for (const directory of roots) {
+    signal.throwIfAborted();
+    try {
+      const result: RepositoryReview = await api.workspaceReviewList(directory, scope, baseRefs[directory] || '');
+      const { root, branch, upstream, baseRef, references, gitDirectory } = result;
+      projects.push({ root, branch, upstream, baseRef, references, gitDirectory, scopeRoot: directory });
+      truncated ||= Boolean(result.truncated);
+      for (const file of result.files) {
+        if (isWithinWorkspace(file.filepath, directory)) {
+          files.set(workspacePathKey(file.filepath), { ...file, repositoryRoot: root, baseRef });
+        }
+      }
+    } catch (error) {
+      warnings.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  signal.throwIfAborted();
+  if (!projects.length) throw new Error(warnings.join('\n') || 'No repository in this workspace.');
+  return { ...projects[0], projects, files: [...files.values()], warnings, truncated };
+}
 
 // Only settled previews and explicit mutation results are evidence of an
 // edit. Reading a file or mentioning it in prose must not create a change row.
@@ -41,7 +81,7 @@ export function collectWorkspaceReviewFiles(logs: any[], owner?: string): Review
     if (!filepath || typeof filepath !== 'string') continue;
     const changed = log.isEdit || ['created', 'edited', 'deleted'].includes(log.operation) || log.linesAdded > 0 || log.linesRemoved > 0 || log.diffLines?.some((line: any) => line.type === 'added' || line.type === 'removed');
     if (!changed) continue;
-    files.set(workspacePathKey(filepath), { filepath, filename: log.filename || filepath.split(/[\\/]/).pop() || filepath, content: log.content, language: log.language, diffLines: log.diffLines, linesAdded: log.linesAdded, linesRemoved: log.linesRemoved, totalLines: log.totalLines || log.lineCount, status: log.operation === 'created' ? 'A' : log.operation === 'deleted' ? 'D' : 'M', isEdit: true, updatedAt: log.timestamp, truncated: log.truncated });
+    files.set(workspacePathKey(filepath), { filepath, filename: log.filename || filepath.split(/[\\/]/).pop() || filepath, content: log.content, language: log.language, diffLines: log.diffLines, linesAdded: log.linesAdded, linesRemoved: log.linesRemoved, totalLines: log.totalLines || log.lineCount, status: log.operation === 'created' ? 'A' : log.operation === 'deleted' ? 'D' : 'M', isEdit: true, updatedAt: log.timestamp, truncated: Boolean(log.truncated || log._diffLinesStripped) });
   }
   return [...files.values()];
 }
@@ -54,8 +94,9 @@ export function workspaceChatDiffLines(file: ReviewChange | undefined, full: boo
   if (!file) return [];
   const compact = numberDiffLines((file.diffLines || []).map(line => line.type === 'context' && !line.isGap ? { ...line, type: 'unchanged' as const } : line));
   if (!full || typeof file.content !== 'string' || !file.content || file.truncated) return compact;
-  const after = file.content.replace(/\r\n/g, '\n').split('\n');
+  const after = file.content.replace(/\r\n?/g, '\n').split('\n');
   if (after.length > 10000 || (file.totalLines && after.length < file.totalLines)) return compact;
+  if (after[after.length - 1] === '') after.pop();
   if (file.status === 'A') return after.map((content, index) => ({ type: 'added', content, newLine: index + 1 }));
   if (!compact.some(line => line.type === 'added' || line.type === 'removed')) return compact;
   // Relative display numbers cannot locate a hunk in a full file snapshot.

@@ -2,7 +2,7 @@
  * This module is browser-safe so restored client snapshots get the same repair. */
 import { adaptImportedAction } from './actions';
 
-export const IMPORT_PRESENTATION_VERSION = 12;
+export const IMPORT_PRESENTATION_VERSION = 13;
 
 export interface ImportedAttachment {
   id?: string;

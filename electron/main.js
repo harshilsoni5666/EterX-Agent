@@ -2346,12 +2346,12 @@ function nativeThemeColors(theme) {
   const safeTheme = normalizeNativeTheme(theme);
   if (safeTheme === 'dark') {
     return {
-      background: '#111111',
+      background: '#000000',
       // Keep the native caption-button area opaque enough for Windows/Linux
       // to paint its hover states while the renderer owns the rest of the
       // custom title bar.
       // Match --eterx-titlebar-bg in the renderer's dark palette.
-      titleBar: '#101010',
+      titleBar: '#000000',
       titleSymbol: '#D0D0D0',
     };
   }

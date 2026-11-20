@@ -16,7 +16,7 @@ import { formatUnknownError } from '../error-format';
 import { rebaseContextCompactionWindow } from '../model-context-window';
 import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../swarm-coordinator';
 import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from '../sub-agent-model-guidance';
-import { SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
+import { PREFERRED_SUB_AGENT_NAME_LENGTH, SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
 
 type SubAgentRuntimeState = {
   cancelFlags: Map<string, boolean>;
@@ -92,19 +92,28 @@ const normalizeAgentName = (value: string): string => {
   return segments.map(toAgentNameSegment).join('-').slice(0, 64).replace(/-+$/g, '');
 };
 
-const buildTaskAgentName = (task: string): string => {
+const buildTaskAgentName = (task: string, role = ''): string => {
   const words = String(task || '')
     .replace(/\[[^\]]+\]/g, ' ')
     .match(/[A-Za-z][A-Za-z0-9]*/g) || [];
+  const suffix = normalizeAgentName(role);
+  const budget = PREFERRED_SUB_AGENT_NAME_LENGTH - (suffix ? suffix.length + 1 : 0);
   const meaningful: string[] = [];
+  const selected = new Set<string>();
+  let remaining = budget;
   for (const word of words) {
     const normalized = word.toLowerCase();
-    if ((normalized.length < 3 && !TASK_NAME_SHORT_TERMS.has(normalized)) || TASK_NAME_STOP_WORDS.has(normalized) || meaningful.includes(normalized)) continue;
-    meaningful.push(normalized);
+    if ((normalized.length < 3 && !TASK_NAME_SHORT_TERMS.has(normalized)) || TASK_NAME_STOP_WORDS.has(normalized) || selected.has(normalized)) continue;
+    const segment = TASK_NAME_SHORT_TERMS.has(normalized) ? normalized.toUpperCase() : toAgentNameSegment(word);
+    const length = segment.length + (meaningful.length ? 1 : 0);
+    if (length > remaining) continue;
+    meaningful.push(segment);
+    selected.add(normalized);
+    remaining -= length;
     if (meaningful.length === 3) break;
   }
-  const workName = normalizeAgentName(meaningful.join(' '));
-  return workName || `Task-${taskNameHash(task)}`;
+  const workName = meaningful.join('-') || `Task-${taskNameHash(task)}`.slice(0, budget);
+  return suffix ? workName + '-' + suffix : workName;
 };
 
 export type SubAgentName = string;
@@ -1056,13 +1065,17 @@ export class SubAgentSpawner {
     const taskName = buildTaskAgentName(task);
     const requestedName = customName || taskName;
     const baseName = requestedName.toLowerCase() === 'main'
-      ? `${taskName.slice(0, 52)}-${taskNameHash(task)}`
+      ? buildTaskAgentName(task, taskNameHash(task))
       : requestedName;
     if (!this.isNameBusy(projectId, baseName, reservedNames)) return baseName;
     let suffix = 2;
-    const compactBase = baseName.slice(0, 60).replace(/-+$/g, '');
-    while (this.isNameBusy(projectId, `${compactBase}-${suffix}`, reservedNames)) suffix++;
-    return `${compactBase}-${suffix}`;
+    const maxLength = baseName.length <= PREFERRED_SUB_AGENT_NAME_LENGTH ? PREFERRED_SUB_AGENT_NAME_LENGTH : 64;
+    const makeCandidate = (index: number) => {
+      const ending = '-' + index;
+      return baseName.slice(0, maxLength - ending.length).replace(/-+$/g, '') + ending;
+    };
+    while (this.isNameBusy(projectId, makeCandidate(suffix), reservedNames)) suffix++;
+    return makeCandidate(suffix);
   }
 
   private createAgentId(projectId: string, name: string): string {
@@ -2380,13 +2393,13 @@ export class SubAgentSpawner {
   }> {
     const reservedNames = new Set<SubAgentName>();
     const nextIdentity = (lens: string) => {
-      const name = this.resolveAgentName(context.projectId, `${lens} analysis: ${task}`, `${buildTaskAgentName(task)}-${lens}`, reservedNames);
+      const name = this.resolveAgentName(context.projectId, `${lens} analysis: ${task}`, buildTaskAgentName(task, lens), reservedNames);
       reservedNames.add(name);
       return name;
     };
-    const optimistName = nextIdentity('Opportunities');
-    const skepticName = nextIdentity('Risk-Review');
-    const realistName = nextIdentity('Practical-Plan');
+    const optimistName = nextIdentity('Upside');
+    const skepticName = nextIdentity('Risks');
+    const realistName = nextIdentity('Approach');
     const perspectives = [
       {
         name: optimistName,
@@ -2502,10 +2515,9 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
     const startTime = Date.now();
     const rounds: Array<{ round: number; results: Array<{ agent: string; result: string; success: boolean }> }> = [];
     const reservedNames = new Set<SubAgentName>();
-    const debateBase = buildTaskAgentName(task);
-    const firstDebater = this.resolveAgentName(context.projectId, task, `${debateBase}-Analysis-A`, reservedNames);
+    const firstDebater = this.resolveAgentName(context.projectId, task, buildTaskAgentName(task, 'A'), reservedNames);
     reservedNames.add(firstDebater);
-    const secondDebater = this.resolveAgentName(context.projectId, task, `${debateBase}-Analysis-B`, reservedNames);
+    const secondDebater = this.resolveAgentName(context.projectId, task, buildTaskAgentName(task, 'B'), reservedNames);
 
     if (onTrace) {
       onTrace({
@@ -2717,10 +2729,13 @@ OUTPUT: Research report with cited sources, confidence levels per claim, and are
 
     const profile = specialistProfiles[role];
     if (!profile) throw new Error(`Unknown specialist role: ${role}`);
+    const roleLabels: Record<string, string> = {
+      security_auditor: 'Security', performance_analyst: 'Perf', architect: 'Design', qa_tester: 'QA', researcher: 'Research',
+    };
     const specialistName = this.resolveAgentName(
       context.projectId,
       task,
-      `${buildTaskAgentName(task)}-${role.replace(/_/g, '-')}`,
+      buildTaskAgentName(task, roleLabels[role]),
     );
 
     const specialistBrief = task;

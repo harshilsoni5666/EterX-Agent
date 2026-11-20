@@ -8,6 +8,7 @@ type AdaptiveMenuProps = Omit<React.HTMLAttributes<HTMLDivElement>, 'onDrag' | '
   preferredSide?: 'top' | 'bottom';
   heightLimit?: number;
   allowFlip?: boolean;
+  matchAnchorWidth?: boolean;
   portalAnchorRef?: React.RefObject<HTMLElement | null>;
   menuRef?: React.RefObject<HTMLDivElement | null>;
   motionProps?: Pick<MotionProps, 'initial' | 'animate' | 'exit' | 'transition'>;
@@ -15,7 +16,7 @@ type AdaptiveMenuProps = Omit<React.HTMLAttributes<HTMLDivElement>, 'onDrag' | '
 
 /** Fits menus to their pane by default. An explicit portal anchor lets a menu
  * use the viewport and escape clipping and stacking contexts in either chat. */
-export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allowFlip = true, portalAnchorRef, menuRef, motionProps, ...props }: AdaptiveMenuProps) {
+export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allowFlip = true, matchAnchorWidth = false, portalAnchorRef, menuRef, motionProps, ...props }: AdaptiveMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const setMenuRef = useCallback((menu: HTMLDivElement | null) => {
     ref.current = menu;
@@ -37,6 +38,8 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
     };
     const update = () => {
       const viewport = window.visualViewport;
+      const pixelRatio = (window.devicePixelRatio || 1) * (viewport?.scale || 1);
+      const snapToPixel = (value: number) => Math.round(value * pixelRatio) / pixelRatio;
       let leftEdge = (viewport?.offsetLeft ?? 0) + 12;
       let topEdge = (viewport?.offsetTop ?? 0) + 12;
       let rightEdge = leftEdge + (viewport?.width ?? document.documentElement.clientWidth) - 24;
@@ -52,6 +55,8 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
       const trigger = anchor.getBoundingClientRect();
       lastAnchorRect = trigger;
 
+      let scaleX: number;
+      let scaleY: number;
       if (portalAnchorRef) {
         const anchorStyle = window.getComputedStyle(anchor);
         lastAnchorVisibility = anchorStyle.visibility;
@@ -59,25 +64,27 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
         set('font-family', anchorStyle.fontFamily);
         set('font-size', anchorStyle.fontSize);
         set('line-height', anchorStyle.lineHeight);
-        // The portal has no positioned ancestor. Start at the viewport origin
-        // and use the measured trigger, including any app zoom, to place it.
+        // Fixed portals use viewport coordinates. Deriving zoom from offsetWidth
+        // feeds the rounded width back into matchAnchorWidth and can make it oscillate.
         set('position', 'fixed');
-        set('inset', 'auto');
-        set('left', '0px');
-        set('top', '0px');
+        set('right', 'auto');
+        set('bottom', 'auto');
         set('margin', '0px');
         set('transform', 'none');
+        set('translate', 'none');
+        scaleX = scaleY = menu.currentCSSZoom || 1;
+      } else {
+        // Inline menus keep their existing positioned ancestor and centering transform.
+        set('translate', '0px 0px');
+        const initial = menu.getBoundingClientRect();
+        scaleX = initial.width / menu.offsetWidth || 1;
+        scaleY = initial.height / menu.offsetHeight || scaleX;
       }
 
-      // Individual translate composes with the existing centering transform.
-      // Convert viewport distances back to CSS pixels for scaled app surfaces.
-      set('translate', '0px 0px');
-      const initial = menu.getBoundingClientRect();
-      const scaleX = initial.width / menu.offsetWidth || 1;
-      const scaleY = initial.height / menu.offsetHeight || scaleX;
       set('max-width', `${Math.max(0, rightEdge - leftEdge) / scaleX}px`);
       set('min-width', '0px');
       set('min-height', '0px');
+      if (matchAnchorWidth) set('width', `${(portalAnchorRef ? snapToPixel(trigger.width) : trigger.width) / scaleX}px`);
       // Measure hidden list content without temporarily expanding the menu:
       // expanding a scroll area can clamp its scrollTop back to zero.
       const scrollRegion = menu.querySelector<HTMLElement>('[data-menu-scroll-region]');
@@ -99,13 +106,20 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
       }
       set('max-height', `${Math.floor(Math.min(heightLimit, available / scaleY))}px`);
       const rect = menu.getBoundingClientRect();
-      const desiredLeft = portalAnchorRef ? trigger.left + (trigger.width - rect.width) / 2 : rect.left;
+      const desiredLeft = portalAnchorRef
+        ? trigger.left + (matchAnchorWidth ? 0 : (trigger.width - rect.width) / 2)
+        : rect.left;
       const left = Math.max(leftEdge, Math.min(desiredLeft, rightEdge - rect.width));
       const desiredTop = side === 'bottom' ? trigger.bottom + 8 : trigger.top - 8 - rect.height;
       // A locked side stays attached there. Fit by scrolling, never by sliding
       // the menu above a centered New-chat composer when it grows.
       const top = allowFlip ? Math.max(topEdge, Math.min(desiredTop, bottomEdge - rect.height)) : desiredTop;
-      set('translate', `${(left - rect.left) / scaleX}px ${(top - rect.top) / scaleY}px`);
+      if (portalAnchorRef) {
+        set('left', `${snapToPixel(left) / scaleX}px`);
+        set('top', `${snapToPixel(top) / scaleY}px`);
+      } else {
+        set('translate', `${(left - rect.left) / scaleX}px ${(top - rect.top) / scaleY}px`);
+      }
       menu.dataset.side = side;
     };
     const schedule = () => {

@@ -571,7 +571,7 @@ const lightweightSidebarCss = `
   .eterx-sidebar-shell .eterx-sidebar-recents {
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.040), rgba(255, 255, 255, 0.018)),
-      rgba(16, 16, 16, 0.30) !important;
+      rgba(47, 47, 47, 0.34) !important;
     border-color: transparent !important;
     box-shadow: none !important;
   }

@@ -15,7 +15,7 @@ import { CODING_MODES, getCodingMode, type CodingAgentId } from '../../lib/code/
 import { CodingModeDetails } from './coding-mode-details';
 import { ComposerPermissionSelector, ComposerToolApprovals } from './composer-permissions';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
+import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { ProviderIconAsset } from '../ui/provider-icon';
 import { Tooltip } from '../ui/tooltip';
@@ -60,6 +60,7 @@ import {
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 import { useManagedWorkspace } from '../../lib/use-managed-workspace';
 import { WorkspaceLocationMenu } from './workspace-location-menu';
+import { ProjectFolderPicker, projectFolderName, useProjectFolderBrowse } from './project-folder-picker';
 import { GitBranchControl } from './git-branch-control';
 import type { RunLocation } from '../../lib/managed-workspaces';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
@@ -428,11 +429,12 @@ export interface ChatInputProps {
   workspacePath?: string | null;
   onWorkspacePathChange?: (path: string | null) => void;
   workspaceOwnerId?: string;
+  onWorkspacePickerStateChange?: (state: { owner: string; path: string | null; name: string; locked: boolean }) => void;
   runLocation?: RunLocation;
   onRunLocationChange?: (location: RunLocation) => void;
   chatModelSelection?: string;
   onModelSelectionChange?: (selection: string) => void;
-  onOpenSettingsTab?: (tab: 'api' | 'models') => void;
+  onOpenSettingsTab?: (tab: 'api' | 'models' | 'general') => void;
   chatTitle?: string;
   chatUsage?: ReturnType<typeof summarizeChatUsage>;
   onCompact?: () => Promise<void>;
@@ -1103,6 +1105,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   workspacePath,
   workspaceOwnerId,
   onWorkspacePathChange,
+  onWorkspacePickerStateChange,
   runLocation: propRunLocation,
   onRunLocationChange,
   chatModelSelection: propChatModelSelection,
@@ -1162,7 +1165,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [codingDetails, setCodingDetails] = useState<CodingAgentId | null>(null);
   const [showContextUsagePanel, setShowContextUsagePanel] = useState(false);
   const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
-  const [projectSearch, setProjectSearch] = useState('');
   const [availableAgents, setAvailableAgents] = useState<AvailableAgentSummary[]>([]);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
   const agentMenuRef = useRef<HTMLDivElement>(null);
@@ -1510,95 +1512,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (managedWorkspace.error) setOpenStatusMenu('run');
   }, [managedWorkspace.error]);
 
-  const workspaceName = useMemo(() => {
-    if (!activeWorkspacePath) return "Chat workspace";
-    if (managedWorkspace.workspace) return managedWorkspace.workspace.kind === 'sandbox' ? 'Scratch workspace' : `${managedWorkspace.workspace.sourcePath?.split(/[/\\]/).filter(Boolean).pop() || 'Project'} worktree`;
-    return activeWorkspacePath.split(/[/\\]/).filter(Boolean).pop() || activeWorkspacePath;
-  }, [activeWorkspacePath, managedWorkspace.workspace]);
-
-  const [recentProjects, setRecentProjects] = useState<Array<{ path: string; name: string }>>([]);
-  useEffect(() => {
-    if (openStatusMenu === 'project' && typeof window !== 'undefined') {
-      try {
-      const saved = appStorage.getItem('eterx_recent_projects');
-        const parsed = saved ? JSON.parse(saved) : [];
-        if (Array.isArray(parsed)) {
-          setRecentProjects(parsed.filter((project): project is { path: string; name: string } =>
-            project && typeof project.path === 'string' && project.path.trim().length > 0
-            && typeof project.name === 'string'
-          ));
-        }
-      } catch { }
-    }
-  }, [openStatusMenu]);
-
-  const filteredRecentProjects = useMemo(() => {
-    const query = projectSearch.trim().toLowerCase();
-    const projects = activeWorkspacePath
-      ? [{ path: activeWorkspacePath, name: workspaceName }, ...recentProjects.filter(project => project.path !== activeWorkspacePath)]
-      : recentProjects;
-    const uniqueProjects = projects.filter((project, index) => projects.findIndex(item => item.path === project.path) === index);
-    if (!query) return uniqueProjects;
-    return uniqueProjects.filter(p => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query));
-  }, [recentProjects, projectSearch, activeWorkspacePath, workspaceName]);
-
-  const looksLikePath = useMemo(() => {
-    const trimmed = projectSearch.trim();
-    return /^[a-zA-Z]:[\\/]/i.test(trimmed) || trimmed.includes('/') || trimmed.includes('\\');
-  }, [projectSearch]);
-
-  const handleRemoveRecentProject = useCallback((projectPath: string) => {
-    if (projectPath === activeWorkspacePath) {
-      handleWorkspacePathChange(null);
-    }
-    if (typeof window !== 'undefined') {
-      try {
-      const saved = appStorage.getItem('eterx_recent_projects');
-        const parsed = saved ? JSON.parse(saved) : [];
-        if (Array.isArray(parsed)) {
-          const updated = parsed.filter((p: any) => p.path !== projectPath);
-          appStorage.setItem('eterx_recent_projects', JSON.stringify(updated));
-          setRecentProjects(updated);
-        }
-      } catch { }
-    }
-  }, [activeWorkspacePath, handleWorkspacePathChange]);
-
-  const handleSelectFolderDialog = useCallback(async () => {
-    const w = window as any;
-    let selectedPath: string | null = null;
-    try {
-      if (typeof w.electronAPI?.selectFolder === 'function') {
-        selectedPath = await w.electronAPI.selectFolder();
-      } else {
-        selectedPath = window.prompt('Paste or type your local project folder path:');
-      }
-    } catch {
-      showComposerNotice('Folder picker unavailable', 'EterX could not open the folder picker. Try again or paste a folder path into project search.');
-      return;
-    }
-
-    if (selectedPath && selectedPath.trim()) {
-      const cleanPath = selectedPath.trim();
-      handleWorkspacePathChange(cleanPath);
-
-      // Save to recent projects
-      if (typeof window !== 'undefined') {
-        try {
-      const saved = appStorage.getItem('eterx_recent_projects');
-          const parsed = saved ? JSON.parse(saved) : [];
-          const name = cleanPath.split(/[/\\]/).filter(Boolean).pop() || cleanPath;
-          const updated = [
-            { path: cleanPath, name, openedAt: Date.now() },
-            ...(Array.isArray(parsed) ? parsed : []).filter((p: any) => p && typeof p.path === 'string' && typeof p.name === 'string' && p.path !== cleanPath)
-          ].slice(0, 8);
-          appStorage.setItem('eterx_recent_projects', JSON.stringify(updated));
-          setRecentProjects(updated);
-        } catch { }
-      }
-    }
-    setOpenStatusMenu(null);
-  }, [handleWorkspacePathChange, showComposerNotice]);
+  const workspaceName = managedWorkspace.workspace?.kind === 'sandbox' ? 'Scratch workspace'
+    : managedWorkspace.workspace?.kind === 'worktree' ? (managedWorkspace.workspace.sourcePath ? projectFolderName(managedWorkspace.workspace.sourcePath) : 'Project') + ' worktree'
+      : projectFolderName(activeWorkspacePath);
+  const projectPickerOwner = workspaceOwnerId || activeChatId || 'terminal-draft-initial';
+  const projectPickerLocked = executionContextLocked || managedWorkspace.busy || isThinking;
+  React.useLayoutEffect(() => {
+    onWorkspacePickerStateChange?.({ owner: projectPickerOwner, path: activeWorkspacePath, name: workspaceName, locked: projectPickerLocked });
+  }, [onWorkspacePickerStateChange, projectPickerOwner, activeWorkspacePath, workspaceName, projectPickerLocked]);
+  const handleSelectFolderDialog = useProjectFolderBrowse(projectPickerOwner, projectPickerLocked, handleWorkspacePathChange, () => {
+    showComposerNotice('Folder picker unavailable', 'Try again or paste a folder path into project search.');
+  });
 
   const refreshStoredModelSettings = useCallback(() => {
     const loaded = readStoredModelSettings();
@@ -2711,7 +2635,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setShowPinMenu(false);
     setShowAgentMenu(false);
     setShowModelMenu(false);
-    setProjectSearch('');
     setOpenStatusMenu(prev => prev === menu ? null : menu);
   }, []);
   const openProjectsFromRail = useCallback(() => {
@@ -3053,7 +2976,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     : [];
   const dockPositionClass = isEmptyHome
     ? 'top-[45%] -translate-y-1/2'
-    : `eterx-chat-input-dock-active top-auto bottom-0 ${isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10'} bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]`;
+    : `eterx-chat-input-dock-active top-auto bottom-0 ${isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10'} bg-[linear-gradient(180deg,transparent_0%,var(--background)_32%,var(--background)_100%)]`;
   const surfaceRadiusClass = isLiveActive
     ? inputValue.includes('\n') || inputValue.length > 55 ? 'rounded-[22px]' : 'rounded-full'
     : composerRadius;
@@ -3515,7 +3438,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               </div>
               <div className="mt-3 flex items-center gap-2">
                 <button type="button" disabled={executionContextLocked} onClick={() => { closeSlashPanel(); setOpenStatusMenu('project'); }} className="rounded-lg bg-white/[0.06] px-3 py-2 text-xs font-medium text-[var(--context-panel-title,inherit)] hover:bg-white/10 disabled:opacity-40">{activeWorkspacePath ? 'Change workspace' : 'Select workspace'}</button>
-                <button type="button" disabled={executionContextLocked} onClick={() => { void handleSelectFolderDialog(); }} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/10 disabled:opacity-40">Browse folders</button>
+                <button type="button" disabled={projectPickerLocked} onClick={() => { setOpenStatusMenu(null); void handleSelectFolderDialog(); }} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/10 disabled:opacity-40">Browse folders</button>
                 {activeWorkspacePath && <button type="button" disabled={executionContextLocked} onClick={() => handleWorkspacePathChange(null)} className="ml-auto rounded-lg px-3 py-2 text-xs opacity-60 hover:bg-white/10 disabled:opacity-40">Remove</button>}
               </div>
               {executionContextLocked && <p className="mt-3 text-xs opacity-60">Workspace changes are available when this run finishes.</p>}
@@ -4431,7 +4354,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </div>
               )}
 
-              {showComposerControls && !isAgentBuilder && !executionContextLocked && !chatMode && <ComposerPermissionSelector />}
+              {showComposerControls && !isAgentBuilder && (!chatMode || approvalRunActive) && <ComposerPermissionSelector key={activeComposerChatKey} chatId={activeChatId} onOpenSettingsTab={onOpenSettingsTab} />}
 
               {/* The Agent Builder uses the same turn-scoped model selection as every
                   other agent chat. Keeping this control mounted lets a builder chat
@@ -4737,7 +4660,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   aria-haspopup="dialog"
                   aria-expanded={openStatusMenu === 'project'}
                   title={activeWorkspacePath || 'Choose a workspace for this chat'}
-                  disabled={executionContextLocked || managedWorkspace.busy || isThinking}
+                  disabled={projectPickerLocked}
                   onClick={(event) => toggleStatusMenu(event, 'project')}
                 >
                   <FolderClosed className="eterx-new-chat-status-icon" strokeWidth={1.9} />
@@ -4745,151 +4668,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
                 </button>
                 {openStatusMenu === 'project' && (
-                    <AdaptiveMenu
-                      className="eterx-composer-popout eterx-status-popout eterx-status-popout-project"
-                      heightLimit={420}
-                      role="dialog"
-                      aria-label="Workspace folder selector"
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Escape') {
-                          event.stopPropagation();
-                          setOpenStatusMenu(null);
-                          setProjectSearch('');
-                          event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(':scope > button')?.focus();
-                          return;
-                        }
-                        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-                        event.preventDefault();
-                        const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('.eterx-status-menu-item:not(:disabled)'));
-                        const index = items.indexOf(document.activeElement as HTMLElement);
-                        const next = index < 0
-                          ? (event.key === 'ArrowDown' ? 0 : items.length - 1)
-                          : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-                        items[next]?.focus();
-                      }}
-                    >
-                      <label className="eterx-status-search">
-                        <Search className="h-4 w-4 shrink-0" strokeWidth={2} />
-                        <input
-                          autoFocus
-                          aria-label="Search projects by name or path"
-                          value={projectSearch}
-                          onChange={(event) => setProjectSearch(event.target.value)}
-                          placeholder="Search projects"
-                        />
-                      </label>
-                      <div data-menu-scroll-region className="eterx-status-menu-section flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
-                        {looksLikePath && (
-                          <button
-                            type="button"
-                            className="eterx-status-menu-item bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.08] dark:hover:bg-white/[0.08]"
-                            onClick={() => {
-                              const pathVal = projectSearch.trim();
-                              handleWorkspacePathChange(pathVal);
-                              try {
-                                const saved = appStorage.getItem('eterx_recent_projects');
-                                const parsed = saved ? JSON.parse(saved) : [];
-                                const name = pathVal.split(/[/\\]/).filter(Boolean).pop() || pathVal;
-                                const updated = [
-                                  { path: pathVal, name, openedAt: Date.now() },
-                                  ...(Array.isArray(parsed) ? parsed : []).filter((p: any) => p && typeof p.path === 'string' && typeof p.name === 'string' && p.path !== pathVal)
-                                ].slice(0, 8);
-                                appStorage.setItem('eterx_recent_projects', JSON.stringify(updated));
-                                setRecentProjects(updated);
-                              } catch { }
-                              setProjectSearch('');
-                              setOpenStatusMenu(null);
-                            }}
-                          >
-                            <FolderPlus className="eterx-status-menu-icon text-[#E2765A]" strokeWidth={1.95} />
-                            <div className="min-w-0 flex-1 text-left">
-                              <div className="text-[12px] font-semibold text-[#E2765A] leading-none mb-0.5">Use pasted path</div>
-                              <div className="truncate text-[10px] text-[var(--eterx-status-popout-muted)] font-mono leading-none">{projectSearch.trim()}</div>
-                            </div>
-                          </button>
-                        )}
-                        {filteredRecentProjects.length > 0 ? filteredRecentProjects.map(project => {
-                          const selected = project.path === activeWorkspacePath;
-                          return (
-                            <div
-                              key={project.path}
-                              title={project.path}
-                              className={`eterx-status-menu-item group ${ selected ? 'is-selected' : '' }`}
-                              onClick={() => {
-                                handleWorkspacePathChange(project.path);
-                                setProjectSearch('');
-                                setOpenStatusMenu(null);
-                              }}
-                              role="button"
-                              tabIndex={0}
-                              aria-pressed={selected}
-                              onKeyDown={(e) => {
-                                if (e.target !== e.currentTarget) return;
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  handleWorkspacePathChange(project.path);
-                                  setProjectSearch('');
-                                  setOpenStatusMenu(null);
-                                }
-                              }}
-                            >
-                              <span className="eterx-project-menu-leading">
-                                <FolderClosed className="eterx-status-menu-icon eterx-project-menu-folder" strokeWidth={1.95} />
-                                <button
-                                  type="button"
-                                  className="eterx-project-remove-button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleRemoveRecentProject(project.path);
-                                  }}
-                                  title="Remove from list"
-                                  aria-label={`Remove ${project.name} from recent projects`}
-                                >
-                                  <X className="h-3 w-3" strokeWidth={2.25} />
-                                </button>
-                              </span>
-                              <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">{project.name}</span>
-                              {selected && <Check className="eterx-project-selected-check h-4 w-4 shrink-0" strokeWidth={2.45} />}
-                            </div>
-                          );
-                        }) : !looksLikePath && (
-                          <div className="eterx-status-empty" role="status">
-                            <FolderOpen className="mx-auto mb-2 h-5 w-5" strokeWidth={1.6} />
-                            <p>{projectSearch.trim() ? 'No matching projects' : 'Choose your first project'}</p>
-                            <p className="eterx-project-empty-hint">{projectSearch.trim() ? 'Try another name or paste a folder path.' : 'Open a folder to give this chat a workspace.'}</p>
-                          </div>
-                        )}
-                      </div>
-                      
-                      <div className="eterx-status-menu-rule" />
-                      
-                      <button
-                        type="button"
-                        className="eterx-status-menu-item eterx-project-action w-full"
-                        onClick={() => {
-                          handleSelectFolderDialog();
-                          setOpenStatusMenu(null);
-                        }}
-                      >
-                        <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-current">New project</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="eterx-status-menu-item eterx-project-action"
-                        aria-pressed={!activeWorkspacePath}
-                        onClick={() => {
-                          handleWorkspacePathChange(null);
-                          setProjectSearch('');
-                          setOpenStatusMenu(null);
-                        }}
-                      >
-                        <X className="eterx-status-menu-icon" strokeWidth={1.8} />
-                        <span className="min-w-0 flex-1 truncate text-left">Don&apos;t work in a project</span>
-                        {!activeWorkspacePath && <Check className="eterx-project-selected-check h-4 w-4 shrink-0" strokeWidth={2} />}
-                      </button>
-                    </AdaptiveMenu>
+                  <ProjectFolderPicker
+                    workspacePath={activeWorkspacePath}
+                    workspaceName={workspaceName}
+                    locked={projectPickerLocked}
+                    onSelect={handleWorkspacePathChange}
+                    onBrowse={() => void handleSelectFolderDialog()}
+                    onClose={() => setOpenStatusMenu(null)}
+                  />
                 )}
               </div>
 

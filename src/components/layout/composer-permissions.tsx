@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Check, Hand, Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { readChatPermissionPreference, subscribeChatPermissionPreference, writeChatPermissionMode } from '../../lib/chat-permission-preferences';
@@ -9,39 +9,69 @@ import { requestJson } from '../../lib/request-json';
 import styles from './composer-permissions.module.css';
 
 const MODES = {
-  ask: { label: 'Ask for approval', description: 'Review commands, file changes, and online actions before they run.', Icon: Hand },
-  review: { label: 'Approve for me', description: 'EterX handles routine searches and workspace edits, and asks about other actions.', Icon: ShieldCheck },
-  full: { label: 'Full access', description: 'Run tools with EterX’s existing access to your files and the internet.', Icon: ShieldAlert },
+  ask: { label: 'Ask for approval', description: 'Ask before running commands, editing files, or searching the web.', Icon: Hand },
+  review: { label: 'Approve for me', description: 'Handle routine searches and workspace edits, and ask about other actions.', Icon: ShieldCheck },
+  full: { label: 'Full access', description: 'Use EterX’s full access to files, commands, and the internet.', Icon: ShieldAlert },
 } satisfies Record<ChatPermissionMode, { label: string; description: string; Icon: typeof Shield }>;
 
 const MODE_ORDER: ChatPermissionMode[] = ['ask', 'review', 'full'];
 
-export function ComposerPermissionSelector() {
-  const mode = useSyncExternalStore(subscribeChatPermissionPreference, readChatPermissionPreference, () => 'full' as const);
-  if (mode === 'always-full') return null;
+export function ComposerPermissionSelector({ chatId, onOpenSettingsTab }: {
+  chatId?: string | null;
+  onOpenSettingsTab?: (tab: 'api' | 'models' | 'general') => void;
+}) {
+  const mode = useSyncExternalStore(subscribeChatPermissionPreference, () => readChatPermissionPreference(chatId), () => 'full' as const);
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
   const { Icon, label } = MODES[mode];
+
+  const selectMode = async (nextMode: ChatPermissionMode) => {
+    if (savingRef.current) return;
+    setSaveFailed(false);
+    if (!chatId) {
+      writeChatPermissionMode(chatId, nextMode);
+      return;
+    }
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const response = await requestJson('/api/agent/approval', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, mode: nextMode }),
+      }, 10_000);
+      if (!response.ok) throw new Error('Permission update failed.');
+      writeChatPermissionMode(chatId, nextMode);
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
 
   return (
     <DropdownMenu.Root modal={false}>
       <DropdownMenu.Trigger asChild>
-        <button type="button" aria-label={`Permissions, ${label}`} title={`${label} · Permissions for new runs`} className={styles.trigger} data-mode={mode}>
+        <button type="button" aria-label={`Permissions, ${label}${saveFailed ? ', update failed' : ''}`} aria-busy={saving} title={saveFailed ? 'Permission update failed. Reopen to try again.' : `${label} · Applies to subsequent tool actions`} className={styles.trigger} data-mode={mode}>
           <Icon size={14} strokeWidth={1.8} aria-hidden="true" />
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content aria-label="EterX permissions" side="top" align="start" sideOffset={10} collisionPadding={12} className={styles.menu}>
-          <DropdownMenu.Label className={styles.menuHeading}>
-            <Shield size={14} strokeWidth={1.8} aria-hidden="true" />
-            EterX permissions
-          </DropdownMenu.Label>
+          <div className={styles.menuHeading}>
+            <DropdownMenu.Label className={styles.menuTitle}>Select Permission for this agent</DropdownMenu.Label>
+            {onOpenSettingsTab && <button type="button" className={styles.learnMore} onClick={() => onOpenSettingsTab('general')}>Learn more</button>}
+          </div>
           <DropdownMenu.RadioGroup value={mode} onValueChange={value => {
-            if (isChatPermissionMode(value)) writeChatPermissionMode(value);
+            if (isChatPermissionMode(value)) void selectMode(value);
           }}>
             {MODE_ORDER.map(value => {
               const option = MODES[value];
               return (
-                <DropdownMenu.RadioItem key={value} value={value} textValue={option.label} className={styles.option} data-mode={value}>
-                  <span className={styles.optionIcon}><option.Icon size={17} strokeWidth={1.8} aria-hidden="true" /></span>
+                <DropdownMenu.RadioItem key={value} value={value} disabled={saving} textValue={option.label} className={styles.option} data-mode={value}>
+                  <span className={styles.optionIcon}><option.Icon size={19} strokeWidth={1.8} aria-hidden="true" /></span>
                   <span className={styles.optionText}>
                     <span className={styles.optionLabel}>{option.label}</span>
                     <span className={styles.optionDetail}>{option.description}</span>

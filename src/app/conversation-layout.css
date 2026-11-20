@@ -54,14 +54,14 @@
 :root .eterx-conversation-pane .eterx-chat-feed-scroll {
   scrollbar-gutter: stable;
   padding-left: max(var(--eterx-conversation-gutter, 16px), var(--eterx-turn-nav-space)) !important;
-  padding-right: calc(var(--eterx-conversation-gutter, 16px) + var(--eterx-proxy-side-space)) !important;
+  padding-right: max(var(--eterx-work-panel-inset, 0px), calc(var(--eterx-conversation-gutter, 16px) + var(--eterx-proxy-side-space))) !important;
 }
 :root .eterx-conversation-layout > .eterx-conversation-pane > .eterx-chat-input-dock {
   width: calc(100% - var(--eterx-chat-scrollbar-space, var(--eterx-sb-size, 9px))) !important;
   left: 0 !important;
   right: var(--eterx-chat-scrollbar-space, var(--eterx-sb-size, 9px)) !important;
   padding-left: max(var(--eterx-conversation-gutter, 16px), var(--eterx-turn-nav-space)) !important;
-  padding-right: calc(var(--eterx-conversation-gutter, 16px) + var(--eterx-proxy-side-space)) !important;
+  padding-right: max(var(--eterx-work-panel-inset, 0px), calc(var(--eterx-conversation-gutter, 16px) + var(--eterx-proxy-side-space))) !important;
   pointer-events: none;
 }
 .eterx-conversation-pane .eterx-chat-input-dock > * {
@@ -156,10 +156,10 @@
 /* On wide panes the card occupies a reserved content gutter. The pane and
    its native scrollbar keep their full width when Proxy is toggled. */
 @container eterx-conversation-layout (min-width: 1000px) {
-  .eterx-conversation-layout > .eterx-proxy-dock ~ .eterx-conversation-pane {
+  .eterx-conversation-layout:not([data-work-panel-open="true"]) > .eterx-proxy-dock ~ .eterx-conversation-pane {
     --eterx-proxy-side-space: 248px;
   }
-  .eterx-conversation-layout > .eterx-proxy-dock {
+  .eterx-conversation-layout:not([data-work-panel-open="true"]) > .eterx-proxy-dock {
     position: absolute;
     grid-area: auto;
     inset: 12px calc(12px + var(--eterx-sb-size, 9px)) 12px auto;
@@ -169,10 +169,10 @@
     margin: 0;
     padding: 0;
   }
-  .eterx-conversation-layout .eterx-proxy-compact-bar {
+  .eterx-conversation-layout:not([data-work-panel-open="true"]) .eterx-proxy-compact-bar {
     display: none;
   }
-  .eterx-conversation-layout .eterx-proxy-card {
+  .eterx-conversation-layout:not([data-work-panel-open="true"]) .eterx-proxy-card {
     display: flex;
     position: relative;
     inset: auto;

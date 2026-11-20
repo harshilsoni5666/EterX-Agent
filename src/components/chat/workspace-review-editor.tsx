@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
+import { diffLineCounts } from '../../lib/diff-line-numbers';
 
 export type WorkspaceReviewMode = 'overview' | 'review' | 'code';
 type WorkspaceInternalMode = WorkspaceReviewMode | 'subagent';
@@ -171,14 +172,6 @@ function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(' ');
 }
 
-function numberFrom(...values: any[]) {
-  for (const value of values) {
-    const n = Number(value);
-    if (Number.isFinite(n) && n >= 0) return n;
-  }
-  return 0;
-}
-
 function fileKey(file: WorkspaceReviewFile, index: number) {
   return file.id || file.filepath || `${file.filename}:${index}`;
 }
@@ -237,10 +230,7 @@ function languageLabel(file: WorkspaceReviewFile) {
 
 function getStats(file: WorkspaceReviewFile): FileStats {
   const lines = file.diffLines || [];
-  const countedAdded = lines.filter(line => line.type === 'added').length;
-  const countedRemoved = lines.filter(line => line.type === 'removed').length;
-  const added = countedAdded || numberFrom(file.added, file.linesAdded);
-  const removed = countedRemoved || numberFrom(file.removed, file.linesRemoved);
+  const { added, removed } = diffLineCounts(lines, file.linesAdded ?? file.added, file.linesRemoved ?? file.removed);
   return {
     added,
     removed,

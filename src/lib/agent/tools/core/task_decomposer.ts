@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { ToolDefinition } from '../../schemas';
 import { globalTaskPlanner } from '../../task_planner';
 import { normalizeMainAgentMode } from '../../model-routing';
@@ -104,7 +105,7 @@ export const taskDecomposerTool: ToolDefinition = {
     const chatId = getAgentConversationScope(runtimeContext);
     const emitTrace = typeof runtimeContext?._onTrace === 'function' ? runtimeContext._onTrace : null;
     const planOwnerTraceId = String(runtimeContext?.ownerTraceId || '').trim();
-    const planId = `task-plan-${ planOwnerTraceId || chatId || Date.now() }`;
+    const planId = `task-plan-${ planOwnerTraceId || randomUUID() }`;
     const emitPlanTrace = (data: TaskTrackerData, phase: 'generating' | 'generated' | 'progress' | 'complete' | 'failed') => {
       emitTrace?.({
         ...trackerToTrace(data, phase),

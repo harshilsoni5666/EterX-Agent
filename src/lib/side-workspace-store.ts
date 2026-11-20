@@ -7,7 +7,7 @@ import { recordBrowserHistory } from './browser-history';
 
 export type WorkspaceKind = 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents' | 'git';
 export type WorkspaceReviewState = { scope: 'chat' | 'working' | 'branch'; selected: string; filter: string; expanded: boolean; split: boolean; showTree: boolean; root: string; wrap?: boolean; loadFull?: boolean; richPreview?: boolean; ignoreWhitespace?: boolean; wordHighlights?: 'enabled' | 'disabled'; viewed?: string[]; hideViewed?: boolean; compactFolders?: boolean; baseRefs?: Record<string, string> };
-export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; browserNavigation?: { url: string }; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> } };
+export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; browserNavigation?: { url: string }; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> }; gitNavigation?: { view: import('./git/types').GitView; focusCommit?: boolean } };
 // Keep the user's split relative to the workspace after the sidebar is laid
 // out. Pixel widths become stale when the sidebar or window changes size.
 type WorkspaceState = { open: boolean; widthRatio: number; expanded: boolean; tabs: WorkspaceTab[]; activeId: string | null; folders?: string[] };
@@ -137,6 +137,9 @@ export function openWorkspaceReview(owner: string, patch: Partial<WorkspaceRevie
     ...existing?.review, ...patch,
   };
   return addWorkspaceTab(owner, 'review', { review });
+}
+export function openWorkspaceGit(owner: string, root: string, view: import('./git/types').GitView, focusCommit = false) {
+  return addWorkspaceTab(owner, 'git', { root, gitNavigation: { view, focusCommit } });
 }
 export function closeWorkspaceTab(owner: string, id: string) {
   recordedBrowserPages.delete(id);

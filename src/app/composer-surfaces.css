@@ -1,20 +1,21 @@
 /* Shared composer palette for the main and side conversations. */
 :root[data-theme="dark"] {
-  --composer-surface: #212121;
-  --composer-rail-surface: #1D1D1D;
+  --composer-surface: #0E0E0E;
+  --composer-rail-surface: #0A0A0A;
   --composer-shadow: none;
-  --composer-outline: transparent;
-  --composer-outline-hover: transparent;
-  --composer-outline-focus: transparent;
+  --composer-surface-shadow: inset 0 1px 2px rgb(255 255 255 / 5%);
+  --composer-outline: #1A1A1A;
+  --composer-outline-hover: var(--composer-outline);
+  --composer-outline-focus: var(--composer-outline);
   --composer-menu-surface: rgba(38, 38, 38, 0.95);
   --composer-menu-ink: #E8E8E8;
   --composer-menu-muted: #A3A3A3;
   --composer-menu-line: #383838;
   --composer-menu-active: rgba(255, 255, 255, 0.055);
   --composer-menu-selected: rgba(255, 255, 255, 0.09);
-  --composer-control-surface: #2B2B2B;
-  --composer-control-hover: #333333;
-  --composer-control-pressed: #383838;
+  --composer-control-surface: #1C1C1C;
+  --composer-control-hover: #262626;
+  --composer-control-pressed: #2E2E2E;
   --composer-mode-surface: #2C2C2C;
   --composer-mode-hover: #353535;
   --composer-mode-remove-hover: #434343;
@@ -82,10 +83,10 @@
   --eterx-composer-fog-strong-bottom: color-mix(in srgb, var(--composer-surface) 95%, transparent);
   --eterx-composer-fog-clear-bottom: color-mix(in srgb, var(--composer-surface) 0%, transparent);
   border-radius: var(--composer-corner) !important;
-  border: 1px solid transparent !important;
+  border: 1px solid var(--composer-outline) !important;
   background: var(--composer-surface) !important;
   background-clip: padding-box;
-  box-shadow: none !important;
+  box-shadow: var(--composer-surface-shadow, none) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   transition-property: background-color, color !important;
@@ -132,6 +133,11 @@
   box-shadow: none !important;
 }
 
+:root[data-theme="dark"] .eterx-composer-shell[data-new-chat="true"] .eterx-new-chat-status-rail {
+  background: var(--composer-surface) !important;
+  box-shadow: inset 0 0 0 1px var(--composer-outline) !important;
+}
+
 :root[data-theme] .eterx-composer-shell .eterx-composer-textarea,
 :root[data-theme] .eterx-composer-shell .eterx-composer-textarea:is(:focus, :focus-visible) {
   background: transparent !important;
@@ -166,7 +172,7 @@
 
 /* Match the native caption-button fill to every rendered title-bar segment. */
 :root[data-theme="dark"] {
-  --eterx-titlebar-bg: #101010;
+  --eterx-titlebar-bg: var(--sidebar-bg);
 }
 
 /* Paint only the upper strip, leaving the sidebar and workspace surfaces intact. */
@@ -270,6 +276,30 @@
 
 :root[data-theme] .eterx-composer-shell .eterx-composer-main.eterx-composer-surface:not([data-live="true"]) .eterx-chat-controls :is(.eterx-agent-button, .eterx-model-button, .eterx-composer-dictation-button):not([data-active="true"]):not(:disabled):is(:hover, :focus-visible, [data-open="true"]) {
   background: var(--composer-control-surface) !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-shell .eterx-composer-main.eterx-composer-surface:not([data-live="true"]) .eterx-chat-controls :is(.eterx-agent-button, .eterx-model-button, .eterx-composer-dictation-button):not([data-active="true"]):not(:disabled):active {
+  background: var(--composer-control-hover) !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-scroll-latest {
+  background: var(--composer-control-surface);
+  border-color: transparent;
+  color: var(--composer-menu-muted);
+}
+
+:root[data-theme="dark"] .eterx-composer-scroll-latest:is(:hover, :focus-visible) {
+  background: var(--composer-control-hover);
+  color: var(--composer-menu-ink);
+}
+
+:root[data-theme="dark"] .eterx-composer-scroll-latest:active {
+  background: var(--composer-control-pressed);
+}
+
+:root[data-theme="dark"] .eterx-composer-scroll-latest:focus-visible {
+  outline: 2px solid var(--composer-focus);
+  outline-offset: 2px;
 }
 
 :root[data-theme] .eterx-composer-shell .eterx-composer-main.eterx-composer-surface:not([data-live="true"]) .eterx-chat-controls .eterx-control-button:is(.eterx-composer-live-button, .eterx-composer-dictation-button)[data-active="true"] {

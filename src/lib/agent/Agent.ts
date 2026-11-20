@@ -103,8 +103,6 @@ import { getRuntimeEnvironment } from './runtime/environment';
 import { buildTerminalResultTrace } from './terminal-result-trace';
 import { getToolResultOutcome } from './tool-semantics';
 import { AGENT_EXECUTION_POLICY } from './execution-operating-policy';
-import { getRuntimeWorkspaceRoot } from './workspace/path_resolver';
-import { resolveWorkspacePathForContext } from './workspace/path_resolver';
 import * as cognitiveCore from './hooks/cognitive-core';
 import { formatVisibleWorkNote as formatCleanVisibleWorkNote, WORK_NOTE_POLICY } from './work-note';
 import { FINAL_ANSWER_POLICY } from './response-format';
@@ -158,14 +156,10 @@ import { getVideoGenerationRouteBrief } from '../video/video-generation-runtime'
 import {
   basenameForTrace,
   buildFilePreviewTraceId,
-  buildLineDiffPreview,
   buildToolTraceFields,
-  collectToolTraceTargets,
   getToolDisplayLabel,
-  languageFromFilename,
   normalizeToolTraceName,
   normalizeToolTraceText,
-  normalizeTracePath,
 } from './tool-trace';
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { getAgentConversationScope } from './context-scope';
@@ -1340,116 +1334,6 @@ export class GeminiAgentClient {
     return merged;
   }
 
-  private getTraceWorkspaceRoot(context?: ProjectContext): string {
-    return getRuntimeWorkspaceRoot(context);
-  }
-
-  private resolvePreviewCandidates(
-    toolName: string,
-    args: any = {},
-    result?: any,
-    context?: ProjectContext,
-  ): Array<{ tracePath: string; filepath: string }> {
-    const workspaceRoot = this.getTraceWorkspaceRoot(context);
-    const targets = collectToolTraceTargets(toolName, args, result);
-    const candidates: Array<{ tracePath: string; filepath: string }> = [];
-    const seen = new Set<string>();
-
-    const addCandidate = (tracePath: unknown) => {
-      const raw = String(tracePath || '').trim();
-      if (!raw) return;
-      let filepath = pathLib.isAbsolute(raw) ? raw : pathLib.resolve(workspaceRoot, raw);
-      // Resolve relative paths through the same runtime-aware resolver used by
-      // the file tools. This keeps pre-edit snapshots on the exact path that
-      // workspace_edit_file will modify (Desktop aliases, focused workspaces,
-      // scratch roots, and selected folders included).
-      if (!pathLib.isAbsolute(raw)) {
-        try {
-          filepath = resolveWorkspacePathForContext(raw, context);
-        } catch {
-          // Keep the conservative workspace-root fallback for trace-only
-          // previews when a path is outside the current read policy.
-        }
-      }
-      const key = normalizeTracePath(filepath);
-      if (seen.has(key)) return;
-      seen.add(key);
-      candidates.push({ tracePath: raw, filepath });
-    };
-
-    targets.forEach(addCandidate);
-    [
-      result?.path,
-      result?.filePath,
-      result?.filepath,
-      args?.filename,
-      args?.filePath,
-      args?.filepath,
-      args?.file_path,
-      args?.path,
-    ].forEach(addCandidate);
-
-    return candidates;
-  }
-
-  private async readSmallPreviewFile(filePath: string, maxBytes = 500_000): Promise<{
-    content: string;
-    size: number;
-    totalLines: number;
-    truncated: boolean;
-  } | null> {
-    if (!filePath) return null;
-    try {
-      if (!await fsExtra.pathExists(filePath)) return null;
-      const stat = await fsExtra.stat(filePath);
-      if (!stat.isFile()) return null;
-      if (stat.size > maxBytes) {
-        return { content: '', size: stat.size, totalLines: 0, truncated: true };
-      }
-      const content = await fsExtra.readFile(filePath, 'utf-8');
-      return {
-        content,
-        size: stat.size,
-        totalLines: content.length > 0 ? content.split(/\r?\n/).length : 0,
-        truncated: false,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  private async capturePreEditSnapshots(
-    toolName: string,
-    args: any,
-    context?: ProjectContext,
-  ): Promise<Map<string, string>> {
-    const editTools = new Set(['workspace_edit_file']);
-    const snapshots = new Map<string, string>();
-    if (!editTools.has(toolName)) return snapshots;
-
-    const candidates = this.resolvePreviewCandidates(toolName, args, undefined, context);
-    await Promise.all(candidates.map(async (candidate) => {
-      const preview = await this.readSmallPreviewFile(candidate.filepath, 5_000_000);
-      if (!preview || preview.truncated) return;
-      snapshots.set(normalizeTracePath(candidate.filepath), preview.content);
-      snapshots.set(normalizeTracePath(candidate.tracePath), preview.content);
-    }));
-    return snapshots;
-  }
-
-  private getPreEditSnapshot(
-    snapshots: Map<string, string> | undefined,
-    ...paths: Array<string | undefined>
-  ): string | undefined {
-    if (!snapshots) return undefined;
-    for (const value of paths) {
-      if (!value) continue;
-      const found = snapshots.get(normalizeTracePath(value));
-      if (found !== undefined) return found;
-    }
-    return undefined;
-  }
-
   private emitTracePreview(
     trace: any[],
     onTrace: ((t: any) => void) | undefined,
@@ -1467,118 +1351,31 @@ export class GeminiAgentClient {
     onTrace?.(event);
   }
 
-  private async emitWorkspaceToolPreviews(options: {
-    toolName: string;
-    args: any;
-    result: any;
-    context: ProjectContext;
-    trace: any[];
-    onTrace?: (t: any) => void;
-    ownerTraceId?: string;
-    preEditSnapshots?: Map<string, string>;
-  }): Promise<void> {
-    const { toolName, args, result, context, trace, onTrace, ownerTraceId, preEditSnapshots } = options;
-    // Generated media is a first-class artifact. Emit it through the same
-    // trace channel as workspace previews so the live thought sequence can
-    // open it in the existing cross-platform file panel with playback and
-    // download controls.
-    if (toolName === 'video_generator' && result?.success !== false) {
-      const filepath = String(result?.filePath || result?.path || '').trim();
-      if (!filepath) return;
-      const extension = filepath.split('.').pop()?.toLowerCase();
-      const mimeType = extension === 'webm' ? 'video/webm' : extension === 'ogv' || extension === 'ogg' ? 'video/ogg' : 'video/mp4';
-      this.emitTracePreview(trace, onTrace, {
-        id: buildFilePreviewTraceId(ownerTraceId, filepath),
-        ownerTraceId,
-        dedupe: false,
-        filename: basenameForTrace(filepath),
-        filepath,
-        language: 'video',
-        content: '',
-        mimeType,
-        mediaType: 'video',
-        artifactKind: 'media',
-        isEdit: false,
-      });
-      return;
-    }
-    if (toolName !== 'workspace_edit_file') return;
-
-    const candidates = this.resolvePreviewCandidates(toolName, args, result, context);
-    if (candidates.length === 0) return;
-
-    const createdKeys = new Set((Array.isArray(result?.filesCreated) ? result.filesCreated : []).map((value: string) => normalizeTracePath(value)));
-    const deletedKeys = new Set((Array.isArray(result?.filesDeleted) ? result.filesDeleted : []).map((value: string) => normalizeTracePath(value)));
-    const fileOperationResult = (
-      Array.isArray(result?.filesModified) ||
-      Array.isArray(result?.filesCreated) ||
-      Array.isArray(result?.filesDeleted) ||
-      Array.isArray(result?.changes)
-    )
-      ? {
-        filesModified: Array.isArray(result?.filesModified) ? result.filesModified : [],
-        filesCreated: Array.isArray(result?.filesCreated) ? result.filesCreated : [],
-        filesDeleted: Array.isArray(result?.filesDeleted) ? result.filesDeleted : [],
-        errors: Array.isArray(result?.errors) ? result.errors : [],
-        changes: Array.isArray(result?.changes) ? result.changes : [],
-        rolledBack: Boolean(result?.rolledBack),
-        operation: result?.operation,
-      }
-      : undefined;
-
-    for (const candidate of candidates.slice(0, 50)) {
-      const traceKey = normalizeTracePath(candidate.tracePath);
-      const fileKey = normalizeTracePath(candidate.filepath);
-      const before = this.getPreEditSnapshot(preEditSnapshots, candidate.filepath, candidate.tracePath);
-      const wasCreated = createdKeys.has(traceKey) || createdKeys.has(fileKey);
-      const wasDeleted = deletedKeys.has(traceKey) || deletedKeys.has(fileKey);
-      const filePreview = wasDeleted ? null : await this.readSmallPreviewFile(candidate.filepath, 5_000_000);
-      const content = filePreview?.content || '';
-      const lineCount = filePreview?.totalLines || (content ? content.split(/\r?\n/).length : 0);
-      const rawDiff = before !== undefined
-        ? buildLineDiffPreview(before, wasDeleted ? '' : content)
-        : null;
-      const deletedDiffLines = wasDeleted && rawDiff
-        ? rawDiff.diffLines.filter(line => line.type !== 'added')
-        : [];
-      const createdDiffLines = wasCreated && content
-        ? content.split(/\r?\n/).slice(0, 2_000).map((line, index) => ({
-          type: 'added' as const,
-          content: line,
-          newLine: index + 1,
-        }))
-        : [];
-      const diff = wasDeleted
-        ? { diffLines: deletedDiffLines, added: 0, removed: deletedDiffLines.filter(line => line.type === 'removed').length }
-        : rawDiff || { diffLines: createdDiffLines, added: lineCount, removed: 0 };
-
-      if (!content && !wasDeleted && !fileOperationResult && !filePreview) continue;
-
-      this.emitTracePreview(trace, onTrace, {
-        id: buildFilePreviewTraceId(ownerTraceId, candidate.filepath || candidate.tracePath),
-        ownerTraceId,
-        dedupe: false,
-        filename: basenameForTrace(candidate.tracePath || candidate.filepath),
-        filepath: candidate.filepath,
-        language: languageFromFilename(candidate.tracePath || candidate.filepath),
-        content: content.length <= 500_000 ? content : '',
-        lineCount,
-        totalLines: lineCount || undefined,
-        truncated: Boolean(filePreview?.truncated) || content.length > 500_000,
-        linesAdded: diff.added,
-        linesRemoved: diff.removed,
-        diffLines: diff.diffLines,
-        isEdit: !wasCreated && !wasDeleted,
-        operation: wasDeleted ? 'deleted' : wasCreated ? 'created' : 'edited',
-        fileOperationResult,
-        staged: false,
-        isLive: false,
-        isStreaming: false,
-        isLiveTyping: false,
-        streamState: 'closed',
-        status: result?.success === false || result?.error ? 'error' : 'completed',
-      });
-    }
+  private emitMediaPreview(
+    toolName: string,
+    result: any,
+    trace: any[],
+    onTrace: ((t: any) => void) | undefined,
+    ownerTraceId: string,
+  ): void {
+    if (toolName !== 'video_generator' || result?.success === false) return;
+    const filepath = String(result?.filePath || result?.path || '').trim();
+    if (!filepath) return;
+    const extension = filepath.split('.').pop()?.toLowerCase();
+    const mimeType = extension === 'webm' ? 'video/webm' : extension === 'ogv' || extension === 'ogg' ? 'video/ogg' : 'video/mp4';
+    this.emitTracePreview(trace, onTrace, {
+      id: buildFilePreviewTraceId(ownerTraceId, filepath),
+      ownerTraceId,
+      dedupe: false,
+      filename: basenameForTrace(filepath),
+      filepath,
+      language: 'video',
+      content: '',
+      mimeType,
+      mediaType: 'video',
+      artifactKind: 'media',
+      isEdit: false,
+    });
   }
 
   private finalizeEvidenceBoundAnswer(
@@ -2798,12 +2595,8 @@ ${ message.text }
       actionPublished = true;
     }
 
-    const preEditSnapshots = await this.capturePreEditSnapshots(canonicalToolName, effectiveArgs, context);
-
     const lateSteering = this.deferToolForPendingHumanSteering(context);
     if (lateSteering) {
-      // Snapshot preparation can yield. Close an already published trace,
-      // without recording an unstarted operation as a tool failure or edit.
       settlePublishedAction({ ...lateSteering, cancelled: true });
       if (canonicalToolName === 'get_skill_guidelines') loadedSkills.delete(String(effectiveArgs?.skill_name || ''));
       return lateSteering;
@@ -2813,21 +2606,13 @@ ${ message.text }
     const cachedResult = sharedCacheDisabled || ['computer', 'screen_agent'].includes(canonicalToolName) ? null : intelligentCache.get(canonicalToolName, effectiveArgs, cacheScope);
     if (cachedResult) {
       const output = { ...cachedResult, _cached: true };
-      await this.emitWorkspaceToolPreviews({
-        toolName: canonicalToolName,
-        args: effectiveArgs,
-        result: output,
-        context,
-        trace,
-        onTrace,
-        ownerTraceId: actionTraceId,
-        preEditSnapshots,
-      });
+      this.emitMediaPreview(canonicalToolName, output, trace, onTrace, actionTraceId);
       return recordOutcome(output);
     }
 
     const startedAt = Date.now();
-    const toolExec = createToolExecutionContext(context, onTrace);
+    const toolExec = createToolExecutionContext(context, canonicalToolName === 'workspace_edit_file'
+      ? event => this.emitTracePreview(trace, onTrace, event) : onTrace);
     (toolExec.context as any).ownerTraceId = actionTraceId;
     (toolExec.context as any).workspaceEditInvocationId = String(toolCall?.id || actionTraceId);
     try {
@@ -2841,16 +2626,7 @@ ${ message.text }
       // model request progressively larger and slower.
       output = toolResultCompactor.compact(canonicalToolName, effectiveArgs, output);
       performanceAnalytics.recordToolCall(canonicalToolName, Date.now() - startedAt, true);
-      await this.emitWorkspaceToolPreviews({
-        toolName: canonicalToolName,
-        args: effectiveArgs,
-        result: output,
-        context,
-        trace,
-        onTrace,
-        ownerTraceId: actionTraceId,
-        preEditSnapshots,
-      });
+      this.emitMediaPreview(canonicalToolName, rawOutput, trace, onTrace, actionTraceId);
 
       // --- Emit tool_result_preview event for all other tools ---
       const EXCLUDED_PREVIEW_TOOLS = new Set([
@@ -2904,23 +2680,6 @@ ${ message.text }
             ? 'Use the exact failure reason to correct the edit scope or arguments. Refresh only stale/missing target context; do not switch to a shell write or widen the mutation to bypass a failure.'
             : `Tool ${ canonicalToolName } failed. Try a different tool or a smaller, more direct call.`,
         };
-      // workspace_edit_file can publish staged file previews from inside the
-      // executor. If cancellation or an unexpected throw happens afterwards,
-      // the normal success path is skipped. Close those same preview IDs from
-      // the actual on-disk state so an "Editing file" row cannot remain live,
-      // disappear, and later reappear after polling or task hydration.
-      try {
-        await this.emitWorkspaceToolPreviews({
-          toolName: canonicalToolName,
-          args: effectiveArgs,
-          result: failedOutput,
-          context,
-          trace,
-          onTrace,
-          ownerTraceId: actionTraceId,
-          preEditSnapshots,
-        });
-      } catch { /* preview settlement must never mask the tool outcome */ }
       return recordOutcome(failedOutput);
     } finally {
       toolExec.dispose();
@@ -8459,10 +8218,6 @@ OUTPUT CONTRACT
           if (onTrace) onTrace(admittedActionEvent);
         }
 
-        const preEditSnapshots = actionAdmitted
-          ? await this.capturePreEditSnapshots(canonicalToolName, effectiveArgs, context)
-          : new Map<string, string>();
-
         const lateSteering = this.deferToolForPendingHumanSteering(context);
         if (lateSteering) {
           settleAdmittedAction({ ...lateSteering, cancelled: true });
@@ -8511,19 +8266,11 @@ OUTPUT CONTRACT
             toolOutput = cachedResult;
             toolOutput._cached = true;
             performanceAnalytics.recordToolCall(canonicalToolName, 0, true);
-            await this.emitWorkspaceToolPreviews({
-              toolName: canonicalToolName,
-              args: effectiveArgs,
-              result: toolOutput,
-              context,
-              trace,
-              onTrace,
-              ownerTraceId: actionTraceId,
-              preEditSnapshots,
-            });
+            this.emitMediaPreview(canonicalToolName, toolOutput, trace, onTrace, actionTraceId);
           } else {
             const execStart = Date.now();
-            const toolExec = createToolExecutionContext(context, onTrace);
+            const toolExec = createToolExecutionContext(context, canonicalToolName === 'workspace_edit_file'
+              ? event => this.emitTracePreview(trace, onTrace, event) : onTrace);
             (toolExec.context as any).ownerTraceId = actionTraceId;
             (toolExec.context as any).workspaceEditInvocationId = String(call.id || actionTraceId);
             // === MONITOR: broadcast tool_start ===
@@ -8622,18 +8369,7 @@ OUTPUT CONTRACT
                 if ((call.name === 'browser_navigate' || call.name === 'browser_goto' || call.name === 'browser_open') && args?.url) monitorEmitter.browserNav(String(args.url || ''), _mChatId);
                 if (call.name === 'browser_screenshot' && typeof toolOutput === 'string' && toolOutput.length > 100) monitorEmitter.browserScreenshot(toolOutput, undefined, _mChatId);
               } catch { /* never block agent */ }
-              // Emit real file-operation previews for UI wording and diffs. This
-              // is presentation data, not a substitute for terminal verification.
-              await this.emitWorkspaceToolPreviews({
-                toolName: canonicalToolName,
-                args: effectiveArgs,
-                result: toolOutput,
-                context,
-                trace,
-                onTrace,
-                ownerTraceId: actionTraceId,
-                preEditSnapshots,
-              });
+              this.emitMediaPreview(canonicalToolName, rawToolOutput, trace, onTrace, actionTraceId);
 
               // Terminal fallbacks are published by settleAdmittedAction for every provider.
 
@@ -8646,21 +8382,6 @@ OUTPUT CONTRACT
                   cancelled: true,
                   _retryFailed: false,
                 };
-                // The edit executor may already have emitted a staged live
-                // preview before the cancellation became observable here.
-                // Settle that exact per-file preview before returning early.
-                try {
-                  await this.emitWorkspaceToolPreviews({
-                    toolName: canonicalToolName,
-                    args: effectiveArgs,
-                    result: toolOutput,
-                    context,
-                    trace,
-                    onTrace,
-                    ownerTraceId: actionTraceId,
-                    preEditSnapshots,
-                  });
-                } catch { /* cancellation remains authoritative */ }
                 settleAdmittedAction(toolOutput);
                 try { monitorEmitter.toolError(canonicalToolName, 'CANCELLED_BY_USER', execDuration, (context as any).projectId || (context as any).chatId); } catch { }
                 return {
@@ -8722,16 +8443,7 @@ OUTPUT CONTRACT
               }
 
               // Learn from error â€” both knowledge and persistent memory
-              await this.emitWorkspaceToolPreviews({
-                toolName: canonicalToolName,
-                args: effectiveArgs,
-                result: toolOutput,
-                context,
-                trace,
-                onTrace,
-                ownerTraceId: actionTraceId,
-                preEditSnapshots,
-              });
+              this.emitMediaPreview(canonicalToolName, rawToolOutput ?? toolOutput, trace, onTrace, actionTraceId);
 
               if (!longTermMemoryDisabled) {
                 knowledgeEngine.extractFromToolResult(canonicalToolName, effectiveArgs, toolOutput).catch(() => { });

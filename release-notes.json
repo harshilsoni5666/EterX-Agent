@@ -1,18 +1,22 @@
 {
   "$schema": "./docs/release-notes.schema.json",
-  "version": "0.1.49",
-  "summary": "Adds chat permission controls, improves computer-use feedback, and refines profile activity and settings navigation.",
+  "version": "0.1.50",
+  "summary": "Adds a floating Work Panel, simplifies agent navigation, and refines dark surfaces and chat permissions.",
   "sections": [
     {
       "kind": "new",
       "items": [
         {
-          "title": "Chat permissions and tool approvals",
-          "description": "The icon-only composer selector offers Ask for approval, Approve for me, and Full access. Settings now includes a persistent Always full access option; when enabled, it hides the selector and applies Full access to new and queued runs. Main and custom-agent tools enforce the selected mode: Ask for approval pauses actions, Approve for me permits routine web searches and eligible workspace edits while other actions wait for review, and Full access retains current tool access. Approvals can apply once or to the same action for the current run, and can be rejected, cancelled, or expire."
+          "title": "Floating Work Panel",
+          "description": "The panel brings together a shared workspace picker, live Sources and Git changes, direct links to Review, the latest Task Plan, and context usage. It adjusts around the sidebars and uses compact Proxy controls when space is limited."
         },
         {
-          "title": "Usage activity loading",
-          "description": "The Profile token activity chart uses one soft shimmer across the chart, with matching loading rows for All chats and Action usage. Existing data remains visible during refreshes, and reduced-motion mode shows static placeholders."
+          "title": "Work Panel agent navigation",
+          "description": "Work Panel navigation replaces the header agent tabs and includes Switch to main. Nested agents open the existing Swarm panel. When a worker delegates, the section shows Go to Swarm panel and opens the hierarchical view. Auto-open Work Panel defaults to on, and generated agent names target 24 characters."
+        },
+        {
+          "title": "Previous agents",
+          "description": "Finished workers and their durations appear in a collapsed Previous agents section. Long lists scroll within the panel."
         }
       ]
     },
@@ -20,16 +24,12 @@
       "kind": "improved",
       "items": [
         {
-          "title": "Computer-use reliability and feedback",
-          "description": "Desktop and window captures use the correct scope and receive images directly from CUA Driver. Click and typing inputs use the installed driver's supported format, and the agent receives a fresh screenshot after input. Older drivers refresh window previews with each observation so controls stay current. Native actions are labeled Computer use, with separate feedback for rejected input, uncertain delivery, and failed follow-up screenshots. Composer settings refresh now runs outside React's render cycle."
+          "title": "Dark interface surfaces",
+          "description": "The dark chat feed, title bar, and splash screen use pure black, while the sidebar uses near-black and preserves the Recent chats panel shading. The chat input uses a #0E0E0E fill, a subtle one-pixel #1A1A1A outline, and a faint inner highlight."
         },
         {
-          "title": "Model provider identification",
-          "description": "Provider logos appear beside models in the model selector to make third-party providers easier to distinguish."
-        },
-        {
-          "title": "Settings search and navigation",
-          "description": "The search field uses a borderless style, dropdown rows begin in a neutral state with a gray keyboard-navigation highlight, and subtle theme-matched fades soften the Settings sidebar edges."
+          "title": "Chat permission controls",
+          "description": "The permission dropdown has a clearer interface. Permission changes apply only to the selected chat and can be paused during a run."
         }
       ]
     },
@@ -37,8 +37,8 @@
       "kind": "fixed",
       "items": [
         {
-          "title": "Composer settings refresh",
-          "description": "Moved the chat composer settings refresh out of React's render cycle."
+          "title": "Accurate live diff counts",
+          "description": "Small page.tsx edits no longer appear as a near-total replacement such as +12,917/−12,913. Edits far apart appear as separate hunks, and counts use the versions the agent actually committed. Long diffs display 250 rows at a time. Older chats recover accurate counts when both versions were saved; if a comparison exceeds the work limit, its count stays unavailable."
         }
       ]
     }

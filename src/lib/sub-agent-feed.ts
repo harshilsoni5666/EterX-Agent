@@ -1,11 +1,29 @@
 import { agentIdentitiesOverlap, isFeedTurnBoundary, orderFeedTimelineLogs } from './chat-feed-lifecycle';
 import { selectSubAgentUsageLogs } from './chat-usage-scope';
+import { normalizeStreamTimestamp } from './streaming-lifecycle';
 
 const text = (value: unknown): string => String(value || '').trim();
 const workerId = (value: any): string => text(value?.subAgentId || value?.agentId || value?.subAgentChatId || value?.id)
   .split('::sub-agent::').pop() || '';
 const fullAnswer = (log: any): string => text(log?.result || log?.content || log?.answer);
 const resultTypes = new Set(['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete']);
+
+export function collectSpawnedAgentKeys(logs: any[], liveSince?: number): Set<string> {
+  const keys = new Set<string>();
+  for (const log of logs) {
+    if (log?.type !== 'sub_agent_spawn') continue;
+    const when = normalizeStreamTimestamp(log.startTime || log.timestamp, 0);
+    if (liveSince !== undefined && (!when || when < liveSince)) continue;
+    const workers = Array.isArray(log.agentDetails) && log.agentDetails.length ? log.agentDetails : [log];
+    for (const worker of workers) {
+      const name = text(worker?.name || worker?.agentName || worker?.subAgent).toLowerCase();
+      if (!name || name === 'main') continue;
+      const id = text(worker.subAgentId || worker.agentId || worker.subAgentChatId).split('::sub-agent::').pop();
+      keys.add(id ? 'id:' + id.toLowerCase() : 'name:' + text(log.runId || log.turnId) + ':' + name);
+    }
+  }
+  return keys;
+}
 
 /** Project one worker's ledger into the same turn/answer contract as Main. */
 export function projectSubAgentFeed(logs: any[], agent: any, chatId: string | null): any[] {

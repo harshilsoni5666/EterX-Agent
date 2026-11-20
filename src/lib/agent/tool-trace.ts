@@ -15,14 +15,7 @@ export type ToolTraceFields = {
   fileCount?: number;
 };
 
-export type DiffLine = {
-  type: 'added' | 'removed' | 'context';
-  content: string;
-  oldLine?: number;
-  newLine?: number;
-  isGap?: boolean;
-  skipped?: number;
-};
+export { buildLineDiffPreview, type DiffLine } from '../line-diff';
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
   // Normalize provider casing without preserving retired workspace tools.
@@ -410,119 +403,5 @@ export function buildToolTraceFields(
     filename: targets[0],
     files: targets.length > 0 ? targets : undefined,
     fileCount: targets.length > 0 ? targets.length : undefined,
-  };
-}
-
-export function buildLineDiffPreview(before: string, after: string): {
-  diffLines: DiffLine[];
-  added: number;
-  removed: number;
-} {
-  if (before === after) return { diffLines: [], added: 0, removed: 0 };
-
-  const oldLines = String(before || '').replace(/\r\n/g, '\n').split('\n');
-  const newLines = String(after || '').replace(/\r\n/g, '\n').split('\n');
-  const oldCount = oldLines.length;
-  const newCount = newLines.length;
-
-  let prefixCount = 0;
-  while (prefixCount < oldCount && prefixCount < newCount && oldLines[prefixCount] === newLines[prefixCount]) {
-    prefixCount++;
-  }
-
-  let suffixCount = 0;
-  while (
-    suffixCount < oldCount - prefixCount &&
-    suffixCount < newCount - prefixCount &&
-    oldLines[oldCount - 1 - suffixCount] === newLines[newCount - 1 - suffixCount]
-  ) {
-    suffixCount++;
-  }
-
-  const middleOld = oldLines.slice(prefixCount, oldCount - suffixCount);
-  const middleNew = newLines.slice(prefixCount, newCount - suffixCount);
-  const midOldCount = middleOld.length;
-  const midNewCount = middleNew.length;
-  const diffLines: DiffLine[] = [];
-
-  const prefixContextStart = Math.max(0, prefixCount - 3);
-  for (let i = prefixContextStart; i < prefixCount; i++) {
-    diffLines.push({ type: 'context', content: oldLines[i], oldLine: i + 1, newLine: i + 1 });
-  }
-
-  if (midOldCount < 1000 && midNewCount < 1000 && midOldCount * midNewCount < 250000) {
-    const dp: number[][] = Array.from({ length: midOldCount + 1 }, () => new Array(midNewCount + 1).fill(0));
-    for (let i = midOldCount - 1; i >= 0; i--) {
-      for (let j = midNewCount - 1; j >= 0; j--) {
-        dp[i][j] = middleOld[i] === middleNew[j]
-          ? dp[i + 1][j + 1] + 1
-          : Math.max(dp[i + 1][j], dp[i][j + 1]);
-      }
-    }
-
-    let oldIdx = 0;
-    let newIdx = 0;
-    while (oldIdx < midOldCount || newIdx < midNewCount) {
-      const oldLine = prefixCount + oldIdx + 1;
-      const newLine = prefixCount + newIdx + 1;
-      if (oldIdx < midOldCount && newIdx < midNewCount && middleOld[oldIdx] === middleNew[newIdx]) {
-        diffLines.push({ type: 'context', content: middleOld[oldIdx], oldLine, newLine });
-        oldIdx++;
-        newIdx++;
-      } else if (newIdx < midNewCount && (oldIdx >= midOldCount || dp[oldIdx][newIdx + 1] >= dp[oldIdx + 1][newIdx])) {
-        diffLines.push({ type: 'added', content: middleNew[newIdx], newLine });
-        newIdx++;
-      } else if (oldIdx < midOldCount) {
-        diffLines.push({ type: 'removed', content: middleOld[oldIdx], oldLine });
-        oldIdx++;
-      }
-    }
-  } else {
-    middleOld.forEach((line, index) => {
-      diffLines.push({ type: 'removed', content: line, oldLine: prefixCount + index + 1 });
-    });
-    middleNew.forEach((line, index) => {
-      diffLines.push({ type: 'added', content: line, newLine: prefixCount + index + 1 });
-    });
-  }
-
-  const suffixContextEnd = Math.min(oldCount, oldCount - suffixCount + 3);
-  const suffixOffset = newCount - oldCount;
-  for (let i = oldCount - suffixCount; i < suffixContextEnd; i++) {
-    diffLines.push({ type: 'context', content: oldLines[i], oldLine: i + 1, newLine: i + 1 + suffixOffset });
-  }
-
-  const visible = new Set<number>();
-  diffLines.forEach((line, index) => {
-    if (line.type !== 'context') {
-      for (let i = Math.max(0, index - 3); i <= Math.min(diffLines.length - 1, index + 3); i++) {
-        visible.add(i);
-      }
-    }
-  });
-
-  const visibleIndexes = Array.from(visible).sort((a, b) => a - b);
-  const compacted: DiffLine[] = [];
-  let previousIndex = -1;
-  for (const index of visibleIndexes) {
-    if (previousIndex >= 0 && index > previousIndex + 1) {
-      const skipped = index - previousIndex - 1;
-      const firstSkipped = diffLines[previousIndex + 1];
-      compacted.push({
-        type: 'context',
-        content: `${skipped} unchanged line${skipped === 1 ? '' : 's'}`,
-        oldLine: firstSkipped?.oldLine,
-        newLine: firstSkipped?.newLine,
-        isGap: true,
-        skipped,
-      });
-    }
-    compacted.push(diffLines[index]);
-    previousIndex = index;
-  }
-  return {
-    diffLines: compacted,
-    added: compacted.filter(line => line.type === 'added').length,
-    removed: compacted.filter(line => line.type === 'removed').length,
   };
 }

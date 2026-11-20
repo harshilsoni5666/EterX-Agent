@@ -13,7 +13,8 @@ import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { highlightWorkspaceCode, workspaceLanguage, type WorkspaceToken } from '../../lib/workspace-syntax';
 import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { isWithinWorkspace, workspacePathKey, workspaceParent } from '../../lib/workspace-paths';
-import { workspaceChatDiffLines } from '../../lib/workspace-review-data';
+import { readWorkspaceRepositoryReview, workspaceChatDiffLines, type RepositoryReview, type RepositoryReviewFile, type WorkspaceReviewScope } from '../../lib/workspace-review-data';
+import { GIT_CHANGED_EVENT } from '../../lib/git/client';
 import { diffLineNumber, diffLineNumberTitle } from '../../lib/diff-line-numbers';
 import { WorkspaceTreePane } from './workspace-tree-pane';
 import { WorkspaceImagePreview } from './workspace-image-preview';
@@ -21,10 +22,9 @@ import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { diffWordRanges, isPlaceholderDiffGap } from './diff-syntax';
 
 type Line = NonNullable<FilePanelProps['diffLines']>[number];
-type Scope = 'chat' | 'working' | 'branch';
-type ReviewFile = FilePanelProps & { relativePath?: string; status?: string; directory?: boolean; repositoryRoot?: string; baseRef?: string };
-type Project = { root: string; scopeRoot: string; branch: string; upstream: string; baseRef: string; references: string[]; gitDirectory: string };
-type Repository = Project & { key: string; projects?: Project[]; warnings?: string[]; files: ReviewFile[]; truncated?: boolean };
+type Scope = WorkspaceReviewScope;
+type ReviewFile = RepositoryReviewFile;
+type Repository = RepositoryReview & { key: string };
 type Row = { left?: Line; right?: Line; line?: Line; hidden?: number; requestContext?: boolean; key: string };
 const labels: Record<Scope, string> = { chat: 'Chat changes', working: 'Working tree', branch: 'Branch' };
 const noFiles: ReviewFile[] = [];
@@ -116,6 +116,8 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
     if (tab.reviewPathRequest !== lastPathRequest.current) {
       if (tab.review) {
         setSelected(tab.review.selected); setScope(tab.review.scope); setFilter(tab.review.filter);
+        setShowTree(tab.review.showTree);
+        setHideViewed(tab.review.hideViewed ?? false);
         setBaseRefs(tab.review.baseRefs || {});
       } else if (tab.path) { setSelected(tab.path); setScope('chat'); }
     }
@@ -124,30 +126,19 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
   useEffect(() => {
     if (!isActive) return;
     if (scope === 'chat' || !roots.length) { setLoading(false); setError(''); return; }
-    if (!api?.workspaceReviewList) { setError('Restart EterX to enable project review.'); setLoading(false); return; }
-    let disposed = false;
+    const controller = new AbortController();
     setLoading(true);
-    const load = async () => {
-      const changed = new Map<string, ReviewFile>();
-      const projects: Project[] = [], warnings: string[] = [];
-      let truncated = false;
-      for (const directory of roots) {
-        if (disposed) return;
-        try {
-          const result: Repository = await api.workspaceReviewList(directory, scope, baseRefs[directory] || '');
-          projects.push({ root: result.root, scopeRoot: directory, branch: result.branch, upstream: result.upstream, baseRef: result.baseRef, references: result.references, gitDirectory: result.gitDirectory });
-          truncated ||= !!result.truncated;
-          for (const file of result.files) if (isWithinWorkspace(file.filepath, directory)) changed.set(workspacePathKey(file.filepath), { ...file, repositoryRoot: result.root, baseRef: result.baseRef });
-        } catch (error) { warnings.push(directory + ': ' + ((error as Error).message || String(error))); }
-      }
-      if (disposed) return;
-      const first = projects[0];
-      if (!first) { setError(warnings.join('\n')); setRepository(null); return; }
-      const result = { ...first, key: reviewKey, projects, files: [...changed.values()], warnings, truncated };
-      setError(''); setRepository(previous => JSON.stringify(previous) === JSON.stringify(result) ? previous : result);
-    };
-    void load().catch(error => { if (!disposed) setError(error.message || String(error)); }).finally(() => { if (!disposed) setLoading(false); });
-    return () => { disposed = true; };
+    void readWorkspaceRepositoryReview(roots, scope, baseRefs, controller.signal).then(data => {
+      if (controller.signal.aborted) return;
+      const result = { ...data, key: reviewKey };
+      setError('');
+      setRepository(previous => JSON.stringify(previous) === JSON.stringify(result) ? previous : result);
+    }).catch(error => {
+      if (controller.signal.aborted) return;
+      setError(error.message || String(error));
+      setRepository(null);
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
   }, [reviewKey, nonce, isActive]);
 
   const chatFiles = useMemo(() => workspacePath ? files.filter(file => isWithinWorkspace(file.filepath, workspacePath)) : files, [files, workspacePath]);
@@ -170,7 +161,8 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
     const stops = (JSON.parse(watchKey) as string[]).map(path => watchWorkspaceFolder(path, refresh));
     const reconcile = setInterval(refresh, 30000);
     window.addEventListener('focus', refresh); const unsubscribeVisibility = subscribeAppVisibility(refresh);
-    return () => { stops.forEach(stop => stop()); clearTimeout(pending); clearInterval(reconcile); window.removeEventListener('focus', refresh); unsubscribeVisibility(); };
+    window.addEventListener(GIT_CHANGED_EVENT, refresh);
+    return () => { stops.forEach(stop => stop()); clearTimeout(pending); clearInterval(reconcile); window.removeEventListener('focus', refresh); window.removeEventListener(GIT_CHANGED_EVENT, refresh); unsubscribeVisibility(); };
   }, [rootsKey, scope, watchKey, error, isActive]);
   useEffect(() => { setRowLimit(1500); setUnfolded(new Set()); setCopied(''); scroll.current?.scrollTo(0, 0); }, [diffKey]);
   useEffect(() => {

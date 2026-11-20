@@ -371,6 +371,7 @@ export interface AppSettings {
   agentMode: MainAgentMode;
   criticEnabled: boolean;
   autoSubAgents: boolean;
+  autoOpenWorkPanelOnSubAgentSpawn: boolean;
   maxSubAgents: number;
   memoryHydration: boolean;
   synapseGraphEnabled: boolean;
@@ -450,6 +451,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   agentMode: 'think',
   criticEnabled: true,
   autoSubAgents: true,
+  autoOpenWorkPanelOnSubAgentSpawn: true,
   maxSubAgents: 5,
   memoryHydration: true,
   synapseGraphEnabled: false,
@@ -532,6 +534,7 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
     ? Math.max(0, Math.min(3, Math.floor(configuredRetries)))
     : DEFAULT_SETTINGS.maxRetries;
   next.selfImprovementEnabled = stored.selfImprovementEnabled !== false;
+  next.autoOpenWorkPanelOnSubAgentSpawn = stored.autoOpenWorkPanelOnSubAgentSpawn !== false;
   next.alwaysFullAccess = stored.alwaysFullAccess === true;
   next.showTokenCount = stored.showTokenCount !== false;
   next.contextWindowSizeSelection = resolveSavedContextBudget(stored);
@@ -4517,8 +4520,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="Permissions" />
                           <SettingsStack>
-                            <SettingsStackRow title="Always full access" description="Use Full access for new requests and hide the permission selector in the message bar.">
-                              <Toggle label="Always full access" enabled={settings.alwaysFullAccess} onChange={value => updateSetting('alwaysFullAccess', value)} />
+                            <SettingsStackRow title="Default to full access" description="Use Full access for chats without a saved permission selection. Saved chat choices are not changed.">
+                              <Toggle label="Default to full access" enabled={settings.alwaysFullAccess} onChange={value => updateSetting('alwaysFullAccess', value)} />
                             </SettingsStackRow>
                           </SettingsStack>
 
@@ -4950,6 +4953,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <SettingsStack>
                             <SettingsStackRow title="Auto sub-agent spawning" description="Allow EterX to run parallel helper agents when a task benefits from it.">
                               <Toggle enabled={settings.autoSubAgents} onChange={v => updateSetting('autoSubAgents', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Auto-open Work Panel" description="Open the Work Panel when a sub-agent starts for quick navigation.">
+                              <Toggle enabled={settings.autoOpenWorkPanelOnSubAgentSpawn} onChange={v => updateSetting('autoOpenWorkPanelOnSubAgentSpawn', v)} />
                             </SettingsStackRow>
                             <SettingsStackRow title="Concurrent sub-agents" description="Requested helper count per parallel spawn; available resources remain the practical constraint.">
                               <div className="flex w-[240px] items-center gap-3">

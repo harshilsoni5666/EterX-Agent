@@ -59,6 +59,7 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
     { title: 'Grounding search', section: 'Runtime checks', keywords: 'web search browse internet online lookup sources citations current facts' },
     { title: 'Sub-agents', keywords: 'subagent subagents parallel helper agents delegation' },
     { title: 'Auto sub-agent spawning', section: 'Sub-agents', keywords: 'subagent subagents automatic parallel helper agents delegation spawn' },
+    { title: 'Auto-open Work Panel', section: 'Sub-agents', keywords: 'work panel subagent spawned open navigation sidebar' },
     { title: 'Concurrent sub-agents', section: 'Sub-agents', keywords: 'subagent subagents count limit maximum number parallel helpers slots concurrency workers' },
   ],
   agents: [

@@ -45,7 +45,6 @@ function matchingView(text: string) {
 
 /** An explicit selection always bounds a replacement, including replaceAll. */
 export function applyTextEdit(content: string, edit: TextEdit, label: string) {
-  const lines = lineSpans(content);
   const ending = /\r\n|\r|\n/.exec(content)?.[0] || '\n';
   const replacement = edit.replace.replace(/\r\n|\r|\n/g, ending);
   let from = 0;
@@ -53,6 +52,7 @@ export function applyTextEdit(content: string, edit: TextEdit, label: string) {
   let hasFollowingLine = false;
   const hasRange = edit.startLine !== undefined || edit.endLine !== undefined;
   if (hasRange) {
+    const lines = lineSpans(content);
     const start = edit.startLine;
     const end = edit.endLine === -1 ? lines.length : edit.endLine;
     if (!Number.isInteger(start) || !Number.isInteger(end) || start! < 1 || end! < start! || end! > lines.length) {
@@ -69,11 +69,7 @@ export function applyTextEdit(content: string, edit: TextEdit, label: string) {
     // Consume the selected line terminator once, not both it and a newline
     // supplied in replace. Preserve separation from an unselected suffix.
     const boundary = hasFollowingLine && replacement && !/[\r\n]$/.test(replacement) ? ending : '';
-    return {
-      content: content.slice(0, from) + replacement + boundary + content.slice(to),
-      additions: editLineCount(replacement),
-      deletions: editLineCount(content.slice(from, to)),
-    };
+    return content.slice(0, from) + replacement + boundary + content.slice(to);
   }
 
   const view = matchingView(content.slice(from, to));
@@ -104,14 +100,12 @@ export function applyTextEdit(content: string, edit: TextEdit, label: string) {
 
   const parts = [content.slice(0, from)];
   let last = from;
-  let deletions = 0;
   for (const position of positions) {
     const start = from + view.originalOffset(position);
     const end = from + view.originalOffset(position + search.length);
     parts.push(content.slice(last, start), replacement);
-    deletions += editLineCount(content.slice(start, end));
     last = end;
   }
   parts.push(content.slice(last));
-  return { content: parts.join(''), additions: editLineCount(replacement) * positions.length, deletions };
+  return parts.join('');
 }

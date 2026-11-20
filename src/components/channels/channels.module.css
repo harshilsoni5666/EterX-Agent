@@ -13,7 +13,7 @@
 }
 
 :global([data-theme="dark"]) .surface, :global([data-theme="dark"]) .selectContent, :global([data-theme="dark"]) .dialog {
-  --channel-bg: #101110;
+  --channel-bg: var(--background);
   --channel-card: #171817;
   --channel-soft: #202220;
   --channel-border: #2d302d;

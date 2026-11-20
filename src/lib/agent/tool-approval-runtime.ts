@@ -30,11 +30,18 @@ const globals = globalThis as typeof globalThis & {
     scope: AsyncLocalStorage<ApprovalScope | undefined>;
     pending: Map<string, Ticket>;
     receipts: Map<string, Receipt>;
+    modes?: Map<string, ChatPermissionMode>;
   };
 };
 const { scope, pending, receipts } = globals.__eterxToolApprovals ??= {
   scope: new AsyncLocalStorage(), pending: new Map(), receipts: new Map(),
 };
+const liveModes = globals.__eterxToolApprovals.modes ??= new Map();
+const modeScopeKey = (sessionId: string, chatId: string) => JSON.stringify([sessionId, chatId]);
+
+export function setRuntimeChatPermissionMode(chatId: string, sessionId: string, mode: ChatPermissionMode) {
+  liveModes.set(modeScopeKey(sessionId, chatId), mode);
+}
 
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
 const RECEIPT_TTL_MS = 60_000;
@@ -45,8 +52,8 @@ const INTERNAL_TOOLS = new Set([
 const TERMINAL_READ_MODES = new Set(['list', 'check', 'wait']);
 
 export function runWithToolApprovals<T>(run: RunScope, execute: () => T): T {
-  // Explicitly reset inherited state when a new full-access run starts from a queue.
-  return scope.run(run.mode === 'full' ? undefined : { ...run, decisions: new Map() }, execute);
+  // Full-access runs still need a scope so later tool calls can pick up changes.
+  return scope.run({ ...run, decisions: new Map() }, execute);
 }
 
 function isOrdinaryWorkspaceEdit(args: Record<string, any>, context: any, workspace: string): boolean {
@@ -127,6 +134,10 @@ function blocked(outcome: 'expired' | 'cancelled' | 'reject' | 'unavailable'): B
 export async function requestToolApproval(tool: string, args: Record<string, any>, context: any): Promise<BlockedTool | null> {
   const run = scope.getStore();
   if (!run || INTERNAL_TOOLS.has(tool) || (tool === 'workspace_run_command' && TERMINAL_READ_MODES.has(args.mode))) return null;
+  // Snapshot the policy for this invocation, never for the whole run. An
+  // invocation already executing or waiting for approval keeps its decision.
+  const mode = liveModes.get(modeScopeKey(run.sessionId, run.chatId)) ?? run.mode;
+  if (mode === 'full') return null;
   if (!run.sessionId) return blocked('unavailable');
 
   const signals = [run.signal, context?.abortSignal, context?.signal].filter((signal): signal is AbortSignal => Boolean(signal));
@@ -134,7 +145,7 @@ export async function requestToolApproval(tool: string, args: Record<string, any
   if (signal.aborted || context?.isCancelled?.()) return blocked('cancelled');
 
   const workspace = workspaceFor(context);
-  if (run.mode === 'review' && (
+  if (mode === 'review' && (
     (tool === 'web_search' && (!args.action || args.action === 'search')) ||
     (tool === 'workspace_edit_file' && isOrdinaryWorkspaceEdit(args, context, workspace))
   )) return null;

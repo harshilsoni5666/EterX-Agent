@@ -39,7 +39,7 @@ import { formatTerminalProgram } from '../../lib/agent/terminal-invocation';
 import { normalizeLifecycleTimestamp, resolveLifecycleDurationMs, useLifecycleElapsedMs } from './lifecycle-clock';
 import { formatUnknownError } from '../../lib/agent/error-format';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
-import { diffLineNumber, diffLineNumberTitle, numberDiffLines } from '../../lib/diff-line-numbers';
+import { diffLineCounts, diffLineNumber, diffLineNumberTitle, numberDiffLines } from '../../lib/diff-line-numbers';
 
 type SubAgentAssetIndexes = Record<string, number>;
 
@@ -1348,20 +1348,26 @@ const InlineMissingDiffView = ({
         )}
         <div className={`flex items-start gap-2.5 text-[11.5px] leading-relaxed text-[#AAA298] ${ flush ? 'px-3 py-2.5' : 'px-3 py-3 border-t border-white/[0.045]' }`}>
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300/80" />
-          <div>
-            <div className="font-semibold text-[#D3CCC2]">Detailed diff was not saved for this earlier edit.</div>
-            <div className="mt-0.5 text-[#7F786F]">The full file is intentionally hidden. New edits show only exact red and green change hunks.</div>
-          </div>
+          <span>No line preview is available for this edit.</span>
         </div>
       </div>
     </div>
   );
 };
 
-const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, showExpand = true, flush = false }: { filename: string, filepath?: string, diffLines: any[], showExpand?: boolean, flush?: boolean }) => {
+const DIFF_PAGE_ROWS = 250;
+
+const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, stats, partial = false, flush = false }: {
+  filename: string; filepath?: string; diffLines: any[]; stats?: { added: number; removed: number } | null; partial?: boolean; flush?: boolean;
+}) => {
   const [full, setFull] = useState(false);
+  const [page, setPage] = useState(0);
   const diffLines = useMemo(() => numberDiffLines(sourceDiffLines), [sourceDiffLines]);
-  const syntax = useDiffSyntax(diffLines, filepath || filename);
+  const lastPage = Math.max(0, Math.ceil(diffLines.length / DIFF_PAGE_ROWS) - 1);
+  const currentPage = Math.min(page, lastPage);
+  const start = currentPage * DIFF_PAGE_ROWS;
+  const visible = useMemo(() => diffLines.slice(start, start + DIFF_PAGE_ROWS), [diffLines, start]);
+  const syntax = useDiffSyntax(visible, filepath || filename);
   const { openPanel } = useFilePanelActions();
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1383,9 +1389,12 @@ const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, s
     observer.observe(viewport);
     if (contentRef.current) observer.observe(contentRef.current);
     return () => observer.disconnect();
-  }, [diffLines, full]);
-  const added = diffLines.filter(l => l.type === 'added').length;
-  const removed = diffLines.filter(l => l.type === 'removed').length;
+  }, [visible, full]);
+  const { added, removed } = useMemo(() => diffLineCounts(partial ? undefined : diffLines, stats?.added, stats?.removed), [partial, diffLines, stats?.added, stats?.removed]);
+  const turnPage = (next: number) => {
+    setPage(next);
+    scrollRef.current?.scrollTo({ top: 0 });
+  };
   const parentPath = filepath
     ? filepath.replace(/\\/g, '/').split('/').slice(0, -1).slice(-3).join('/')
     : '';
@@ -1399,6 +1408,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, s
       isEdit: true,
       linesAdded: added,
       linesRemoved: removed,
+      truncated: partial,
       added,
       removed,
       activeTabMode: 'diff',
@@ -1431,7 +1441,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, s
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <IconCopyButton
-              content={diffLines.filter(line => !isPlaceholderDiffGap(line)).map(line => line.isGap
+              content={visible.filter(line => !isPlaceholderDiffGap(line)).map(line => line.isGap
                 ? `@@ ${ line.content || `${ line.skipped || 0 } lines hidden` } @@`
                 : `${ line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' ' }${ line.content }`
               ).join('\n')}
@@ -1452,7 +1462,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, s
         >
           {/* Inner container expands to content width — all lines share same horizontal scroll */}
           <div ref={contentRef} style={{ minWidth: 'max-content' }}>
-            {diffLines.map((l, i) => {
+            {visible.map((l, i) => {
               if (isPlaceholderDiffGap(l)) return null;
               const isAdd = l.type === 'added';
               const isDel = l.type === 'removed';
@@ -1496,7 +1506,16 @@ const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, s
       </div>
     </div>
   );
-  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`Diff: ${ filename }`}>{diffPanel}</FullScreenModal> : <div>{diffPanel}</div>}</>;
+  const navigation = (lastPage > 0 || partial) && (
+    <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-[#AAA298]">
+      <span>{partial ? 'Partial diff' : 'Diff'}{lastPage > 0 && ` · rows ${start + 1}–${start + visible.length} of ${diffLines.length}`}</span>
+      {lastPage > 0 && <div className="flex gap-3">
+        <button type="button" disabled={currentPage === 0} className="disabled:opacity-40" onClick={() => turnPage(currentPage - 1)}>Previous</button>
+        <button type="button" disabled={currentPage === lastPage} className="disabled:opacity-40" onClick={() => turnPage(currentPage + 1)}>Next</button>
+      </div>}
+    </div>
+  );
+  return full ? <FullScreenModal onClose={() => setFull(false)} title={`Diff: ${ filename }`}>{diffPanel}{navigation}</FullScreenModal> : <div>{diffPanel}{navigation}</div>;
 };
 
 const InlineCodeView = ({
@@ -1741,35 +1760,32 @@ const getPreviewContent = (preview: any) => {
 };
 
 export const getDiffStats = (preview: any, log: any) => {
-  let added = 0;
-  let removed = 0;
-  if (preview?.diffLines?.length) {
-    added = preview.diffLines.filter((line: any) => line.type === 'added').length;
-    removed = preview.diffLines.filter((line: any) => line.type === 'removed').length;
-  } else if (preview) {
-    added = numberFrom(preview.added, preview.additions, preview.insertions, preview.linesAdded);
-    removed = numberFrom(preview.removed, preview.deleted, preview.deletions, preview.linesRemoved);
-    const previewContent = getPreviewContent(preview);
-    if (!preview.isEdit && added === 0 && removed === 0) {
-      const createdLineCount = numberFrom(preview.linesAdded, preview.lineCount, preview.totalLines);
-      if (createdLineCount > 0) {
-        added = createdLineCount;
-      } else if (previewContent) {
-        added = previewContent.split('\n').length;
-      }
+  const additions = preview?.linesAdded ?? preview?.additions ?? preview?.added ?? preview?.insertions;
+  const deletions = preview?.linesRemoved ?? preview?.deletions ?? preview?.removed ?? preview?.deleted;
+  const completeLines = preview?.diffTruncated || preview?._diffLinesStripped ? undefined : preview?.diffLines;
+  if (additions != null || deletions != null || completeLines?.length) {
+    const stats = diffLineCounts(completeLines, additions, deletions);
+    return stats.added || stats.removed ? stats : null;
+  }
+  if (preview?.operation === 'created' || preview?.created === true) {
+    const added = numberFrom(preview.lineCount, preview.totalLines);
+    if (added) return { added, removed: 0 };
+    const content = getPreviewContent(preview);
+    if (content && !preview.truncated && !preview._contentStripped) {
+      const breaks = content.match(/\r\n|\r|\n/g)?.length ?? 0;
+      return { added: breaks + (/[\r\n]$/.test(content) ? 0 : 1), removed: 0 };
     }
   }
 
   // Only executor results and settled previews own change counts. Tool
   // arguments describe intent, not the actual diff, and caused provisional
   // +N/-N values to be replaced after an edit completed.
-  if (added === 0 && removed === 0 && log && isExplicitlySettledAction(log)) {
-    added = numberFrom(log.added, log.additions, log.insertions, log.linesAdded, log.add);
-    removed = numberFrom(log.removed, log.deleted, log.deletions, log.linesRemoved, log.remove);
+  if (log && isExplicitlySettledAction(log)) {
+    const added = numberFrom(log.linesAdded, log.additions, log.added, log.insertions, log.add);
+    const removed = numberFrom(log.linesRemoved, log.deletions, log.removed, log.deleted, log.remove);
+    if (added || removed) return { added, removed };
   }
-
-  if (added === 0 && removed === 0) return null;
-  return { added, removed };
+  return null;
 };
 
 const normalizeChangeCount = (value: unknown) => {
@@ -3074,15 +3090,15 @@ const FileChangeTraceCard = ({
     ?? log.endLine;
   const hasDiffPreview = Array.isArray(preview?.diffLines) && preview.diffLines.length > 0;
   const isEditPreview = resultSaysEdit;
-  const isCreateAction = normalizedVerb === 'Created' || resultOperation === 'created' || /^(?:creat|generat|scaffold|writ)/i.test(displayVerb) || /^(?:creat|generat|scaffold|writ)/i.test(title);
+  const isCreateAction = resultOperation ? resultOperation === 'created'
+    : preview?.operation === 'created' || (!isEditPreview && /^(?:creat|generat|scaffold|writ)/i.test(displayVerb));
   const canPreview = preview?.type === 'file_preview' && (
     (isEditPreview && (hasDiffPreview || previewContent.length > 0 || Boolean(previewFilePath))) ||
     (!isEditPreview && (previewContent.length > 0 || Boolean(previewFilePath)))
   );
   const showDiff = Boolean(isEditPreview && hasDiffPreview);
-  // Allow fetching if we have a filepath, even for non-create actions (covers edit with no diff)
   const failedOperation = resultOperation === 'none' && Boolean(fileOperationResult?.errors.length || fileOperationResult?.rolledBack);
-  const canFetchCreatedFile = !log.importedFrom && !failedOperation && resultOperation !== 'deleted' && !multiFile && !canPreview && Boolean(previewFilePath || primaryTarget?.filepath);
+  const canFetchCreatedFile = isCreateAction && !log.importedFrom && !failedOperation && !multiFile && !canPreview && Boolean(previewFilePath || primaryTarget?.filepath);
   const hasFileTarget = Boolean(previewFilePath || primaryTarget?.filepath);
 
   // Structured workspace_edit_file result used for operation labels and real diffs.
@@ -3117,6 +3133,8 @@ const FileChangeTraceCard = ({
       {fileOperationResult?.errors.map((error, index) => <p key={index} className="eterx-result-error">{error}</p>)}
       {!fileOperationResult?.errors.length && !fileOperationResult?.rolledBack && <p className="eterx-result-caption">No per-file preview was recorded for this operation.</p>}
     </ToolResultScroll>
+  ) : resultOperation === 'none' ? (
+    <p className="eterx-result-caption px-3 py-2.5">No file content changed.</p>
   ) : canFetchCreatedFile ? (
     <InlineCodeView
       filename={filename}
@@ -3132,8 +3150,8 @@ const FileChangeTraceCard = ({
       flush
     />
   ) : showDiff ? (
-    <InlineDiffView filename={filename} filepath={previewFilePath} diffLines={preview.diffLines} showExpand={false} flush />
-  ) : !isDeleteAction && (previewContent || !log.importedFrom && (previewFilePath || primaryTarget?.filepath)) ? (
+    <InlineDiffView filename={filename} filepath={previewFilePath} diffLines={preview.diffLines} stats={effectiveStats} partial={preview.diffTruncated || preview._diffLinesStripped} flush />
+  ) : isCreateAction && !isDeleteAction && !preview?.diffTruncated && (previewContent || !log.importedFrom && (previewFilePath || primaryTarget?.filepath)) ? (
     <InlineCodeView
       filename={filename}
       content={previewContent}
@@ -3691,7 +3709,7 @@ const ActionChip = ({
             {preview && (preview.type === 'console_output'
               ? <InlineConsole command={preview.command || subtitle} content={preview.output || preview.content} exitCode={preview.exitCode} durationMs={preview.durationMs} flush />
               : preview.type === 'file_preview' && previewHasDiff
-                ? <InlineDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} diffLines={preview.diffLines} flush />
+                ? <InlineDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} diffLines={preview.diffLines} stats={diffStats} partial={preview.diffTruncated || preview._diffLinesStripped} flush />
                 : preview.type === 'file_preview' && (preview.filepath || fullPath || getPreviewContent(preview))
                   ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={!log.importedFrom && !previewIsLive && Boolean(preview.filepath || fullPath)} streaming={previewIsLive} startLine={preview.startLine ?? preview.lineStart} endLine={preview.endLine ?? preview.lineEnd} contentStartLine={preview.sourceFileSnapshot ? preview.startLine ?? preview.lineStart ?? 1 : undefined} stats={diffStats} flush />
                   : preview.type === 'file_preview'

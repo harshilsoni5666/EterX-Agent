@@ -1,6 +1,6 @@
 {
   "name": "eterx",
-  "version": "0.1.49",
+  "version": "0.1.50",
   "description": "EterX autonomous AI agent desktop application",
   "author": {
     "name": "Harshil Soni",
@@ -56,9 +56,10 @@
     "d3-scale": "^4.0.3",
     "docx": "^9.15.1",
     "electron-updater": "^6.8.11",
+    "fast-myers-diff": "3.2.0",
+    "fraction.js": "^5.2.1",
     "framer-motion": "^14.9.0",
     "fs-extra": "^11.4.1",
-    "fraction.js": "^5.2.1",
     "fzstd": "0.1.1",
     "geist": "^1.9.0",
     "groq-sdk": "^1.6.0",

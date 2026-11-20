@@ -9,7 +9,7 @@ import type { MainAgentMode, MainAgentProvider } from '../../model-routing';
 import { MAX_SUB_AGENTS } from '../../sub-agent-settings';
 import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../../swarm-coordinator';
 import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from '../../sub-agent-model-guidance';
-import { getSubAgentCreationArgumentGaps, SUB_AGENT_SPAWN_EXAMPLE, SUB_AGENT_SPAWN_GUIDANCE } from '../../sub-agent-spawn-guidance';
+import { getSubAgentCreationArgumentGaps, PREFERRED_SUB_AGENT_NAME_LENGTH, SUB_AGENT_SPAWN_EXAMPLE, SUB_AGENT_SPAWN_GUIDANCE } from '../../sub-agent-spawn-guidance';
 import {
   assessDelegatedAgent,
   formatDelegationCollection,
@@ -21,7 +21,7 @@ const MODEL_PROVIDER_ENUM = MODEL_PROVIDER_ORDER as [MainAgentProvider, ...MainA
 const MODEL_MODE_ENUM = ['think', 'fast', ...MODEL_PROVIDER_ORDER.filter(provider => provider !== 'gemini')] as [MainAgentMode, ...MainAgentMode[]];
 const SUB_AGENT_TASK_SCHEMA = z.object({
   task: z.string().min(1).max(200_000).describe('Detailed task description for this sub-agent'),
-  name: z.string().optional().describe('Optional agent name (auto-assigned if not provided)'),
+  name: z.string().optional().describe(`Brief task-specific agent name. Use two or three words within about ${PREFERRED_SUB_AGENT_NAME_LENGTH} characters, e.g. API Review. Keep a user-specified name when provided. Omit for automatic naming.`),
   key: z.string().min(1).max(100).optional().describe('Unique task key within this run, usable by dependsOn in the same batch'),
   dependsOn: z.array(z.string()).max(64).optional().describe('Task keys in this batch or existing task IDs in this run whose usable evidence must arrive before this task starts'),
   acceptance: z.string().max(4000).optional().describe('Concrete evidence or deliverable that makes this assignment complete'),

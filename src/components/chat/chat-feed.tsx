@@ -230,7 +230,7 @@ const liveMotionStyles = `
 
 const chatFeedSurfaceStyles = `
   .eterx-chat-feed {
-    --eterx-chat-feed-bg: #0F0F0F;
+    --eterx-chat-feed-bg: var(--background);
     background: var(--eterx-chat-feed-bg);
   }
   :root[data-theme="light"] .eterx-chat-feed {
@@ -238,7 +238,6 @@ const chatFeedSurfaceStyles = `
     color: #252A31;
   }
   :root[data-theme="dark"] .eterx-chat-feed {
-    --eterx-chat-feed-bg: #0F0F0F;
     color: #E3E3E3;
   }
   .eterx-chat-feed-scroll,

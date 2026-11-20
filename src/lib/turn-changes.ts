@@ -74,7 +74,7 @@ export function collectTurnChanges(logs: any[], workspacePath?: string | null): 
     const previous = files.get(key);
     const revision: FilePanelProps = {
       filepath, filename: log.filename || filepath.split(/[\\/]/).pop() || filepath,
-      content: log.content, language: log.language, diffLines: Array.isArray(log.diffLines) ? log.diffLines.map((line: any) => ({ ...line })) : undefined,
+      content: log.content, language: log.language, diffLines: log.diffLines,
       linesAdded: lineCount(log.linesAdded) ?? (log.diffLines?.length ? log.diffLines.filter((line: any) => line.type === 'added').length : undefined),
       linesRemoved: lineCount(log.linesRemoved) ?? (log.diffLines?.length ? log.diffLines.filter((line: any) => line.type === 'removed').length : undefined),
       totalLines: log.totalLines ?? log.lineCount, updatedAt: log.timestamp,

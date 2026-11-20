@@ -19,7 +19,6 @@ import { latestModelThinkingCapability } from './stored-model-metadata';
  * Completely separate from the main agent in Agent.ts.
  * Uses the same apiKeyPool for API key management.
  */
-import path from 'path';
 import { WORK_NOTE_POLICY } from './work-note';
 import { FINAL_ANSWER_POLICY } from './response-format';
 import { buildTelegramBotContext } from './telegram-bot-context';
@@ -30,7 +29,6 @@ import { SOURCE_READING_POLICY } from './source-read-policy';
 import { WORKSPACE_EDIT_POLICY } from './workspace-edit-contract';
 import { schemaUsageDescription } from './tools/registry';
 import { randomUUID } from 'crypto';
-import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from './api-key-pool';
 import {
@@ -48,7 +46,6 @@ import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
-import { resolveWorkspacePathForContext } from './workspace/path_resolver';
 import { initializeChatWorkspace, resolveChatWorkspaceContext } from './workspace/runtime-context';
 import { managedWorkspaces } from './workspace/managed';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
@@ -73,7 +70,6 @@ import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improv
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
 import { requestToolApproval } from './tool-approval-runtime';
 import { executeParallelToolCalls } from './parallel-tool-calls';
-import { buildFilePreviewTraceId, buildLineDiffPreview, languageFromFilename } from './tool-trace';
 import { compactContextAtBoundary, isContextCapacityError } from './resilience/context-compaction';
 import { openWorkingContextCheckpoint, resolveWorkingContextRequest } from './working-context-checkpoint';
 import { getSearchRouteBrief } from '../search/search-runtime';
@@ -1924,105 +1920,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     const blockedTool = await requestToolApproval(canonicalToolName, effectiveArgs, context);
     if (blockedTool) return blockedTool;
 
-    const editTargets = canonicalToolName === 'workspace_edit_file'
-      ? (Array.isArray(effectiveArgs?.files) ? effectiveArgs.files : effectiveArgs?.filename ? [effectiveArgs] : [])
-        .map((target: any) => {
-          const requestedPath = String(target?.filename || '').trim();
-          if (!requestedPath) return null;
-          let filePath: string;
-          try {
-            filePath = resolveWorkspacePathForContext(requestedPath, context);
-          } catch {
-            filePath = path.isAbsolute(requestedPath) ? path.normalize(requestedPath) : path.resolve(workspaceRoot, requestedPath);
-          }
-          return {
-            requestedPath,
-            filePath,
-          };
-        })
-        .filter(Boolean) as Array<{ requestedPath: string; filePath: string }>
-      : [];
-    const preEditSnapshots = new Map<string, { existed: boolean; content?: string }>();
-    for (const target of editTargets) {
-      try {
-        const existed = fs.existsSync(target.filePath);
-        const stat = existed ? fs.statSync(target.filePath) : null;
-        const content = stat?.isFile() && stat.size <= 5_000_000 ? fs.readFileSync(target.filePath, 'utf8') : undefined;
-        preEditSnapshots.set(target.filePath, { existed, content });
-      } catch {
-        preEditSnapshots.set(target.filePath, { existed: false });
-      }
-    }
-
-    const emitEditPreviews = async (result: any) => {
-      if (canonicalToolName !== 'workspace_edit_file' || !result) return;
-      const created = new Set((Array.isArray(result.filesCreated) ? result.filesCreated : []).map((value: unknown) => path.normalize(String(value)).toLowerCase()));
-      const deleted = new Set((Array.isArray(result.filesDeleted) ? result.filesDeleted : []).map((value: unknown) => path.normalize(String(value)).toLowerCase()));
-      const fileOperationResult = {
-        filesModified: Array.isArray(result.filesModified) ? result.filesModified : [],
-        filesCreated: Array.isArray(result.filesCreated) ? result.filesCreated : [],
-        filesDeleted: Array.isArray(result.filesDeleted) ? result.filesDeleted : [],
-        errors: Array.isArray(result.errors) ? result.errors : [],
-        changes: Array.isArray(result.changes) ? result.changes : [],
-        rolledBack: Boolean(result.rolledBack),
-        operation: result.operation,
-      };
-
-      for (const target of editTargets) {
-        const normalizedPath = path.normalize(target.filePath).toLowerCase();
-        const snapshot = preEditSnapshots.get(target.filePath);
-        const wasCreated = created.has(normalizedPath) || snapshot?.existed === false;
-        const wasDeleted = deleted.has(normalizedPath);
-        let afterContent = '';
-        if (!wasDeleted) {
-          try {
-            const stat = fs.existsSync(target.filePath) ? fs.statSync(target.filePath) : null;
-            if (stat?.isFile() && stat.size <= 5_000_000) afterContent = fs.readFileSync(target.filePath, 'utf8');
-          } catch {}
-        }
-
-        const rawDiff = snapshot?.content !== undefined
-          ? buildLineDiffPreview(snapshot.content, wasDeleted ? '' : afterContent)
-          : null;
-        const diffLines = wasDeleted && rawDiff
-          ? rawDiff.diffLines.filter(line => line.type !== 'added')
-          : wasCreated && afterContent
-            ? afterContent.split(/\r?\n/).slice(0, 2_000).map((line, index) => ({ type: 'added' as const, content: line, newLine: index + 1 }))
-            : rawDiff?.diffLines || [];
-        const linesAdded = wasCreated
-          ? (afterContent ? afterContent.split(/\r?\n/).length : 0)
-          : diffLines.filter(line => line.type === 'added').length;
-        const linesRemoved = diffLines.filter(line => line.type === 'removed').length;
-
-        onTrace?.({
-          id: buildFilePreviewTraceId(ownerTraceId, target.filePath),
-          type: 'file_preview',
-          filename: path.basename(target.requestedPath),
-          filepath: target.filePath,
-          language: languageFromFilename(target.requestedPath || target.filePath),
-          content: afterContent.length <= 500_000 ? afterContent : '',
-          lineCount: afterContent ? afterContent.split(/\r?\n/).length : 0,
-          totalLines: afterContent ? afterContent.split(/\r?\n/).length : 0,
-          truncated: afterContent.length > 500_000,
-          linesAdded,
-          linesRemoved,
-          diffLines,
-          isEdit: !wasCreated && !wasDeleted,
-          operation: wasDeleted ? 'deleted' : wasCreated ? 'created' : 'edited',
-          fileOperationResult,
-          dedupe: false,
-          ownerTraceId,
-          staged: false,
-          isLive: false,
-          isStreaming: false,
-          isLiveTyping: false,
-          streamState: 'closed',
-          status: result?.success === false || result?.error ? 'error' : 'completed',
-          timestamp: Date.now(),
-        });
-      }
-    };
-
     const toolExec = createToolExecutionContext(context, onTrace);
     // Priority 1: Resolved tool from agent profile
     try {
@@ -2031,7 +1928,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       if (resolvedTool?.execute) {
         const result = await resolvedTool.execute(effectiveArgs, toolExec.context);
         toolExec.throwIfCancelled();
-        await emitEditPreviews(result);
         return result;
       }
 
@@ -2040,7 +1936,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       if (regTool?.execute) {
         const result = await regTool.execute(effectiveArgs, toolExec.context);
         toolExec.throwIfCancelled();
-        await emitEditPreviews(result);
         return result;
       }
 

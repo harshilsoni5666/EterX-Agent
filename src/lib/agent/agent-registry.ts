@@ -9,6 +9,7 @@ import { randomUUID } from 'crypto';
 import { AgentOrchestrator } from './orchestrator';
 import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
+import { taskPlanTraceIdentity } from '../task-plan-trace';
 import { writeRuntimeTrace } from './runtime-trace';
 import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider } from './model-routing';
 import { MODEL_PROVIDER_MODE, isModelProvider, modelEntryKey, parseModelEntryKey } from './model-selector-store';
@@ -24,7 +25,7 @@ import { normalizeStreamTimestamp } from '../streaming-lifecycle';
 import { getEterxWorkspaceDir } from './storage-paths';
 import { delegationTelemetryFromTrace } from './delegation-evidence';
 import { filterLiveUserVisibleTraces, isLiveUserVisibleTrace } from './trace-visibility';
-import { areLikelySameFeedActionLifecycle, createStoppedRunTrace, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary } from '../chat-feed-lifecycle';
+import { areLikelySameFeedActionLifecycle, createStoppedRunTrace, getFeedActionSingletonIdentity, getFeedTraceWorkerScope, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary } from '../chat-feed-lifecycle';
 import { getContextFabricForChat } from './context-fabric';
 import { formatUnknownError } from './error-format';
 import { contextMeasurementTime, contextUsageScopeKey } from '../context-usage-snapshot';
@@ -390,7 +391,7 @@ class AgentRegistry {
       }
       if (Array.isArray(diffLines)) {
         compact.diffLines = diffLines.slice(-80);
-        compact._diffLinesStripped = diffLines.length > compact.diffLines.length;
+        compact._diffLinesStripped = Boolean(data._diffLinesStripped || diffLines.length > compact.diffLines.length);
       }
       return compact;
     }
@@ -1100,19 +1101,17 @@ class AgentRegistry {
     }
     if (traceEvent?.type === 'task_plan') {
       const incomingScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
-      const incomingPlanId = String(traceEvent.planId || traceEvent.ownerTraceId || '').trim();
-      // A visible query has one plan lifecycle. Decomposer, checkpoint, and
-      // automatic progress updates are producer snapshots of that same row,
-      // even when an older adapter omitted planId. Scope is authoritative and
-      // prevents a later query from inheriting the preceding query's plan.
+      const incomingPlanId = taskPlanTraceIdentity(traceEvent);
+      // Checkpoints and automatic progress update the plan they belong to.
+      // Older adapters can identify a plan by its owning turn alone.
       for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
         const existingEntry = execution.traceBuffer[index];
         const existing = existingEntry?.data;
-        if (!existing || existing.type !== 'task_plan') continue;
+        if (!existing || existing.type !== 'task_plan' || getFeedTraceWorkerScope(existing) !== getFeedTraceWorkerScope(traceEvent)) continue;
         const existingScope = String(existing.turnId || existing.runId || '').trim();
         if (incomingScope && existingScope && incomingScope !== existingScope) continue;
-        const existingPlanId = String(existing.planId || existing.ownerTraceId || '').trim();
-        if (!incomingScope && incomingPlanId && existingPlanId && existingPlanId !== incomingPlanId) continue;
+        const existingPlanId = taskPlanTraceIdentity(existing);
+        if (incomingPlanId && existingPlanId && existingPlanId !== incomingPlanId) continue;
         execution.traceBuffer.splice(index, 1);
         traceEvent = {
           ...existing,

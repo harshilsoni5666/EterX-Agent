@@ -10,6 +10,8 @@ import { normalizeWorkspaceEditChunk } from '../../workspace/edit-input';
 import { WORKSPACE_EDIT_DESCRIPTION } from '../../workspace-edit-contract';
 import { assertNoNewDuplicateDeclarations } from '../../workspace/edit-source-safety';
 import { applyTextEdit, editLineCount } from '../../workspace/edit-text';
+import { buildLineDiffPreview } from '../../../line-diff';
+import { buildFilePreviewTraceId, languageFromFilename } from '../../tool-trace';
 import { completedEditReceipt, editInvocationKey, editRequestSignature, rememberCompletedEdit } from '../../workspace/edit-receipts';
 
 const editChunkSchema = z.preprocess(normalizeWorkspaceEditChunk, z.object({
@@ -69,6 +71,7 @@ type PreparedTarget = EditTarget & {
 type StagedTarget = PreparedTarget & {
   nextContent: string | null;
   result: Record<string, any>;
+  diff?: ReturnType<typeof buildLineDiffPreview>;
 };
 
 const changedLineCount = editLineCount;
@@ -198,17 +201,15 @@ function newFileContent(target: EditTarget): string {
   return target.edits[0].replace;
 }
 
-async function applyExistingFileEdits(
+function applyExistingFileEdits(
   target: PreparedTarget,
-  onPrepared?: (content: string, stats: { additions: number; deletions: number }) => Promise<void>,
-): Promise<Record<string, any>> {
+  onPrepared: (content: string) => void,
+): Record<string, any> {
   if (!Array.isArray(target.edits) || target.edits.length === 0) {
     throw new Error(`Existing file ${target.filename} requires at least one edit unless delete=true.`);
   }
   let content = target.originalContent;
   const originalContent = content;
-  let additions = 0;
-  let deletions = 0;
 
   const selectorFree = target.edits.every(edit =>
     edit.search === undefined && edit.startLine === undefined && edit.endLine === undefined
@@ -232,15 +233,13 @@ async function applyExistingFileEdits(
       };
     }
     if (content.length === 0) {
-      await onPrepared?.(replacement, { additions: changedLineCount(replacement), deletions: 0 });
+      onPrepared(replacement);
       return {
         success: true,
         message: `Filled empty file ${target.filePath}`,
         path: target.filePath,
         filename: target.filename,
         editsApplied: target.edits.length,
-        additions: changedLineCount(replacement),
-        deletions: 0,
         totalLines: changedLineCount(replacement),
         size: Buffer.byteLength(replacement, 'utf8'),
       };
@@ -249,10 +248,7 @@ async function applyExistingFileEdits(
   }
 
   for (let editIndex = 0; editIndex < target.edits.length; editIndex++) {
-    const applied = applyTextEdit(content, target.edits[editIndex], `${target.filename}, edit #${editIndex + 1}`);
-    content = applied.content;
-    additions += applied.additions;
-    deletions += applied.deletions;
+    content = applyTextEdit(content, target.edits[editIndex], `${target.filename}, edit #${editIndex + 1}`);
   }
 
   if (content === originalContent) {
@@ -271,15 +267,13 @@ async function applyExistingFileEdits(
   }
 
   const finalContent = content;
-  await onPrepared?.(finalContent, { additions, deletions });
+  onPrepared(finalContent);
   return {
     success: true,
     message: `Applied ${target.edits.length} edits to ${target.filePath}`,
     path: target.filePath,
     filename: target.filename,
     editsApplied: target.edits.length,
-    additions,
-    deletions,
     totalLines: changedLineCount(finalContent),
     size: Buffer.byteLength(finalContent, 'utf8'),
   };
@@ -515,8 +509,6 @@ export const workspaceEditFileTool: ToolDefinition = {
             path: target.filePath,
             filename: target.filename,
             editsApplied: 1,
-            additions: 0,
-            deletions: changedLineCount(target.originalContent),
           } });
         } else if (!target.existed) {
           const content = newFileContent(target);
@@ -529,12 +521,10 @@ export const workspaceEditFileTool: ToolDefinition = {
             editsApplied: 1,
             totalLines: changedLineCount(content),
             size: Buffer.byteLength(content, 'utf8'),
-            additions: changedLineCount(content),
-            deletions: 0,
           } });
         } else {
           let nextContent = target.originalContent;
-          const result = await applyExistingFileEdits(target, async content => { nextContent = content; });
+          const result = applyExistingFileEdits(target, content => { nextContent = content; });
           if (!result || result.success === false || result.error) {
             throw new Error(formatEditError(result?.error ?? result?.message, `Edit failed for ${target.filename}`));
           }
@@ -547,6 +537,14 @@ export const workspaceEditFileTool: ToolDefinition = {
         if (target.nextContent !== null && target.nextContent !== target.originalContent) {
           await assertNoNewDuplicateDeclarations(target.filePath, target.originalContent, target.nextContent);
         }
+        if (!target.result.editsApplied) continue;
+        if (target.delete && (target.originalBytes.includes(0) || !Buffer.from(target.originalContent, 'utf8').equals(target.originalBytes))) continue;
+        // These are the exact versions held by this transaction, including
+        // all sequential edits. Counts cover the whole change even when the
+        // transport keeps only a bounded set of preview rows.
+        target.diff = buildLineDiffPreview(target.originalContent, target.nextContent ?? '', { rows: 2000, chars: 250_000 });
+        target.result.additions = target.diff.added;
+        target.result.deletions = target.diff.removed;
       }
       for (const target of staged) {
         assertNotCancelled();
@@ -609,10 +607,32 @@ export const workspaceEditFileTool: ToolDefinition = {
       return [{
         path: prepared[index].filePath,
         action: result.action || (prepared[index].delete ? 'deleted' : prepared[index].existed ? 'modified' : 'created'),
-        additions: Number(result.additions ?? (result.created ? result.totalLines : 0)) || 0,
-        deletions: Number(result.deletions || 0),
+        additions: result.additions,
+        deletions: result.deletions,
       }];
     });
+
+    const publishPreview = context?._onTrace;
+    if (typeof publishPreview === 'function') {
+      const fileOperationResult = { filesModified, filesCreated, filesDeleted, changes, operation, errors: [], rolledBack: false };
+      for (const target of committed) {
+        const content = target.nextContent ?? '';
+        const timestamp = Date.now();
+        try {
+          publishPreview({
+            type: 'file_preview', id: buildFilePreviewTraceId(context?.ownerTraceId, target.filePath),
+            ownerTraceId: context?.ownerTraceId, filename: path.basename(target.filePath), filepath: target.filePath,
+            language: languageFromFilename(target.filePath), content: content.length <= 500_000 ? content : '',
+            lineCount: target.result.totalLines ?? 0, totalLines: target.result.totalLines ?? 0,
+            diffLines: target.diff?.diffLines ?? [], linesAdded: target.result.additions, linesRemoved: target.result.deletions,
+            diffTruncated: target.diff?.truncated, truncated: content.length > 500_000 || target.diff?.truncated,
+            isEdit: target.result.action === 'modified', operation: target.result.action === 'modified' ? 'edited' : target.result.action,
+            fileOperationResult, dedupe: false, staged: false, isLive: false, isStreaming: false, isLiveTyping: false,
+            streamState: 'closed', status: 'completed', startTime: timestamp, endTime: timestamp, timestamp,
+          });
+        } catch { /* A trace listener cannot change a committed edit's outcome. */ }
+      }
+    }
 
     return {
       success: true,

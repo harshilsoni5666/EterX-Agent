@@ -16,7 +16,7 @@ import { getPrimaryModifierLabel } from '../../lib/platform';
 import { decodeLocalFileHref, openLocalFilePath } from './local-file-link';
 import { isAppVisible } from '../../lib/app-visibility';
 import { createMonacoCodeTheme } from '../../lib/code-theme';
-import { diffLineNumber, numberDiffLines } from '../../lib/diff-line-numbers';
+import { diffLineCounts, diffLineNumber, numberDiffLines } from '../../lib/diff-line-numbers';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 const DiffEditor = dynamic(
@@ -389,8 +389,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const added   = diffLines?.filter(l => l.type === 'added').length   || addedProp || linesAdded || 0;
-  const removed = diffLines?.filter(l => l.type === 'removed').length || removedProp || linesRemoved || 0;
+  const { added, removed } = diffLineCounts(diffLines, linesAdded ?? addedProp, linesRemoved ?? removedProp);
   const lineCount = countLines(localContent || '');
   const lang = getLanguage(filename);
   const fileColor = getFileColor(filename);

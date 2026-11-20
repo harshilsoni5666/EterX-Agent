@@ -1,5 +1,5 @@
 import { numberDiffLines, type NumberedDiffLine } from '../diff-line-numbers';
-import { buildLineDiffPreview } from '../agent/tool-trace';
+import { diffLineSequences } from '../line-diff';
 import { recordedResult } from './actions';
 import { recordedPowerShellReplacements, type RecordedReplacements } from './recorded-replacements';
 
@@ -9,7 +9,7 @@ const key = (value: unknown) => {
   const path = String(value || '').replace(/\\/g, '/').replace(/\/\.\//g, '/');
   return /^[A-Za-z]:\//.test(path) ? path.toLowerCase() : path;
 };
-const textLines = (text: string) => text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
+const textLines = (text: string) => text ? text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n') : [];
 const snapshot = (log: any): Snapshot | undefined => typeof log.content === 'string' && log.content.length <= 2_000_000 && !log.truncated
   ? { lines: textLines(log.content), start: Number(log.startLine || 1), complete: Boolean(log.sourceFileComplete) } : undefined;
 
@@ -223,7 +223,8 @@ function applyRecordedDiff(input: NumberedDiffLine[], state: Snapshot | undefine
   const before = reverse ? current : state, after = reverse ? state : current;
   // Use the very same diff generator as workspace_edit_file: native context
   // rows, compacted gaps, insertion/deletion order and line-number semantics.
-  const native = buildLineDiffPreview(before.lines.join('\n'), after.lines.join('\n'));
+  const native = diffLineSequences(before.lines, after.lines);
+  if (native.added === undefined) return { lines, state: current };
   return { lines: native.diffLines.map(line => ({ ...line,
     ...(line.oldLine !== undefined ? { oldLine: line.oldLine + before.start - 1 } : {}),
     ...(line.newLine !== undefined ? { newLine: line.newLine + after.start - 1 } : {}) })), state: current };
@@ -293,12 +294,15 @@ export function restoreImportedDiffContext(source: any[]): any[] {
           if (typeof transform.includes !== 'string' || typeof transform.before !== 'string' || !transform.before || typeof transform.after !== 'string'
             || /[\r\n]/.test(transform.includes + transform.before + transform.after)) { state = undefined; continue; }
           const next = { ...state, lines: state.lines.map(line => line.includes(transform.includes) ? line.split(transform.before).join(transform.after) : line) };
-          const diff = buildLineDiffPreview(state.lines.join('\n'), next.lines.join('\n'));
+          const diff = diffLineSequences(state.lines, next.lines);
+          // This recorded operation replaces text within each individual
+          // line. Its changed positions remain known even without a preview.
+          const changed = diff.added === undefined ? next.lines.reduce((sum, line, i) => sum + Number(line !== state!.lines[i]), 0) : undefined;
           logs[event.index] = { ...log, _recordedBeforeTransform: state,
             ...(state.complete ? { content: next.lines.join('\n'), sourceFileComplete: true, diffLines: diff.diffLines.map(line => ({ ...line,
               ...(line.oldLine !== undefined ? { oldLine: line.oldLine + state!.start - 1 } : {}),
               ...(line.newLine !== undefined ? { newLine: line.newLine + next.start - 1 } : {}) })),
-              linesAdded: diff.added, linesRemoved: diff.removed } : {}) };
+              linesAdded: diff.added ?? changed, linesRemoved: diff.removed ?? changed, diffTruncated: diff.truncated } : {}) };
           state = next;
           continue;
         }
@@ -343,7 +347,7 @@ export function restoreImportedDiffContext(source: any[]): any[] {
     if (ownerIndex === undefined) continue;
     const owner = logs[ownerIndex], result = owner.toolResult;
     if (!Array.isArray(result?.changes)) continue;
-    if (preview.sourceLineTransform && preview.sourceFileComplete && !preview.diffLines?.some((line: NumberedDiffLine) => ['added', 'removed'].includes(line.type))) {
+    if (preview.sourceLineTransform && preview.sourceFileComplete && !preview.diffTruncated && !preview.diffLines?.some((line: NumberedDiffLine) => ['added', 'removed'].includes(line.type))) {
       unchangedTransforms.add(preview.id);
       const changes = result.changes.filter((change: any) => key(change.path) !== key(preview.filepath));
       const files = changes.map((change: any) => change.path);

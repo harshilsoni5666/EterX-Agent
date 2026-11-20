@@ -14,6 +14,7 @@ import {
   areLikelySameFeedActionLifecycle,
   getFeedActionLifecycleCandidateKeys,
   getFeedActionSingletonIdentity,
+  getFeedTraceWorkerScope,
   haveConflictingFeedActionInvocations,
   isFeedTraceExplicitlySettled,
   isFeedTraceOpen,
@@ -23,6 +24,7 @@ import { formatUnknownError } from './error-format';
 import { sameUserAdmission } from '../steering-delivery';
 import { contextUsageScopeKey, mergeContextCompactionSnapshot, mergeContextUsageSnapshot, upsertContextUsageSnapshot } from '../context-usage-snapshot';
 import { reconcileModelUsageLogs, upsertModelUsageReceipt } from '../model-usage';
+import { taskPlanTraceIdentity } from '../task-plan-trace';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -224,7 +226,7 @@ function compactTraceEvent(traceEvent: any): any {
     }
     if (Array.isArray(diffLines)) {
       compact.diffLines = diffLines.slice(-80);
-      compact._diffLinesStripped = diffLines.length > compact.diffLines.length;
+      compact._diffLinesStripped = Boolean(traceEvent._diffLinesStripped || diffLines.length > compact.diffLines.length);
     }
     return compact;
   }
@@ -426,6 +428,7 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
   const actionIndexes = new Map<string, number>();
   const likelyActionIndexes = new Map<string, Set<number>>();
   const taskPlanIndexes = new Map<string, number>();
+  const latestTaskPlanByTurn = new Map<string, number>();
   const contextUsageIndexes = new Map<string, number>();
   const registerLikelyAction = (log: any, index: number) => {
     getFeedActionLifecycleCandidateKeys(log).forEach(key => {
@@ -460,8 +463,13 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
     }
     if (String(log?.type || '') === 'task_plan') {
       const scope = String(log?.turnId || log?.runId || '').trim();
-      const planKey = scope ? `task-plan:${ scope }` : '';
-      const existingPlanIndex = planKey ? taskPlanIndexes.get(planKey) : undefined;
+      const turnKey = scope ? JSON.stringify([scope, getFeedTraceWorkerScope(log)]) : '';
+      const identity = taskPlanTraceIdentity(log);
+      const planKey = identity ? JSON.stringify([turnKey, identity]) : '';
+      const latestIndex = latestTaskPlanByTurn.get(turnKey);
+      const compatibleIndex = latestIndex !== undefined && (!identity || !taskPlanTraceIdentity(canonical[latestIndex]))
+        ? latestIndex : undefined;
+      const existingPlanIndex = taskPlanIndexes.get(planKey) ?? compatibleIndex;
       if (existingPlanIndex !== undefined) {
         const previous = canonical[existingPlanIndex];
         canonical[existingPlanIndex] = {
@@ -478,9 +486,11 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
           startTime: previous?.startTime || previous?.timestamp || log?.startTime || log?.timestamp,
           timestamp: Math.max(Number(previous?.timestamp || 0), Number(log?.timestamp || 0)),
         };
+        if (planKey) taskPlanIndexes.set(planKey, existingPlanIndex);
         continue;
       }
       if (planKey) taskPlanIndexes.set(planKey, canonical.length);
+      if (turnKey) latestTaskPlanByTurn.set(turnKey, canonical.length);
       canonical.push(log);
       continue;
     }
@@ -1033,12 +1043,17 @@ export const taskStore = {
       }
     } else if (timedEvent?.type === 'task_plan') {
       const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
-      const existingPlanIndex = incomingScope
-        ? task.traceLogs.findIndex((log: any) =>
-          log?.type === 'task_plan' &&
-          String(log.turnId || log.runId || '').trim() === incomingScope
-        )
+      const incomingPlanId = taskPlanTraceIdentity(timedEvent);
+      const matchesTurn = (log: any) => log?.type === 'task_plan' &&
+        String(log.turnId || log.runId || '').trim() === incomingScope &&
+        getFeedTraceWorkerScope(log) === getFeedTraceWorkerScope(timedEvent);
+      let existingPlanIndex = incomingPlanId
+        ? task.traceLogs.findLastIndex((log: any) => matchesTurn(log) && taskPlanTraceIdentity(log) === incomingPlanId)
         : -1;
+      if (existingPlanIndex < 0 && incomingScope) {
+        const latest = task.traceLogs.findLastIndex(matchesTurn);
+        if (latest >= 0 && (!incomingPlanId || !taskPlanTraceIdentity(task.traceLogs[latest]))) existingPlanIndex = latest;
+      }
       if (existingPlanIndex >= 0) {
         const previous = task.traceLogs[existingPlanIndex];
         task.traceLogs[existingPlanIndex] = {

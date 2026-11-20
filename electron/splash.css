@@ -5,7 +5,7 @@
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: #0f0f0f;
+  background: var(--background, #000000);
   color: #d4d4d4;
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
   user-select: none;
@@ -26,7 +26,6 @@
 /* Only the desktop splash opts in; the shared app loader keeps its solid fill. */
 :root[data-splash-backdrop="native"],
 :root[data-splash-backdrop="native"] body { background: transparent; }
-:root[data-splash-backdrop="native"] .eterx-startup { background: rgba(15,15,15,.72); }
 :root[data-splash-backdrop="native"][data-theme="light"] .eterx-startup { background: rgba(250,250,248,.72); }
 @keyframes eterx-startup-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .eterx-startup-spinner { animation: none; } }

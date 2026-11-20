@@ -15,6 +15,7 @@ import './side-workspace.css';
 import './git-workspace.css';
 import './turn-changes.css';
 import './dropdown-polish.css';
+import './work-panel.css';
 import './code-review.css';
 import './composer-surfaces.css';
 import './chat-content.css';

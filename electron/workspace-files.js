@@ -92,6 +92,31 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
     if (lines.length && lines[lines.length - 1] === '') lines.pop();
     return { diffLines: lines.slice(0, 10000).map((content, index) => ({ type: 'added', content, newLine: index + 1 })), truncated: lines.length > 10000 };
   };
+  const untrackedLineCount = async (repository, file) => {
+    const target = path.join(repository, file);
+    const stat = await fsp.lstat(target);
+    if (!stat.isFile() || stat.size > 2 * 1024 * 1024) return;
+    const real = await fsp.realpath(target);
+    const relative = path.relative(repository, real);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return;
+    const handle = await fsp.open(real, 'r');
+    try {
+      const buffer = Buffer.alloc(stat.size + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      const after = await handle.stat();
+      if (length !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) return;
+      const content = buffer.subarray(0, length);
+      if (content.includes(0)) return;
+      let count = length > 0 && content[length - 1] !== 10 ? 1 : 0;
+      for (const byte of content) if (byte === 10) count++;
+      return count;
+    } finally { await handle.close(); }
+  };
   const resolveReviewTarget = async (root, scope, comparisonRef = '') => {
     if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('Choose a project folder to review.');
     const repository = String(await git(root, ['rev-parse', '--show-toplevel'])).trim();
@@ -107,10 +132,10 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
     const baseCommit = scope === 'branch' ? String(await git(repository, ['rev-parse', '--verify', '--end-of-options', baseRef + '^{commit}'])).trim() : '';
     return { repository, branch, upstream, gitDirectory, hasHead, references, baseRef, base: scope === 'branch' ? [`${baseCommit}...HEAD`] : hasHead ? ['HEAD'] : [] };
   };
-  const reviewTarget = (root, scope, baseRef = '') => {
+  const reviewTarget = (root, scope, baseRef = '', refresh = false) => {
     const key = JSON.stringify([root, scope, baseRef]);
     const cached = reviewTargets.get(key);
-    if (cached && Date.now() - cached.at < 2000) return cached.promise;
+    if (!refresh && cached && Date.now() - cached.at < 2000) return cached.promise;
     const promise = resolveReviewTarget(root, scope, baseRef).catch(error => { reviewTargets.delete(key); throw error; });
     reviewTargets.set(key, { at: Date.now(), promise });
     if (reviewTargets.size > 24) reviewTargets.delete(reviewTargets.keys().next().value);
@@ -118,13 +143,13 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
   };
   ipcMain.handle('workspace-review-list', async (event, root, scope = 'working', baseRef = '') => {
     authorize(event);
-    const target = await reviewTarget(root, scope, baseRef);
+    const target = await reviewTarget(root, scope, baseRef, true);
     let files = [];
     if (scope === 'branch') {
       const entries = String(await git(target.repository, ['diff', '--name-status', '-z', '--no-renames', ...target.base, '--'])).split('\0');
       for (let i = 0; i + 1 < entries.length; i += 2) files.push({ status: entries[i], relativePath: entries[i + 1] });
     } else {
-      const entries = String(await git(target.repository, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])).split('\0');
+      const entries = String(await git(target.repository, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'])).split('\0');
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i]; if (!entry) continue;
         const status = entry.slice(0, 2);
@@ -143,7 +168,16 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
       const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(entry);
       if (match && match[1] !== '-') stats.set(match[3], { linesAdded: Number(match[1]), linesRemoved: Number(match[2]) });
     }
-    return { root: target.repository, branch: target.branch, upstream: target.upstream, baseRef: target.baseRef, references: target.references, gitDirectory: target.gitDirectory, files: files.slice(0, 1000).map(file => ({ ...file, ...stats.get(file.relativePath), filepath: path.join(target.repository, file.relativePath), filename: path.basename(file.relativePath), directory: file.relativePath.endsWith('/'), isEdit: true })), truncated: files.length > 1000 };
+    const visibleFiles = files.slice(0, 1000);
+    const untracked = scope === 'working' ? visibleFiles.filter(file => file.status === '??') : [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, untracked.length) }, async () => {
+      for (let file = untracked[next++]; file; file = untracked[next++]) {
+        const count = await untrackedLineCount(target.repository, file.relativePath).catch(() => undefined);
+        if (count !== undefined) stats.set(file.relativePath, { linesAdded: count, linesRemoved: 0 });
+      }
+    }));
+    return { root: target.repository, branch: target.branch, upstream: target.upstream, baseRef: target.baseRef, references: target.references, gitDirectory: target.gitDirectory, files: visibleFiles.map(file => ({ ...file, ...stats.get(file.relativePath), filepath: path.join(target.repository, file.relativePath), filename: path.basename(file.relativePath), directory: file.relativePath.endsWith('/'), isEdit: true })), truncated: files.length > visibleFiles.length };
   });
   ipcMain.handle('workspace-review-diff', async (event, root, relativePath, scope = 'working', expanded = false, baseRef = '') => {
     authorize(event);

@@ -14,6 +14,23 @@ export type NumberedDiffLine = {
 
 const position = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : undefined;
 
+/** Recorded totals also cover rows omitted from a transport or history preview. */
+export function diffLineCounts(lines: readonly { type: string }[] | undefined, additions?: unknown, deletions?: unknown) {
+  const count = (value: unknown) => {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return undefined;
+    const n = Number(value);
+    return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+  };
+  const added = count(additions), removed = count(deletions);
+  if (added !== undefined && removed !== undefined) return { added, removed };
+  let visibleAdded = 0, visibleRemoved = 0;
+  for (const line of lines || []) {
+    if (line.type === 'added') visibleAdded++;
+    if (line.type === 'removed') visibleRemoved++;
+  }
+  return { added: added ?? visibleAdded, removed: removed ?? visibleRemoved };
+}
+
 /** Preserve real file coordinates. A missing source offset must never become
  * an invented 1, 2, 3 file gutter. Legacy excerpt counters are discarded. */
 export function numberDiffLines<T extends NumberedDiffLine>(lines: T[], start: { oldLine?: number; newLine?: number } = {}): T[] {
