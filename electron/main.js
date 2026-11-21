@@ -4751,6 +4751,11 @@ app.on('ready', async () => {
       canEncrypt: async () => await secureStorageAvailable()
         && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
       openBrowser: url => shell.openExternal(url),
+      // Use the desktop network stack for system proxy settings.
+      fetchRemote: (url, options) => electronNet.fetch(url, {
+        ...options, credentials: 'omit', cache: 'no-store', bypassCustomProtocolHandlers: true,
+      }),
+      log: logToFile,
       onChange: state => {
         for (const window of BrowserWindow.getAllWindows()) {
           if (isTrustedRenderer(window.webContents)) window.webContents.send('chatgpt-subscription-changed', state);

@@ -1,35 +1,18 @@
 {
   "$schema": "./docs/release-notes.schema.json",
-  "version": "0.1.51",
-  "summary": "Added ChatGPT plan access and richer task planning, and improved context and workspace feedback.",
+  "version": "0.1.52",
+  "summary": "Improved ChatGPT plan sign-in recovery and subscription error details.",
   "sections": [
-    {
-      "kind": "new",
-      "items": [
-        {
-          "title": "ChatGPT plan subscription",
-          "description": "Added Settings → Subscription next to Models, where users could choose Continue with ChatGPT and allow plan usage. Made the available models appear under Codex · ChatGPT plan in the model picker and routed their requests through EterX’s existing agent tools. Stored the connection securely on the device and set it to renew automatically. Linked Manage usage to current limits in ChatGPT Usage."
-        },
-        {
-          "title": "Task planning and review",
-          "description": "Updated the task(plan) tool to default to Auto, allowing it to answer directly, investigate first, ask a focused question, or start a step tracker when work had dependencies. Added /plan support by itself or before a request, with a compact checklist and a full implementation proposal covering decisions, constraints, and completion criteria. Added a dedicated lightbulb for the task decomposer and a chat card that opened the full plan in a side panel for reading, copying, or downloading. Added Implement plan and “Please implement the plan.” options that started the reviewed revision. Preserved completed steps and their evidence across later revisions."
-        }
-      ]
-    },
     {
       "kind": "improved",
       "items": [
         {
-          "title": "Context usage and compaction",
-          "description": "Fixed the context counter and compaction indicator. Stopping an agent now cleared its indicator and canceled manual compaction queued for that run; delayed events from the stopped run could no longer restore the indicator. Updated idle-chat compaction to refresh its counter after switching chats. Kept worker usage separate, ignored stale provider values, and included system instructions, tool definitions, and retained replies. After a model switch, the counter showed “Awaiting model count” until a matching measurement arrived. Older chats with incomplete measurements showed estimates."
+          "title": "ChatGPT plan sign-in recovery",
+          "description": "Updated token requests to include explicit form headers. When OpenAI returned invalid_grant for a one-time authorization code, EterX opened one fresh authorization using the same registered client. Other token-exchange failures showed the HTTP status and any returned error code in Settings → Subscription."
         },
         {
-          "title": "Remembered project and run location",
-          "description": "Updated New Chat to remember the selected project folder and run location after a message was sent. Kept that selection when users chose Recents and cleared it when they chose Don’t work in a project. Assigned scratch workspaces and worktrees their own folder when the next chat started. Prevented project moves from carrying over the old run location, and kept removing a folder from Recents from clearing the active workspace."
-        },
-        {
-          "title": "Chat link tooltip",
-          "description": "Updated the chat link tooltip to stay close to its link, move below when space was tight, and remain inside the window. Kept it above sidebars and scroll panes while clear of the live browser pane. Added hover and keyboard-focus opening, with long URLs wrapping to two lines and ending in an ellipsis when needed."
+          "title": "EterX sign-in callback",
+          "description": "Routed sign-in and subscription requests through Electron’s network stack to respect system proxy settings. Added a restrictive policy to the local callback page and cleared callback parameters from browser history after sign-in."
         }
       ]
     }

@@ -14,6 +14,8 @@ const PLAN_SCOPE = 'chatgpt.tokens.use.direct';
 const SCOPES = `openid profile email offline_access resource.invoke ${PLAN_SCOPE}`;
 const USAGE_URL = 'https://chatgpt.com/settings/usage';
 const CALLBACK_PATH = '/auth/callback';
+const CALLBACK_CLEANUP = "history.replaceState(null, '', '/auth/complete');";
+const CALLBACK_CLEANUP_HASH = crypto.createHash('sha256').update(CALLBACK_CLEANUP).digest('base64');
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
 const MAX_BRIDGE_BODY = 100 * 1024 * 1024;
 const UNUSABLE_REFRESH_CODES = new Set([
@@ -58,15 +60,44 @@ async function listen(server, address) {
   });
 }
 
-async function fetchJson(url, options, signal) {
-  const timeout = AbortSignal.timeout(15_000);
-  const response = await fetch(url, {
-    ...options,
-    redirect: 'error',
-    signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
-  });
-  const body = await response.json().catch(() => null);
-  return { response, body };
+function oauthForm(fields) {
+  return {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(fields).toString(),
+  };
+}
+
+function oauthErrorCode(body) {
+  const code = typeof body?.error === 'string' ? body.error : body?.error?.code ?? body?.detail?.code ?? body?.code;
+  return typeof code === 'string' && /^[a-z][a-z0-9_-]{0,79}$/i.test(code) ? code : null;
+}
+
+function isIssuedClientId(value) {
+  return typeof value === 'string' && /^oaiapp_[a-zA-Z0-9_-]{1,193}$/.test(value);
+}
+
+function signInExchangeMessage(status, code) {
+  switch (code) {
+    case 'invalid_grant':
+      return 'OpenAI could not use this one-time code. Start a new sign-in in EterX.';
+    case 'invalid_client':
+    case 'unauthorized_client':
+      return 'OpenAI rejected the app registration for this ChatGPT account.';
+    case 'access_denied':
+      return 'ChatGPT sign-in was declined. Sign in again when you are ready.';
+    case 'subscription_sharing_v2_client_not_enabled':
+      return 'OpenAI has not enabled ChatGPT plan usage for this app registration.';
+    case 'subscription_sharing_user_not_eligible':
+    case 'subscription_sharing_v2_user_not_eligible':
+      return 'ChatGPT plan usage is unavailable for this account or workspace.';
+    case 'unsupported_country_region_territory':
+      return 'OpenAI reported that ChatGPT sign-in is unavailable from this network region.';
+    default:
+      return status >= 500 || status === 429
+        ? 'OpenAI’s sign-in service is temporarily unavailable. Try again in a moment.'
+        : 'OpenAI could not finish ChatGPT sign-in. Try again in EterX.';
+  }
 }
 
 function normalizeTokens(body, current) {
@@ -126,7 +157,9 @@ function sendBridgeError(response, error) {
   } }));
 }
 
-function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBrowser, onChange }) {
+function createChatGptSubscription({
+  directory, safeStorage, canEncrypt, openBrowser, onChange, fetchRemote = fetch, log = () => {},
+}) {
   const store = path.join(directory, 'chatgpt-subscription.enc');
   let record = null;
   let available = false;
@@ -154,7 +187,7 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
       canCancel: Boolean(activeFlow && !activeFlow.committing),
       disconnecting: Boolean(disconnectRequest),
       email: record?.registration?.email || null,
-      hasRegistration: Boolean(record?.registration),
+      hasRegistration: Boolean(record?.registration || isIssuedClientId(record?.pendingClientId)),
       models: connected ? models : [],
       refreshing: Boolean(catalogRequest),
       error: signInError || catalogError || revokedWarning || null,
@@ -210,6 +243,17 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
     refreshFailureUntil = 0;
   }
 
+  async function fetchJson(url, options, signal) {
+    const timeout = AbortSignal.timeout(15_000);
+    const response = await fetchRemote(url, {
+      ...options,
+      redirect: 'error',
+      signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
+    });
+    const body = await response.json().catch(() => null);
+    return { response, body };
+  }
+
   async function discover(signal) {
     if (metadata) return metadata;
     const { response, body } = await fetchJson(`${ISSUER}/.well-known/openid-configuration`, {}, signal);
@@ -254,55 +298,153 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
   }
 
   function callbackPage(response, message) {
-    if (response.destroyed || response.writableEnded) return;
+    if (!response || response.destroyed || response.writableEnded) return;
+    const text = message.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     response.writeHead(200, {
-      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
+      'Connection': 'close',
       'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
-    }).end(message);
+      'Content-Security-Policy': `default-src 'none'; script-src 'sha256-${CALLBACK_CLEANUP_HASH}'; frame-ancestors 'none'; base-uri 'none'`,
+    }).end(`<!doctype html><html lang="en"><meta charset="utf-8"><title>ChatGPT sign-in · EterX</title><p>${text}</p><script>${CALLBACK_CLEANUP}</script></html>`);
   }
 
-  async function exchangeCallback(flow, params, response, endpoints, redirectUri) {
-    try {
-      if (params.has('error')) throw subscriptionError('ChatGPT sign-in was declined or cancelled.');
-      const returnedId = params.get('client_id');
-      const clientId = flow.registration?.clientId || returnedId;
-      const code = params.get('code');
-      if (!code || !clientId?.startsWith('oaiapp_') || (returnedId && returnedId !== clientId)) {
-        throw subscriptionError('ChatGPT returned incomplete sign-in details. Start again.');
-      }
-      const { response: result, body } = await fetchJson(endpoints.token_endpoint, {
-        method: 'POST', body: new URLSearchParams({
-          grant_type: 'authorization_code', client_id: clientId, code, redirect_uri: redirectUri,
-          code_verifier: flow.verifier, resource: RESOURCE,
-        }),
-      }, flow.abort.signal);
-      if (!result.ok) throw subscriptionError('ChatGPT could not finish sign-in. Start a new sign-in.');
-      const tokens = normalizeTokens(body);
-      const identity = await verifyIdentity(tokens.idToken, clientId, flow.nonce, endpoints, flow.abort.signal);
-      if (flow.registration?.subject && flow.registration.subject !== identity.subject) {
-        throw subscriptionError('ChatGPT returned a different account. Choose “Use another account” to connect it.');
-      }
+  function signInFailureMessage(error) {
+    return error?.status ? error.message : 'Could not complete ChatGPT sign-in. Try again in EterX.';
+  }
+
+  async function exchangeCallback(flow, endpoints, { params, redirectUri, verifier, nonce }) {
+    const { signal } = flow.abort;
+    signal.throwIfAborted();
+    if (params.has('iss') && (params.getAll('iss').length !== 1 || params.get('iss') !== endpoints.issuer)) {
+      throw subscriptionError('ChatGPT returned an unexpected sign-in provider. Start again.');
+    }
+    if (params.has('error')) {
+      throw subscriptionError(params.get('error') === 'access_denied'
+        ? 'ChatGPT sign-in was declined. Sign in again when you are ready.'
+        : 'OpenAI could not authorize ChatGPT sign-in. Start again in EterX.');
+    }
+    const returnedId = params.get('client_id');
+    const clientId = flow.clientId ?? returnedId;
+    const code = params.get('code');
+    if (!code || params.getAll('code').length !== 1 || !isIssuedClientId(clientId)
+      || params.getAll('client_id').length > 1 || (returnedId !== null && returnedId !== clientId)) {
+      throw subscriptionError('ChatGPT returned incomplete sign-in details. Start again.');
+    }
+    if (!flow.clientId) {
       await serialize(async () => {
-        if (activeFlow !== flow || flow.abort.signal.aborted) throw subscriptionError('ChatGPT sign-in was cancelled.');
-        flow.committing = true;
-        clearTimeout(flow.timer);
-        publish();
-        await save({ ...record, registration: identity, tokens });
-        changeAccount();
+        signal.throwIfAborted();
+        // The registration can succeed even when its one-time code cannot be used.
+        // Keep the issued ID separate from a verified account and its credentials.
+        await save({ ...record, pendingClientId: clientId });
       });
-      callbackPage(response, tokens.scopes.includes(PLAN_SCOPE)
-        ? 'ChatGPT is connected. You can close this tab and return to EterX.'
-        : 'Sign-in is complete. Return to EterX to enable ChatGPT plan usage.');
-    } catch (error) {
-      if (activeFlow === flow) signInError = error?.status ? error.message : 'Could not complete ChatGPT sign-in. Try again.';
-      callbackPage(response, 'ChatGPT sign-in did not complete. Return to EterX to try again.');
-    } finally {
-      if (activeFlow === flow) {
-        finishFlow();
-        if (record?.tokens?.scopes.includes(PLAN_SCOPE)) void refreshModels();
+      flow.clientId = clientId;
+    }
+
+    signal.throwIfAborted();
+    const { response, body } = await fetchJson(endpoints.token_endpoint, oauthForm({
+      grant_type: 'authorization_code', client_id: clientId, code,
+      code_verifier: verifier, redirect_uri: redirectUri, resource: RESOURCE,
+    }), signal).catch(() => {
+      signal.throwIfAborted();
+      log('[subscription] Could not reach the OpenAI token endpoint during sign-in.');
+      throw subscriptionError('Could not reach OpenAI to finish ChatGPT sign-in. Try again.');
+    });
+    if (!response.ok) {
+      const failure = oauthErrorCode(body);
+      const details = failure ? `HTTP ${response.status}, ${failure}` : `HTTP ${response.status}`;
+      const requestId = response.headers.get('x-request-id');
+      const reference = /^[a-zA-Z0-9_-]{1,128}$/.test(requestId || '') ? ` Request ID: ${requestId}.` : '';
+      log(`[subscription] OpenAI sign-in exchange failed (${details}).${reference}`);
+      const message = signInExchangeMessage(response.status, failure);
+      throw subscriptionError(`${message} (${details})`, failure || 'chatgpt_token_exchange_failed', response.status);
+    }
+
+    const tokens = normalizeTokens(body);
+    const identity = await verifyIdentity(tokens.idToken, clientId, nonce, endpoints, signal);
+    if (flow.registration?.subject && flow.registration.subject !== identity.subject) {
+      throw subscriptionError('ChatGPT returned a different account. Choose “Use another account” to connect it.');
+    }
+    await serialize(async () => {
+      signal.throwIfAborted();
+      flow.committing = true;
+      clearTimeout(flow.timer);
+      publish();
+      await save({ ...record, pendingClientId: null, registration: identity, tokens });
+      changeAccount();
+      signInError = '';
+    });
+    signal.throwIfAborted();
+    return tokens.scopes.includes(PLAN_SCOPE)
+      ? 'ChatGPT is connected. You can close this tab and return to EterX.'
+      : 'Sign-in is complete. Return to EterX to enable ChatGPT plan usage.';
+  }
+
+  async function authorize(flow, endpoints, allowRetry) {
+    const { signal } = flow.abort;
+    signal.throwIfAborted();
+    const expectedState = randomSecret();
+    const nonce = randomSecret();
+    const verifier = crypto.randomBytes(64).toString('base64url');
+    const callback = Promise.withResolvers();
+    const abortCallback = () => callback.reject(signal.reason);
+    let redirect;
+    let browserResponse;
+    let received = false;
+    const listener = http.createServer({ headersTimeout: 10_000, requestTimeout: 15_000 }, (request, response) => {
+      const url = redirect && URL.parse(request.url || '/', redirect);
+      if (!url || request.method !== 'GET' || request.headers.host !== redirect.host
+        || url.origin !== redirect.origin || url.pathname !== CALLBACK_PATH) {
+        response.writeHead(404).end();
+      } else if (url.searchParams.getAll('state').length !== 1 || !equalSecret(url.searchParams.get('state'), expectedState)) {
+        response.writeHead(400).end('This response belongs to another sign-in.');
+      } else if (received || signal.aborted) {
+        response.writeHead(410).end('This sign-in is no longer active.');
+      } else {
+        received = true;
+        callback.resolve({ params: url.searchParams, response });
       }
+    });
+
+    try {
+      await listen(listener, { port: 0, host: '127.0.0.1' }).catch(() => {
+        throw subscriptionError('Could not start the local ChatGPT sign-in callback. Try again.');
+      });
+      signal.throwIfAborted();
+      redirect = new URL(`http://127.0.0.1:${listener.address().port}${CALLBACK_PATH}`);
+      const url = new URL(endpoints.authorization_endpoint);
+      url.search = new URLSearchParams({
+        client_id: flow.clientId || 'dynamic_agent_client',
+        ...(flow.clientId ? {} : { agent_name_hint: 'EterX' }),
+        ...(flow.registration?.email ? { login_hint: flow.registration.email } : {}),
+        ...(flow.idTokenHint ? { id_token_hint: flow.idTokenHint } : {}),
+        ...(flow.needsConsent ? { prompt: 'consent' } : {}),
+        ext_agent_host_id: record.hostId, response_type: 'code', redirect_uri: redirect.href,
+        scope: SCOPES, resource: RESOURCE, state: expectedState, nonce,
+        code_challenge_method: 'S256', code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'),
+      }).toString();
+
+      listener.once('error', () => callback.reject(subscriptionError('The local ChatGPT sign-in callback stopped. Try again.')));
+      signal.addEventListener('abort', abortCallback, { once: true });
+      void Promise.resolve().then(() => {
+        signal.throwIfAborted();
+        return openBrowser(url.toString());
+      }).catch(() => callback.reject(subscriptionError('Could not open ChatGPT sign-in. Try again.')));
+      const { params, response } = await callback.promise;
+      browserResponse = response;
+      const message = await exchangeCallback(flow, endpoints, { params, redirectUri: redirect.href, verifier, nonce });
+      callbackPage(browserResponse, message);
+      return true;
+    } catch (error) {
+      if (allowRetry && !signal.aborted && error?.code === 'invalid_grant') {
+        callbackPage(browserResponse, 'This sign-in code could not be used. Continue in the new ChatGPT browser tab.');
+        return false;
+      }
+      callbackPage(browserResponse, signInFailureMessage(signal.aborted ? signal.reason : error));
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', abortCallback);
+      listener.close();
     }
   }
 
@@ -311,9 +453,48 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
     if (!flow) return;
     activeFlow = undefined;
     clearTimeout(flow.timer);
-    flow.abort.abort();
-    flow.listener?.close();
+    flow.abort.abort(subscriptionError(signInError || 'ChatGPT sign-in was cancelled.'));
     publish();
+  }
+
+  function startSignInTimer(flow) {
+    clearTimeout(flow.timer);
+    flow.timer = setTimeout(() => {
+      signInError = 'ChatGPT sign-in timed out. Start again.';
+      finishFlow();
+    }, SIGN_IN_TIMEOUT_MS);
+  }
+
+  async function completeSignIn(flow, useDifferentAccount) {
+    const { signal } = flow.abort;
+    try {
+      await serialize(async () => {
+        signal.throwIfAborted();
+        if (!record) await save({ hostId: `urn:uuid:${crypto.randomUUID()}`, registration: null, tokens: null });
+        if (!useDifferentAccount) {
+          const pendingClientId = isIssuedClientId(record.pendingClientId) ? record.pendingClientId : null;
+          flow.registration = record.registration;
+          flow.clientId = flow.registration?.clientId || pendingClientId;
+          flow.idTokenHint = record.tokens?.idToken;
+          flow.needsConsent = Boolean(record.tokens && !record.tokens.scopes.includes(PLAN_SCOPE));
+        }
+      });
+      signal.throwIfAborted();
+      const endpoints = await discover(signal);
+      if (!(await authorize(flow, endpoints, true))) {
+        // OpenAI issued this client ID in the first callback. Use it with fresh PKCE and state.
+        signal.throwIfAborted();
+        startSignInTimer(flow);
+        await authorize(flow, endpoints, false);
+      }
+    } catch (error) {
+      if (activeFlow === flow) signInError = signInFailureMessage(error);
+    } finally {
+      if (activeFlow === flow) {
+        finishFlow();
+        if (record?.tokens?.scopes.includes(PLAN_SCOPE)) void refreshModels();
+      }
+    }
   }
 
   async function signIn(useDifferentAccount) {
@@ -322,63 +503,11 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
       || (useDifferentAccount && record?.tokens?.scopes.includes(PLAN_SCOPE))) return state();
     signInError = '';
     revokedWarning = '';
-    const flow = {
-      state: randomSecret(), nonce: randomSecret(), verifier: randomSecret(), abort: new AbortController(),
-      registration: useDifferentAccount ? null : record?.registration,
-      idTokenHint: useDifferentAccount ? null : record?.tokens?.idToken,
-      needsConsent: !useDifferentAccount && Boolean(record?.tokens && !record.tokens.scopes.includes(PLAN_SCOPE)),
-    };
+    const flow = { abort: new AbortController() };
     activeFlow = flow;
-    flow.timer = setTimeout(() => {
-      signInError = 'ChatGPT sign-in timed out. Start again.';
-      finishFlow();
-    }, SIGN_IN_TIMEOUT_MS);
+    startSignInTimer(flow);
     publish();
-    try {
-      await serialize(async () => {
-        if (!record) await save({ hostId: `urn:uuid:${crypto.randomUUID()}`, registration: null, tokens: null });
-      });
-      const endpoints = await discover(flow.abort.signal);
-      if (activeFlow !== flow) return state();
-      let used = false;
-      let redirectUri;
-      flow.listener = http.createServer((request, response) => {
-        const url = URL.parse(request.url || '/', redirectUri);
-        if (!redirectUri || !url || request.method !== 'GET' || url.origin !== new URL(redirectUri).origin || url.pathname !== CALLBACK_PATH) {
-          response.writeHead(404).end();
-        } else if (!equalSecret(url.searchParams.get('state'), flow.state)) {
-          response.writeHead(400).end('This response belongs to another sign-in.');
-        } else if (used || activeFlow !== flow) {
-          response.writeHead(410).end('This sign-in is no longer active.');
-        } else {
-          used = true;
-          void exchangeCallback(flow, url.searchParams, response, endpoints, redirectUri);
-        }
-      });
-      await listen(flow.listener, { port: 0, host: '127.0.0.1' });
-      if (activeFlow !== flow) {
-        flow.listener.close();
-        return state();
-      }
-      redirectUri = `http://127.0.0.1:${flow.listener.address().port}${CALLBACK_PATH}`;
-      const url = new URL(endpoints.authorization_endpoint);
-      url.search = new URLSearchParams({
-        client_id: flow.registration?.clientId || 'dynamic_agent_client',
-        ...(flow.registration ? {} : { agent_name_hint: 'EterX' }),
-        ...(flow.registration?.email ? { login_hint: flow.registration.email } : {}),
-        ...(flow.idTokenHint ? { id_token_hint: flow.idTokenHint } : {}),
-        ...(flow.needsConsent ? { prompt: 'consent' } : {}),
-        ext_agent_host_id: record.hostId, response_type: 'code', redirect_uri: redirectUri,
-        scope: SCOPES, resource: RESOURCE, state: flow.state, nonce: flow.nonce,
-        code_challenge_method: 'S256', code_challenge: crypto.createHash('sha256').update(flow.verifier).digest('base64url'),
-      }).toString();
-      await openBrowser(url.toString());
-    } catch (error) {
-      if (activeFlow === flow) {
-        signInError = error?.status ? error.message : 'Could not open ChatGPT sign-in. Try again.';
-        finishFlow();
-      }
-    }
+    void completeSignIn(flow, useDifferentAccount);
     return state();
   }
 
@@ -402,12 +531,10 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
         let result;
         try {
           const settings = await discover();
-          result = await fetchJson(settings.token_endpoint, {
-            method: 'POST', body: new URLSearchParams({
-              grant_type: 'refresh_token', client_id: record.registration.clientId,
-              refresh_token: current.refreshToken, resource: RESOURCE,
-            }),
-          });
+          result = await fetchJson(settings.token_endpoint, oauthForm({
+            grant_type: 'refresh_token', client_id: record.registration.clientId,
+            refresh_token: current.refreshToken, resource: RESOURCE,
+          }));
         } catch { /* Temporary failures leave the current session intact. */ }
         if (result?.response.ok) {
           const renewed = normalizeTokens(result.body, current);
@@ -417,7 +544,7 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
           publish();
           throw subscriptionError('Enable ChatGPT plan usage in Settings → Subscription.', 'chatgpt_sign_in_required', 401);
         }
-        const code = result?.body?.error?.code || result?.body?.error;
+        const code = oauthErrorCode(result?.body);
         if (!UNUSABLE_REFRESH_CODES.has(code) && code !== 'invalid_client') {
           refreshFailureUntil = Date.now() + 15_000;
           if (current.expiresAt > Date.now()) return current;
@@ -485,10 +612,11 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
       if (credentials) {
         const endpoints = await discover();
         if (!endpoints.revocation_endpoint) throw new Error();
-        const response = await fetch(endpoints.revocation_endpoint, {
-          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10_000),
-          body: new URLSearchParams({ client_id: credentials.clientId, token: credentials.token, token_type_hint: credentials.hint }),
+        const response = await fetchRemote(endpoints.revocation_endpoint, {
+          ...oauthForm({ client_id: credentials.clientId, token: credentials.token, token_type_hint: credentials.hint }),
+          redirect: 'error', signal: AbortSignal.timeout(10_000),
         });
+        await response.body?.cancel().catch(() => {});
         if (!response.ok) throw new Error();
       }
     } catch (error) {
@@ -527,7 +655,7 @@ function createChatGptSubscription({ directory, safeStorage, canEncrypt, openBro
       const tokens = await requireTokens(request.headers['x-eterx-codex-connection']);
       const signal = AbortSignal.any([abort.signal, accountAbort.signal]);
       if (record?.tokens?.id !== tokens.id) throw subscriptionError('The ChatGPT connection changed.', 'chatgpt_connection_changed', 409);
-      const upstream = await fetch(`${RESOURCE}/responses`, {
+      const upstream = await fetchRemote(`${RESOURCE}/responses`, {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${tokens.accessToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
