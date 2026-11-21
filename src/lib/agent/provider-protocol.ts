@@ -4,6 +4,7 @@ export type ProviderProtocol = 'chat' | 'responses' | 'messages' | 'generateCont
 
 /** Endpoint contracts are independent of model effort controls. */
 export function getProviderProtocol(provider: MainAgentProvider, model: string, capabilities: string[] = []): ProviderProtocol {
+  if (provider === 'codex') return 'responses';
   // Native reasoning models need Responses for readable summaries (and GPT-6
   // tool calls with thinking). Older catalog snapshots may list only Chat.
   if (provider === 'openai' && /^(?:gpt-(?:[5-9]|[1-9]\d+)|o[134](?:-|$))|codex/i.test(model)) return 'responses';

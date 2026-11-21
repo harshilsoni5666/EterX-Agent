@@ -49,6 +49,15 @@ const { WhisperDictation } = require('./whisper-dictation');
 const { launchWindowsUpdateInstaller, prepareAppImageUpdate, activateAppImageUpdate, discardAppImageUpdate } = require('./update-installers');
 const { readUpdateInstallAttempt, writeUpdateInstallAttempt } = require('./update-install-state');
 const { normalizeReleaseNotes } = require('./release-notes');
+const { createChatGptSubscription, createCodexBridgeEnvironment, disposeCodexBridgeEnvironment } = require('./chatgpt-subscription');
+let codexBridgeEnvironment;
+let chatGptSubscription;
+const devCodexBridgeEnvironment = {
+  ETERX_CODEX_BRIDGE_ADDRESS: process.env.ETERX_CODEX_BRIDGE_ADDRESS,
+  ETERX_CODEX_BRIDGE_KEY: process.env.ETERX_CODEX_BRIDGE_KEY,
+};
+delete process.env.ETERX_CODEX_BRIDGE_ADDRESS;
+delete process.env.ETERX_CODEX_BRIDGE_KEY;
 const IS_DESKTOP_DEVELOPMENT = !app.isPackaged;
 let computerUseOverlay = null;
 
@@ -2900,6 +2909,9 @@ async function startPackagedServer() {
   const connectorSecret = await connectorStoreSecret();
   if (connectorSecret) env.ETERX_CONNECTOR_SECRET = connectorSecret;
   Object.assign(env, secureRuntimeSettingsEnvironment(secureSettings));
+  delete env.ETERX_CODEX_BRIDGE_ADDRESS;
+  delete env.ETERX_CODEX_BRIDGE_KEY;
+  Object.assign(env, codexBridgeEnvironment);
 
   // Keep the BrowserWindow origin aligned with Next's canonical local URL.
   // Use the numeric loopback address so systems that prefer IPv6 localhost do
@@ -4096,6 +4108,21 @@ ipcMain.handle('secure-runtime-settings-save', (_event, settings) =>
 ipcMain.handle('secure-runtime-settings-clear', () =>
   queueSecureRuntimeSettingsMutation(() => clearSecureRuntimeSettings()));
 
+function registerChatGptSubscriptionHandler(channel, operation) {
+  ipcMain.handle(`chatgpt-subscription-${channel}`, (event, argument) => {
+    if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame
+      || !isTrustedAppUrl(event.senderFrame.url)) return null;
+    return chatGptSubscription ? operation(chatGptSubscription, argument) : null;
+  });
+}
+
+registerChatGptSubscriptionHandler('state', subscription => subscription.state());
+registerChatGptSubscriptionHandler('sign-in', (subscription, differentAccount) => subscription.signIn(differentAccount === true));
+registerChatGptSubscriptionHandler('cancel', subscription => subscription.cancelSignIn());
+registerChatGptSubscriptionHandler('refresh', subscription => subscription.refreshModels());
+registerChatGptSubscriptionHandler('disconnect', subscription => subscription.disconnect());
+registerChatGptSubscriptionHandler('usage', subscription => subscription.openUsage());
+
 ipcMain.handle('gateway-get-state', async () => ({
   available: await secureStorageAvailable(),
   telegramClientVersion: TELEGRAM_CLIENT_VERSION,
@@ -4717,6 +4744,25 @@ app.on('ready', async () => {
   migrateLegacyUserData();
 
   try {
+    codexBridgeEnvironment = app.isPackaged ? await createCodexBridgeEnvironment() : devCodexBridgeEnvironment;
+    chatGptSubscription = createChatGptSubscription({
+      directory: getEterxSettingsRoot(),
+      safeStorage,
+      canEncrypt: async () => await secureStorageAvailable()
+        && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+      openBrowser: url => shell.openExternal(url),
+      onChange: state => {
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (isTrustedRenderer(window.webContents)) window.webContents.send('chatgpt-subscription-changed', state);
+        }
+      },
+    });
+    await chatGptSubscription.start(codexBridgeEnvironment);
+  } catch {
+    logToFile('[subscription] Could not start the local ChatGPT connection.');
+  }
+
+  try {
     computerUseOverlay = await require('./computer-use-overlay').startComputerUseOverlay(getEterxDataRoot(), logToFile);
   } catch (error) {
     logToFile(`[computer-use] Desktop overlay could not start: ${error.message || error}`);
@@ -4786,6 +4832,8 @@ app.on('before-quit', (event) => {
 });
 
 app.on('will-quit', () => {
+  chatGptSubscription?.stop();
+  if (app.isPackaged) void disposeCodexBridgeEnvironment(codexBridgeEnvironment);
   if (desktopUpdateInstallWatchdog) clearTimeout(desktopUpdateInstallWatchdog);
   desktopUpdateInstallWatchdog = null;
   desktopUpdateNativeInstallCleanup?.();

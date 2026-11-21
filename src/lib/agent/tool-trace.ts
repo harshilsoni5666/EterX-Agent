@@ -32,6 +32,8 @@ export function normalizeToolTraceName(name: unknown): string {
 }
 
 const TOOL_DISPLAY_LABELS: Record<string, string> = {
+  task_decomposer: 'Preparing plan',
+  task_checkpoint: 'Updating plan',
   workspace_edit_file: 'Editing file',
   workspace_run_command: 'Running project command',
   spawn_sub_agent: 'Managing agent work',

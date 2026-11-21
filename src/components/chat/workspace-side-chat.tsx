@@ -11,6 +11,7 @@ import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-
 import { FilePanelReveal } from '../../contexts/FilePanelContext';
 import { Tooltip } from '../ui/tooltip';
 import { readChatContextUsage } from '../../lib/chat-context-usage';
+import { measureContextHistory } from '../../lib/context-usage-meter';
 import { summarizeChatUsage } from '../../lib/chat-command-state';
 import { selectMainContextLogs, traceBelongsToUsageChat } from '../../lib/chat-usage-scope';
 import { MODEL_PROVIDER_MODE, parseModelEntryKey } from '../../lib/agent/model-selector-store';
@@ -19,11 +20,13 @@ import { useLocalDictation } from '../../lib/use-local-dictation';
 import { useLiveChat, type LiveChatLedger } from '../../lib/live-chat-ledger';
 import { normalizeChatAgentSelection } from '../../lib/chat-agent-selection';
 import { isFeedTurnBoundary } from '../../lib/chat-feed-lifecycle';
+import type { PlanImplementation } from '../../lib/task-plan-trace';
+import { PlanPanelOwner } from './task-plan-card';
 import { useChatMedia } from './chat-media';
 import type { ProxyAgentControlState } from './proxy-agent-controls';
 import { WorkspaceProxyControls, type WorkspaceProxyRequest } from './workspace-proxy-controls';
 import type { ProxyManagerSnapshot } from '../../lib/proxy-chat-client';
-export type SideChatSession = { id: string; title: string; traceLogs: any[]; workspacePath?: string | null; modelSelection?: string; updatedAt: number; isFavorite?: boolean };
+export type SideChatSession = { id: string; title: string; traceLogs: any[]; workspacePath?: string | null; workspaceSelectionUpdatedAt?: number; modelSelection?: string; updatedAt: number; isFavorite?: boolean };
 export type SideChatSettings = { modelSelection: string; selectedAgent: { agentId: string | null; agentName: string; chatMode?: boolean }; thinkingLevel: MainAgentThinkingLevel; agentMode: MainAgentMode; workspacePath: string | null; runLocation: 'local' | 'sandbox' | 'worktree' };
 export type SideChatDraft = { text: string; attachments: any[]; pinnedItems: any[]; settings: SideChatSettings };
 type SideChatControls = Pick<ChatInputProps,
@@ -45,9 +48,9 @@ export type SideChatActions = {
   syncProxyModel: (id: string) => Promise<void>;
   sendProxy: (id: string, request: WorkspaceProxyRequest, onProgress: (event: { text?: string }) => void) => Promise<void>;
   refreshProxyRun: (id: string) => Promise<void>;
-  workspace: (id: string, path: string | null) => void;
+  workspace: (id: string, path: string | null, runLocation: SideChatSettings['runLocation']) => void;
   openMain: (id: string) => void;
-  send: (id: string, text: string, attachments: any[], settings: SideChatSettings, pinnedItems: any[]) => Promise<boolean | void>;
+  send: (id: string, text: string, attachments: any[], settings: SideChatSettings, pinnedItems: any[], planImplementation?: PlanImplementation) => Promise<boolean | void>;
   stop: (id: string) => Promise<boolean>;
   answer: (id: string, timestamp: number, answer: string, responseKey?: string) => void;
   read: (id: string) => void;
@@ -116,6 +119,16 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     setPinnedItemsState(draft.pinnedItems);
     setSettingsState(draft.settings);
   }, [id]);
+  const workspaceRevision = chat?.workspaceSelectionUpdatedAt;
+  useEffect(() => {
+    if (!workspaceRevision) return;
+    const { workspacePath, runLocation } = actionsRef.current.draft(id).settings;
+    const draft = latest.current;
+    if (draft.settings.workspacePath === workspacePath && draft.settings.runLocation === runLocation) return;
+    const nextSettings = { ...draft.settings, workspacePath, runLocation };
+    latest.current = { ...draft, settings: nextSettings };
+    setSettingsState(nextSettings);
+  }, [id, workspaceRevision]);
   const [loading, setLoading] = useState(Boolean(chat));
   const [error, setError] = useState('');
   const dictation = useLocalDictation({ getText: () => textRef.current, onText: setText, onError: setError });
@@ -213,12 +226,14 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     return () => { cancelled = true; events.forEach(event => window.removeEventListener(event, refresh)); };
   }, [id, settings.modelSelection, proxyConnectionRevision, proxyControls.enabled]);
   const taskTracker = useMemo(() => {
+    let earlierTurn = false;
     for (let index = ownedLogs.length - 1; index >= 0; index--) {
       const log = ownedLogs[index];
       if (log?.type === 'task_plan' && !log.subAgentId && !log.subAgentChatId && !log.auxiliaryRuntime) {
+        if (earlierTurn && log.status !== 'proposed') return null;
         return { ...log, steps: Array.isArray(log.steps) ? log.steps : [] };
       }
-      if (isFeedTurnBoundary(log)) break;
+      if (isFeedTurnBoundary(log)) earlierTurn = true;
     }
     return null;
   }, [ownedLogs]);
@@ -229,21 +244,23 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
   ]).join('|'), [ownedLogs, controls.queuedFollowUps]);
   const { items: chatMedia } = useChatMedia(chat ? id : null, attachmentRevision, false);
   const chatUsage = useMemo(() => summarizeChatUsage(ownedLogs), [ownedLogs]);
+  const contextLogs = useMemo(() => selectMainContextLogs(ownedLogs, id), [ownedLogs, id]);
+  const contextHistory = useMemo(() => measureContextHistory(contextLogs), [contextLogs]);
   const contextUsage = useMemo(() => {
     if (!ownedLogs.length) return null;
     return readChatContextUsage({
-      logs: selectMainContextLogs(ownedLogs, id),
+      logs: contextLogs,
+      history: contextHistory,
       chatId: id,
       draft: text,
       selectedModel: parseModelEntryKey(settings.modelSelection),
       running,
     });
-  }, [ownedLogs, id, running, settings.modelSelection, text, contextSettingsRevision]);
+  }, [ownedLogs, contextLogs, contextHistory, id, running, settings.modelSelection, text, contextSettingsRevision]);
   const scrollBottom = () => pane.current?.querySelector('.eterx-chat-feed-scroll')?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'smooth' });
-  const selectWorkspace = (workspacePath: string | null) => {
-    // A native picker may finish after this side conversation has unmounted.
-    updateSettings({ workspacePath });
-    actionsRef.current.workspace(id, workspacePath);
+  const selectWorkspace = (workspacePath: string | null, runLocation: SideChatSettings['runLocation']) => {
+    actionsRef.current.workspace(id, workspacePath, runLocation);
+    updateSettings({ workspacePath, runLocation });
   };
   const startLive = () => {
     dictation.stop();
@@ -259,6 +276,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     <ChatFeed workspaceOwner={workspaceOwner} scrollContainerId={`side-chat-${tabId}`} traceLogs={ownedLogs} chatId={id} isThinking={running || sending} messagesEndRef={end} setSidebarOpen={ignore} sidebarOpen={false} handleScroll={event => { const node = event.currentTarget; setShowBottom(node.scrollHeight - node.scrollTop - node.clientHeight > 100); }} showScrollBottom={false} isCompressed workspacePath={settings.workspacePath} onEditUserMessage={setText} onAnswerAskUser={answerQuestion} media={chatMedia} liveState={controls.liveState} />
     <ChatInput
       {...controls}
+      compacting={Boolean(controls.compacting || contextUsage?.compactionInProgress)}
       inputValue={text}
       inputValueRevision={textRevision}
       onInputValueChange={updateTextDraft}
@@ -274,6 +292,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
       contextUsage={contextUsage}
       chatUsage={chatUsage}
       taskTracker={taskTracker}
+      onImplementPlan={loading || sending || running ? undefined : reference => actions.send(id, 'Please implement the plan.', [], latest.current.settings, latest.current.pinnedItems, reference)}
       chatTitle={chat?.title || 'New side chat'}
       onLiveStart={startLive}
       handleSend={submit}
@@ -304,9 +323,8 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
       onModeChange={agentMode => updateSettings({ agentMode })}
       workspacePath={settings.workspacePath}
       workspaceOwnerId={id}
-      onWorkspacePathChange={selectWorkspace}
+      onWorkspaceChange={selectWorkspace}
       runLocation={settings.runLocation}
-      onRunLocationChange={runLocation => updateSettings({ runLocation })}
       onProxyToggle={async () => {
         try { await controls.onProxyToggle?.(); }
         catch (error) { if (alive.current) setError(error instanceof Error ? error.message : String(error)); }
@@ -343,7 +361,7 @@ export function WorkspaceSideChat({ owner, tab, chats, liveChatLedger, mainChatI
       <Tooltip text="New side chat"><button aria-label="New side chat" onClick={() => select(crypto.randomUUID())}><PremiumEdit className="w-4 h-4 text-current" strokeWidth={1.8} /></button></Tooltip>
       {selected && current && <Tooltip text="Open in main chat"><button aria-label="Open conversation in main chat" onClick={() => actions.openMain(selected)}><ArrowUpLeft size={17} /></button></Tooltip>}
     </div>
-    {selected ? <Conversation key={selected} id={selected} tabId={tab.id} workspaceOwner={selected} chat={current} running={runningChats.has(selected)} actions={actions} /> : <div className="eterx-workspace-chat-picker">
+    {selected ? <PlanPanelOwner.Provider value={owner}><Conversation key={selected} id={selected} tabId={tab.id} workspaceOwner={selected} chat={current} running={runningChats.has(selected)} actions={actions} /></PlanPanelOwner.Provider> : <div className="eterx-workspace-chat-picker">
       <div className="eterx-workspace-search"><Search size={16} /><input aria-label="Search conversations" placeholder="Find a conversation…" value={search} onChange={event => setSearch(event.target.value)} /></div>
       <div className="eterx-workspace-chat-list eterx-scrollbar">{chats.filter(chat => chat.id !== mainChatId && chat.title.toLowerCase().includes(search.toLowerCase())).map(chat => <button key={chat.id} onClick={() => select(chat.id)} className="eterx-workspace-chat-row"><MessagesCircle size={17} /><span><strong>{chat.title}</strong></span>{chat.workspacePath && <span className="eterx-workspace-chat-folder" title={chat.workspacePath}><Folder size={12} /><span>{chat.workspacePath.split(/[\\/]/).filter(Boolean).pop()}</span></span>}{runningChats.has(chat.id) ? <Loader2 size={15} className="animate-spin" /> : <span className="eterx-workspace-chat-time">{new Date(chat.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>}</button>)}{!chats.some(chat => chat.id !== mainChatId && chat.title.toLowerCase().includes(search.toLowerCase())) && <div className="eterx-workspace-empty"><p>No conversations found.</p><button onClick={() => select(crypto.randomUUID())}>Start a side chat</button></div>}</div>
     </div>}

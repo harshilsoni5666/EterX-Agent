@@ -389,6 +389,16 @@ export type ContextUsageMeasuredSections = {
   system: ReturnType<typeof measureSystemSections>;
   tools: ReturnType<typeof measureToolSections>;
 };
+export type FixedContextSections = Pick<ContextUsageMeasuredSections, 'system' | 'tools'> & { totalsOnly?: boolean };
+
+export function isFixedContextSections(value: unknown): value is FixedContextSections {
+  const sections = value as Partial<FixedContextSections> | null;
+  if (!sections?.system || !sections.tools) return false;
+  const { system, tools } = sections;
+  return [system.systemPrompt, system.rules, system.skills, system.subagentDefinitions,
+    tools.toolDefinitions, tools.skills, tools.subagents, tools.mcpDynamicTools]
+    .every(count => Number.isSafeInteger(count) && count >= 0);
+}
 
 const toolSectionCache = new WeakMap<object, ReturnType<typeof measureToolSections>>();
 const systemObjectSectionCache = new WeakMap<object, ReturnType<typeof measureSystemSections>>();
@@ -476,25 +486,15 @@ export const normalizeContextUsageBreakdown = (
   breakdown: Partial<ContextUsageBreakdown> | null | undefined,
   usedTokens: number,
 ): ContextUsageBreakdown => {
-  const normalized: ContextUsageBreakdown = {
-    systemPrompt: Math.max(0, Math.round(Number(breakdown?.systemPrompt || 0))),
-    toolDefinitions: Math.max(0, Math.round(Number(breakdown?.toolDefinitions || 0))),
-    rules: Math.max(0, Math.round(Number(breakdown?.rules || 0))),
-    skills: Math.max(0, Math.round(Number(breakdown?.skills || 0))),
-    mcpDynamicTools: Math.max(0, Math.round(Number(breakdown?.mcpDynamicTools || 0))),
-    subagentDefinitions: Math.max(0, Math.round(Number(breakdown?.subagentDefinitions || 0))),
-    conversation: Math.max(0, Math.round(Number(breakdown?.conversation || 0))),
-    providerOverhead: Math.max(0, Math.round(Number(breakdown?.providerOverhead || 0))),
+  const wholeTokens = (value: unknown) => {
+    const count = Number(value);
+    return Number.isFinite(count) && count > 0 ? Math.round(count) : 0;
   };
-
-  const safeUsedTokens = Math.max(0, Math.round(Number(usedTokens || 0)));
-  if (safeUsedTokens <= 0) {
-    return Object.fromEntries(
-      (Object.keys(normalized) as ContextUsageCategoryKey[]).map(key => [key, 0]),
-    ) as ContextUsageBreakdown;
-  }
-  const visibleKeys = (Object.keys(normalized) as ContextUsageCategoryKey[])
-    .filter(key => key !== 'providerOverhead');
+  const safeUsedTokens = wholeTokens(usedTokens);
+  const visibleKeys = CONTEXT_USAGE_CATEGORIES.map(category => category.key);
+  const normalized = Object.fromEntries(visibleKeys.map(key =>
+    [key, safeUsedTokens ? wholeTokens(breakdown?.[key]) : 0])) as ContextUsageBreakdown;
+  if (!safeUsedTokens) return normalized;
   const visibleTotal = visibleKeys.reduce((sum, key) => sum + normalized[key], 0);
   if (visibleTotal <= 0) {
     normalized.conversation = safeUsedTokens;
@@ -507,7 +507,7 @@ export const normalizeContextUsageBreakdown = (
   // that aggregate so the visible rows remain provider-neutral and add up
   // exactly, instead of hiding or mislabelling a reconciliation remainder.
   const scale = safeUsedTokens / visibleTotal;
-  const calibrated = { ...normalized, providerOverhead: 0 };
+  const calibrated = { ...normalized };
   for (const key of visibleKeys) calibrated[key] = Math.floor(normalized[key] * scale);
   const assigned = visibleKeys.reduce((sum, key) => sum + calibrated[key], 0);
   const largestKey = visibleKeys.reduce((largest, key) =>
@@ -515,6 +515,12 @@ export const normalizeContextUsageBreakdown = (
   , visibleKeys[0]);
   calibrated[largestKey] += safeUsedTokens - assigned;
   return calibrated;
+};
+
+export const formatContextUsagePercent = (percent: number): string => {
+  if (percent > 0 && percent < 1) return '<1%';
+  if (percent > 99 && percent < 100) return '>99%';
+  return `${Math.round(percent)}%`;
 };
 
 export const formatContextUsageTokenCount = (value: number, options?: { prefixTilde?: boolean }) => {

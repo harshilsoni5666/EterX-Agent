@@ -1,11 +1,11 @@
-import { isRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
+import { planModeForContext, planningDeclarations, PLAN_MODE_INSTRUCTION, AUTO_MODE_INSTRUCTION } from './plan-mode';
+import { beginRequestedImplementation, retireOpenPlan } from './tools/core/plan-persistence';
 import { desktopTraceOutcome, splitComputerToolResult } from './computer/tool-vision';
 import { randomUUID as desktopRunUUID } from 'crypto';
 import { isRuntimeSwarmMode } from './swarm-mode';
 import { swarmCoordinator, SWARM_LIMITS, SWARM_MODE_INSTRUCTION } from './swarm-coordinator';
 import { buildTelegramBotContext } from './telegram-bot-context';
 import { buildTelegramWorkNoteCue } from './telegram-bot-behavior';
-import { taskDecomposerTool } from './tools/core/task_decomposer';
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
 import { latestModelThinkingCapability, readStoredModelMetadata } from './stored-model-metadata';
 import { isPastedText, pastedTextManifest } from '../pasted-text';
@@ -164,6 +164,7 @@ import {
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { getAgentConversationScope } from './context-scope';
 import { createProviderChatStream } from './provider-stream-adapter';
+import { createCodexSubscriptionClient } from './codex-subscription-runtime';
 import { formatUnknownError } from './error-format';
 
 const closeThoughtStream = (
@@ -742,6 +743,7 @@ export class GeminiAgentClient {
       await fastFabric.flushLedger().catch(() => undefined);
       const compacted = await compactContextAtBoundary({
         chatId: conversationScopeId,
+        runId: (context as any).runId,
         kind: 'gemini',
         contents,
         systemInstruction,
@@ -762,6 +764,7 @@ export class GeminiAgentClient {
           onTrace?.(event);
         },
       });
+      workingCheckpoint.setFixedContext(compacted.usage.fixedContext);
       if (compacted.compacted) contents = compacted.contents;
       fastRequestLocalTokens = Number(compacted.usage.localEstimatedTokens || 0);
       fastRequestEstimatedTokens = compacted.usage.usedTokens;
@@ -1186,7 +1189,7 @@ export class GeminiAgentClient {
         const dataUrl = base64.startsWith('data:') ? base64 : `data:${mimeType};base64,${base64}`;
         if (mimeType.startsWith('image/')) {
           content.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } });
-        } else if (this.activeProvider === 'openrouter' && mimeType === 'application/pdf') {
+        } else if ((this.activeProvider === 'openrouter' || this.activeProvider === 'codex') && mimeType === 'application/pdf') {
           content.push({ type: 'file', file: { filename: fileName, file_data: dataUrl } });
         } else {
           throw new Error(`No verified native ${mimeType} content part exists for ${this.activeProvider}/${this.mistralModelName}.`);
@@ -1833,7 +1836,7 @@ ${ message.text }
     try {
       const { getPlanEngine } = require('./plan-execution-engine');
       const planEngine = getPlanEngine(chatId);
-      const planContext = planEngine?.hasActivePlan() ? planEngine.buildModelContext() : '';
+      const planContext = planEngine?.hasOpenPlan() ? planEngine.buildModelContext() : '';
       return planContext;
     } catch {
       return '';
@@ -1848,7 +1851,7 @@ ${ message.text }
    * Mistral and Anthropic loops never received.  This method extracts the
    * common infrastructure so every provider gets the full harness.
    */
-  private async ensureRequiredPlan(context: ProjectContext, message: string, onTrace?: (trace: any) => void) {
+  private refreshWorkingModes(context: ProjectContext) {
     const scope = this.getConversationScope(context);
     const runtime = context as any;
     const ownerScope = runtime.ownerChatId || context.projectId || scope;
@@ -1859,17 +1862,7 @@ ${ message.text }
       runtime.allowAgentSpawning = depthAvailable && (context.swarmMode || runtime._baseDelegation.allowed);
       runtime.disableSubAgents = !depthAvailable || (!context.swarmMode && runtime._baseDelegation.disabled);
     }
-    context.planMode = isRuntimePlanMode(ownerScope, context.planMode === true);
-    if (!context.planMode || isRunCancelled(context)) return;
-    const turn = String(runtime.isSubAgent ? (runtime.getActiveAuxiliaryTurnId?.(runtime.subAgentChatId) || runtime.subAgentTurnId || runtime.subAgentId) : (runtime.getActiveTurnId?.() || context.turnId || context.runId || message));
-    if ((context as any)._requiredPlanTurn === turn) return;
-    const result = await taskDecomposerTool.execute({
-      complexTask: resolveWorkingContextRequest(context, message),
-      context: PLAN_MODE_INSTRUCTION,
-      maxSubtasks: 5,
-    }, { ...context, planMode: true, _onTrace: onTrace, runtimeSettings: this.runtimeSettings });
-    if (!result?.success) throw new Error(result?.error || 'The required plan could not be created. Please retry or turn off Plan mode.');
-    (context as any)._requiredPlanTurn = turn;
+    context.planMode = planModeForContext(context);
   }
 
   private async buildLoopInfrastructure(
@@ -1939,7 +1932,7 @@ ${ message.text }
           pendingAskUser: false,
         });
         shouldUseExistingSessionContext = boundaryPreview.decision !== 'new_task';
-        detectedNewTaskBoundary = boundaryPreview.decision === 'new_task' && boundaryPreview.shouldResetSession;
+        detectedNewTaskBoundary = !context.planImplementation && boundaryPreview.decision === 'new_task' && boundaryPreview.shouldResetSession;
       } catch {
         shouldUseExistingSessionContext = true;
       }
@@ -2050,10 +2043,10 @@ ${ message.text }
       try {
         const chatId = conversationScopeId;
         const persistedPlan = globalSessionManager.getStateForChat(chatId).executionPlanState;
-        if (persistedPlan?.status === 'executing') {
+        if (persistedPlan && (persistedPlan.status === 'executing' || persistedPlan.status === 'proposed')) {
           const { getPlanEngine } = require('./plan-execution-engine');
           const planEngine = getPlanEngine(chatId);
-          if (!planEngine.hasActivePlan()) planEngine.restore(persistedPlan);
+          if (!planEngine.hasOpenPlan()) planEngine.restore(persistedPlan);
         }
         const ledger = getLedgerForChat(chatId);
         await ledger.initialize(chatId);
@@ -2066,11 +2059,12 @@ ${ message.text }
           recentFileNames: [],
           pendingAskUser: false,
         });
-        if (decision.decision === 'new_task' && decision.shouldResetSession) {
+        if (!context.planImplementation && decision.decision === 'new_task' && decision.shouldResetSession) {
           // A task change does not erase observed actions or their evidence.
           // Reset task-local execution state, but keep this chat's exact pages,
           // historical facts, artifacts, and preferences in one durable fabric.
           detectedNewTaskBoundary = true;
+          await retireOpenPlan(chatId, onTrace).catch(() => undefined);
           globalSessionManager.resetTaskStateForChat(chatId);
           try {
             const { clearPlanEngine } = require('./plan-execution-engine');
@@ -2098,7 +2092,10 @@ ${ message.text }
     // Tool dedupe and evidence counters belong to this user turn.
     const callHistory = new Set<string>();
     const toolCallCounts = new Map<string, number>();
-    await this.ensureRequiredPlan(context, message, onTrace);
+    this.refreshWorkingModes(context);
+    if (context.planImplementation && !(context as any).isSubAgent && !(context as any).isUserProxy) {
+      await beginRequestedImplementation(conversationScopeId, context.planImplementation, context, onTrace);
+    }
     const taskDecomposerUsed = globalSessionManager.getStateForChat(conversationScopeId).taskDecomposerUsed
       || Boolean(this.getActivePlanStateContext(conversationScopeId));
     const adaptiveHarness = new AdaptiveHarness(userVisibleMessage, conversationScopeId);
@@ -2315,8 +2312,8 @@ ${ message.text }
       browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'browser', argKey: 'action' },
       get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'skill', argKey: 'skill_name' },
       spawn_sub_agent: { text: 'Managing agent work', type: 'exploration', iconCategory: 'agent', argKey: 'mode' },
-      task_decomposer: { text: 'Generating task plan', type: 'task_plan', iconCategory: 'computer', argKey: 'complexTask' },
-        task_checkpoint: { text: 'Updating task plan', type: 'task_plan', iconCategory: 'computer', argKey: 'action' },
+      task_decomposer: { text: 'Preparing plan', type: 'task_plan', iconCategory: 'plan', argKey: 'complexTask' },
+        task_checkpoint: { text: 'Updating plan', type: 'exploration', iconCategory: 'plan', argKey: 'action' },
         context_memory: { text: 'Recalling chat context', type: 'exploration', iconCategory: 'folder_read', argKey: 'query' },
     };
     const baseLabel = labelMap[canonicalName] || {
@@ -2422,20 +2419,6 @@ ${ message.text }
       return { error: `Tool ${ canonicalToolName } is not available to this agent.` };
     }
 
-    if (
-      canonicalToolName === 'task_decomposer'
-      && (
-        globalSessionManager.getStateForChat(conversationScopeId).taskDecomposerUsed
-        || Boolean(this.getActivePlanStateContext(conversationScopeId))
-      )
-    ) {
-      return {
-        success: true,
-        skippedDuplicate: true,
-        message: 'A persistent plan already exists for this task. Continue it with task_checkpoint; do not generate another plan.',
-      };
-    }
-
     let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, args);
     const recordRejectedTool = (output: any) => {
       executionGovernor?.recordTool(canonicalToolName, effectiveArgs, output);
@@ -2539,7 +2522,7 @@ ${ message.text }
           durationMs: 0,
         });
       } catch { /* structured continuity is advisory */ }
-      this.recordPlanToolResult(canonicalToolName, effectiveArgs, rawOutput, conversationScopeId);
+      if (!planModeForContext(context)) this.recordPlanToolResult(canonicalToolName, effectiveArgs, rawOutput, conversationScopeId);
       this.recordProviderSessionToolActivity(canonicalToolName, effectiveArgs, rawOutput, context);
       if ((context as any).disableLongTermMemory !== true && (context as any).synapseGraphEnabled === true) {
         try {
@@ -2584,7 +2567,7 @@ ${ message.text }
     const ownsAuthoritativePlanLifecycle = canonicalToolName === 'task_decomposer'
       || (
         canonicalToolName === 'task_checkpoint'
-        && ['advance', 'skip', 'fail', 'activate', 'revise', 'complete'].includes(String(effectiveArgs?.action || ''))
+        && ['view', 'start', 'advance', 'skip', 'fail', 'activate', 'revise', 'complete'].includes(String(effectiveArgs?.action || ''))
       );
     // Publish the action only after the call has passed cancellation, tool
     // availability, argument, governor, and capability admission. Emitting it
@@ -2603,7 +2586,7 @@ ${ message.text }
     }
 
     const cacheScope = this.getToolCacheScope(context);
-    const cachedResult = sharedCacheDisabled || ['computer', 'screen_agent'].includes(canonicalToolName) ? null : intelligentCache.get(canonicalToolName, effectiveArgs, cacheScope);
+    const cachedResult = sharedCacheDisabled || ['computer', 'screen_agent', 'task_decomposer', 'task_checkpoint'].includes(canonicalToolName) ? null : intelligentCache.get(canonicalToolName, effectiveArgs, cacheScope);
     if (cachedResult) {
       const output = { ...cachedResult, _cached: true };
       this.emitMediaPreview(canonicalToolName, output, trace, onTrace, actionTraceId);
@@ -2617,6 +2600,8 @@ ${ message.text }
     (toolExec.context as any).workspaceEditInvocationId = String(toolCall?.id || actionTraceId);
     try {
       toolExec.throwIfCancelled();
+      const currentDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+      if (!currentDecision.allowed) return recordOutcome({ error: currentDecision.reason });
       const execute = tool?.execute || agentScopedTool!.execute!;
       let output = await execute(effectiveArgs, toolExec.context);
       toolExec.throwIfCancelled();
@@ -2704,11 +2689,14 @@ ${ message.text }
     let taskDecomposerUsed = infra.taskDecomposerUsed;
     const loadedSkills = new Set<string>();
 
-    let keyInfo = this.getProviderKeyInfo(this.activeProvider, conversationScopeId);
-    if (!keyInfo.apiKey) {
+    const usesCodexSubscription = this.activeProvider === 'codex';
+    let keyInfo = usesCodexSubscription ? { apiKey: '', index: 0, poolType: 'ChatGPT plan' }
+      : this.getProviderKeyInfo(this.activeProvider, conversationScopeId);
+    if (!usesCodexSubscription && !keyInfo.apiKey) {
       throw new Error(`Missing ${this.activeProvider.toUpperCase()} API key. Add it in Settings > API Keys before using this provider.`);
     }
-    let client = this.createMistralClientWithKey(keyInfo.apiKey, conversationScopeId);
+    let client = usesCodexSubscription ? createCodexSubscriptionClient()
+      : this.createMistralClientWithKey(keyInfo.apiKey, conversationScopeId);
     const promptParts = this.buildUniversalPromptParts(
       context,
       dynamicContextParts.join('\n\n'),
@@ -2821,6 +2809,7 @@ ${ message.text }
       await contextFabric.flushLedger().catch(() => undefined);
       const compacted = await compactContextAtBoundary({
         chatId: conversationScopeId,
+        runId: (context as any).runId,
         kind: 'provider',
         contents: messages,
         tools,
@@ -2841,6 +2830,7 @@ ${ message.text }
           onTrace?.({ ...event, cacheMode: resolveProviderPromptCacheMode(this.activeProvider, contextCacheEnabled) });
         },
       });
+      workingCheckpoint.setFixedContext(compacted.usage.fixedContext);
       if (compacted.compacted) {
         messages.splice(0, messages.length, ...compacted.contents);
       }
@@ -2889,7 +2879,7 @@ ${ message.text }
         try {
           const { getPlanEngine } = require('./plan-execution-engine');
           const planEngine = getPlanEngine(conversationScopeId);
-          if (planEngine?.hasActivePlan()) {
+          if (planEngine?.hasOpenPlan()) {
             const planCtx = planEngine.buildModelContext();
             if (planCtx) contextParts.push(planCtx);
           }
@@ -2936,10 +2926,10 @@ ${ message.text }
       // of this transaction: doing so would prevent real compaction from ever
       // seeing the state it is responsible for preserving.
       {
-        await this.ensureRequiredPlan(context, message, onTrace);
+        this.refreshWorkingModes(context);
         try {
           appendRuntimeContext(messages, 'compatible', {
-            'run-context': promptParts.runtimeContext,
+            'run-context': [promptParts.runtimeContext, context.planMode ? PLAN_MODE_INSTRUCTION : AUTO_MODE_INSTRUCTION].filter(Boolean).join('\n\n'),
             ...workingContextSections,
           });
           await compactCompatibleContext();
@@ -3051,7 +3041,7 @@ ${ message.text }
       let apiAttempts = 0;
       let interruptedStreamRecoveries = 0;
       const configuredRetries = this.getConfiguredApiRetries(context);
-      const maxApiAttempts = this.getProviderKeyCount(this.activeProvider) * (configuredRetries + 1);
+      const maxApiAttempts = usesCodexSubscription ? 1 : this.getProviderKeyCount(this.activeProvider) * (configuredRetries + 1);
       while (apiAttempts < maxApiAttempts) {
         let accumulatedReasoning = '';
         let thoughtPhaseText = '';
@@ -3334,7 +3324,7 @@ ${ message.text }
             // same oversized request or inventing a fallback summary is unsafe.
             if (createdCapsule) continue;
           }
-          if (!isProviderFailoverError(err)) throw err;
+          if (usesCodexSubscription || !isProviderFailoverError(err)) throw err;
 
           apiAttempts++;
           if (apiAttempts >= maxApiAttempts || errorMsg === 'CANCELLED_BY_USER' || errorMsg.includes('CANCELLED_BY_USER')) {
@@ -3774,6 +3764,7 @@ ${ message.text }
       await contextFabric.flushLedger().catch(() => undefined);
       const compacted = await compactContextAtBoundary({
         chatId: conversationScopeId,
+        runId: (context as any).runId,
         kind: 'provider',
         contents: compactionContents,
         systemInstruction: compactionSystemBlocks,
@@ -3794,6 +3785,7 @@ ${ message.text }
           onTrace?.({ ...event, cacheMode: resolveProviderPromptCacheMode('anthropic', cacheEnabled) });
         },
       });
+      workingCheckpoint.setFixedContext(compacted.usage.fixedContext);
       if (compacted.compacted) {
         messages.splice(0, messages.length, ...installAnthropicCapsuleFrom(compacted.contents));
       }
@@ -3848,7 +3840,7 @@ ${ message.text }
         try {
           const { getPlanEngine } = require('./plan-execution-engine');
           const planEngine = getPlanEngine(conversationScopeId);
-          if (planEngine?.hasActivePlan()) {
+          if (planEngine?.hasOpenPlan()) {
             const planCtx = planEngine.buildModelContext();
             if (planCtx) contextParts.push(planCtx);
           }
@@ -3893,14 +3885,14 @@ ${ message.text }
       // request must pass through the safe context boundary before any local
       // tool-result elision changes what the compactor can inspect.
       {
-        await this.ensureRequiredPlan(context, message, onTrace);
+        this.refreshWorkingModes(context);
         try {
           // The prior capsule is rehydrated from its verified journal on every
           // boundary. Measure only the base provider system prompt; keeping the
           // installed block untouched until a new result is ready also makes an
           // unexpected pre-transaction error non-destructive.
           appendRuntimeContext(messages, 'anthropic', {
-            'run-context': promptParts.runtimeContext,
+            'run-context': [promptParts.runtimeContext, context.planMode ? PLAN_MODE_INSTRUCTION : AUTO_MODE_INSTRUCTION].filter(Boolean).join('\n\n'),
             ...workingContextSections,
           });
           await compactAnthropicContext();
@@ -4656,13 +4648,13 @@ ${ message.text }
             return false;
           }
         }
-        if (context?.disablePlannerTools && telegramHiddenTools.has(tool.name) && !(context.planMode && ['task_decomposer', 'task_checkpoint'].includes(tool.name))) {
+        if (context?.disablePlannerTools && telegramHiddenTools.has(tool.name)) {
           return false;
         }
         if (!shouldExposeToolToRuntime(tool.name, isBuilder)) {
           return false;
         }
-        if (context && !enforceToolCapability(tool.name, {}, context).allowed) {
+        if (context && !enforceToolCapability(tool.name, undefined, context).allowed) {
           return false;
         }
         return true;
@@ -4719,7 +4711,7 @@ ${ message.text }
       }
     }
 
-    return canonicalizeToolDeclarations(declarations);
+    return canonicalizeToolDeclarations(planModeForContext(context) ? planningDeclarations(declarations) : declarations);
   }
 
   /**
@@ -4748,6 +4740,8 @@ ${ message.text }
       if (tracker) {
         const cacheKey = String(chatId || '_global');
         const { data, mtime } = tracker;
+        if (data.status === 'stopped' || data.status === 'completed' || data.status === 'failed') return '';
+        if (data.status === 'proposed') return 'A proposal is awaiting implementation. Follow the current request.';
         if (this._trackerCache && this._trackerCache.chatId === cacheKey && this._trackerCache.mtime === mtime) {
           return this._trackerCache.text;
         }
@@ -4761,7 +4755,7 @@ ${ message.text }
 
         let text: string;
         if (totalSteps > 0 && completedSteps === totalSteps) {
-          text = `\n[TASK TRACKER] All ${ totalSteps } steps are COMPLETE. Deliver your final answer now.`;
+          text = `\n[TASK TRACKER] All ${ totalSteps } recorded steps are resolved. Follow the current request.`;
         } else {
           text = `\n[TASK TRACKER] Progress: ${ completedSteps }/${ totalSteps } steps done.`;
           if (currentStep) {
@@ -4859,6 +4853,7 @@ ${ message.text }
     try {
       const tracker = readTaskTracker(chatId);
       if (!tracker) return;
+      if (tracker.data.planId || tracker.data.status !== 'in_progress') return;
       const data = JSON.parse(JSON.stringify(tracker.data));
       const steps = Array.isArray(data.steps) ? data.steps : [];
 
@@ -5175,8 +5170,7 @@ ${ message.text }
       ? workspacePath
       : workspacePath || scratchRoot || 'runtime-managed workspace';
     const parts: string[] = [];
-    if (isRuntimePlanMode((context as any).ownerChatId || context.projectId, context.planMode === true)) parts.push(PLAN_MODE_INSTRUCTION);
-    if (!(context as any).isSubAgent && isRuntimeSwarmMode((context as any).ownerChatId || context.projectId, context.swarmMode === true)) parts.push(SWARM_MODE_INSTRUCTION);
+    if (!context.planMode && !(context as any).isSubAgent && isRuntimeSwarmMode((context as any).ownerChatId || context.projectId, context.swarmMode === true)) parts.push(SWARM_MODE_INSTRUCTION);
     if (context.allowAgentSpawning && !(context as any).disableSubAgents) parts.push('Delegation is task-driven and recursive within shared budgets. Use spawn_sub_agent mode="graph" for bounded dependency/ownership snapshots, mode="join" only when child evidence is needed, and agent_communicate for targeted parent/peer coordination. Read usable evidence before synthesis; queued or completed lifecycle alone is not verification.');
     if ((context as any).chatMediaContext) parts.push((context as any).chatMediaContext);
     if (userNameTxt) parts.push(userNameTxt);
@@ -5401,7 +5395,7 @@ Files: ${(context.uploadedFiles || []).slice(-20).join(', ') || 'None'}${workspa
       ? `\nLearned Preferences:\n${ Object.entries(context.userPreferences).map(([k, v]) => `- ${ k }: ${ JSON.stringify(v) }`).join('\n') }`
       : '';
     const directMainAgentMode = (context as any).disableSubAgents
-      ? `\nDIRECT MAIN AGENT MODE\n- This run is connected directly to the main agent only.\n- Do not spawn sub-agents, background workers, consensus panels, or parallel agents.\n- Parallel tool calls are still allowed: group independent read-only tool calls in one model turn; the runtime executes them concurrently while keeping state-changing and browser actions ordered.\n- Do not create a plan merely because sub-agents are unavailable or the task is large. Use task_decomposer only under the strict coordination criteria in the main EXECUTION contract.\n- Complete the current request yourself in this main execution thread.\n- Scope discipline is mandatory: do exactly what the user asked, no more.\n- As soon as the exact requested result is complete, stop.\n- Do not do optional research, extra documents, alternate formats, or follow-up improvements unless the user explicitly asked for them.\n`
+      ? `\nDIRECT MAIN AGENT MODE\n- This run is connected directly to the main agent only.\n- Do not spawn sub-agents, background workers, consensus panels, or parallel agents.\n- Parallel tool calls are still allowed: group independent read-only tool calls in one model turn; the runtime executes them concurrently while keeping state-changing and browser actions ordered.\n- Choose whether to work directly, investigate, or track dependent outcomes. Respect the current planning mode.\n- Complete the current request yourself in this main execution thread.\n- Scope discipline is mandatory: do exactly what the user asked, no more.\n- As soon as the exact requested result is complete, stop.\n- Do not do optional research, extra documents, alternate formats, or follow-up improvements unless the user explicitly asked for them.\n`
       : '';
 
     const errorContext = context.errorHistory && context.errorHistory.length > 0
@@ -5861,7 +5855,7 @@ OUTPUT CONTRACT
     // The edit tool is side-effecting, and terminal reads/checks may
     // legitimately repeat after the workspace changes.
     // ask_user: always needs fresh interaction
-    const neverDedupTools = ['workspace_edit_file', 'workspace_run_command', 'ask_user', 'task_checkpoint', 'browser_control', 'spawn_sub_agent', 'scheduled_tasks', 'wait_timer'];
+    const neverDedupTools = ['workspace_edit_file', 'workspace_run_command', 'ask_user', 'task_decomposer', 'task_checkpoint', 'browser_control', 'spawn_sub_agent', 'scheduled_tasks', 'wait_timer'];
     const dedupToolName = normalizedSig.split(':')[0];
     if (neverDedupTools.includes(dedupToolName)) return false;
 
@@ -6085,10 +6079,10 @@ OUTPUT CONTRACT
     if (shouldUseSessionLoopState) {
       try {
         const persistedPlan = globalSessionManager.getStateForChat(chatId).executionPlanState;
-        if (persistedPlan?.status === 'executing') {
+        if (persistedPlan && (persistedPlan.status === 'executing' || persistedPlan.status === 'proposed')) {
           const { getPlanEngine } = require('./plan-execution-engine');
           const planEngine = getPlanEngine(chatId);
-          if (!planEngine.hasActivePlan()) planEngine.restore(persistedPlan);
+          if (!planEngine.hasOpenPlan()) planEngine.restore(persistedPlan);
         }
       } catch { }
     }
@@ -6139,11 +6133,12 @@ OUTPUT CONTRACT
           ? Object.values((globalThis as any).__pendingAskUser).some((pending: any) => pending?.chatId === chatId && pending?.status === 'pending')
           : false,
       });
-      if (chatBoundaryDecision.decision === 'new_task' && chatBoundaryDecision.shouldResetSession) {
+      if (!context.planImplementation && chatBoundaryDecision.decision === 'new_task' && chatBoundaryDecision.shouldResetSession) {
         // Keep exact completed actions available across an objective change.
         // Preserve the conversation-level fabric and compaction lineage. A
         // heuristic objective boundary must never erase exact chat pages.
         try {
+          await retireOpenPlan(chatId, onTrace).catch(() => undefined);
           const { clearPlanEngine } = require('./plan-execution-engine');
           clearPlanEngine(chatId);
           globalSessionManager.setExecutionPlanForChat(chatId, null);
@@ -6164,7 +6159,7 @@ OUTPUT CONTRACT
       snapshot: survivorState?.contextFabricState,
     });
     await hydratePersistedConversationContext(contextFabric, chatId, userVisibleMessage);
-    if (!survivorState && chatBoundaryDecision?.decision === 'new_task' && chatBoundaryDecision.shouldResetSession) {
+    if (!context.planImplementation && !survivorState && chatBoundaryDecision?.decision === 'new_task' && chatBoundaryDecision.shouldResetSession) {
       contextFabric.beginTaskBoundary('The runtime confidently classified a new objective in this chat.');
     }
     contextFabric.observeUserRequest(
@@ -6174,7 +6169,10 @@ OUTPUT CONTRACT
     );
     adaptiveHarness.inheritUserDirectives(contextFabric.getActiveHumanDirectives());
 
-    await this.ensureRequiredPlan(context, message, onTrace);
+    this.refreshWorkingModes(context);
+    if (context.planImplementation && !(context as any).isSubAgent && !(context as any).isUserProxy && !survivorState) {
+      await beginRequestedImplementation(chatId, context.planImplementation, context, onTrace);
+    }
     taskDecomposerUsed = taskDecomposerUsed || Boolean(this.getActivePlanStateContext(chatId));
 
     if (sessionHydrated) {
@@ -6649,7 +6647,7 @@ OUTPUT CONTRACT
     };
 
     const isGemmaModel = this.modelName.toLowerCase().includes('gemma');
-    const plannerToolsDisabled = !!(context as any).disablePlannerTools && !context.planMode;
+    const plannerToolsDisabled = () => !!(context as any).disablePlannerTools;
     const selectedThinkingLevel = normalizeThinkingLevelForModel(
       (context as any).selectedThinkingLevel || 'low',
       'gemini',
@@ -6807,6 +6805,7 @@ OUTPUT CONTRACT
         await contextFabric.flushLedger().catch(() => undefined);
         const ctxResult = await compactContextAtBoundary({
           chatId,
+          runId: (context as any).runId,
           kind: 'gemini',
           contents,
           // Cached static input and the live suffix both occupy context.
@@ -6830,6 +6829,7 @@ OUTPUT CONTRACT
         });
         requestContextLocalTokens = Number(ctxResult.usage.localEstimatedTokens || 0);
         requestContextEstimatedTokens = ctxResult.usage.usedTokens;
+        workingCheckpoint.setFixedContext(ctxResult.usage.fixedContext);
         if (ctxResult.compacted) {
           contents = ctxResult.contents;
           // Keep the same model's token-density estimate until its next
@@ -6863,7 +6863,7 @@ OUTPUT CONTRACT
       interactions++;
       await awaitSubAgentControlBoundary(context);
 
-      await this.ensureRequiredPlan(context, message, onTrace);
+      this.refreshWorkingModes(context);
       const updatedDeclarations = this.buildFunctionDeclarations(isBuilder, context, message);
       const updatedSignature = JSON.stringify(updatedDeclarations);
       if (updatedSignature !== liveToolSignature) {
@@ -6971,7 +6971,7 @@ OUTPUT CONTRACT
       // interrupting signed call/result adjacency in the conversation.
       let workingMemoryCue = '';
       {
-        const trackerState = (!plannerToolsDisabled && (taskDecomposerUsed || wantsLoopResume || !!survivorState))
+        const trackerState = (!plannerToolsDisabled() && (taskDecomposerUsed || wantsLoopResume || !!survivorState))
           ? this.readTaskTrackerState(chatId)
           : ''; // Cached by mtime
 
@@ -6980,7 +6980,7 @@ OUTPUT CONTRACT
         try {
           const { getPlanEngine } = require('./plan-execution-engine');
           const planEngine = getPlanEngine(chatId);
-          if (planEngine?.hasActivePlan()) {
+          if (planEngine?.hasOpenPlan()) {
             planEngineContext = planEngine.buildModelContext();
             // Also record tool calls into the engine's trace
             // (the engine doesn't auto-mark steps — the model does that via task_checkpoint)
@@ -7045,7 +7045,7 @@ OUTPUT CONTRACT
         codingContextProfile ? 4_500 : 1_200,
       ).parts;
       appendRuntimeContext(contents, 'gemini', {
-        'run-context': universalPromptParts.runtimeContext,
+        'run-context': [universalPromptParts.runtimeContext, context.planMode ? PLAN_MODE_INSTRUCTION : AUTO_MODE_INSTRUCTION].filter(Boolean).join('\n\n'),
         ...buildRuntimeContextSections(iterationContextParts, buildTelegramWorkNoteCue(context, trace)),
       });
       if (_cachedContentName) {
@@ -7058,7 +7058,6 @@ OUTPUT CONTRACT
       }
       // Measure the actual request after steering, mailbox delivery and runtime
       // context assembly. Cached static input also occupies model capacity.
-      await this.ensureRequiredPlan(context, message, onTrace);
       await compactGeminiContext();
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
       contents = sanitizeGeminiHistory(contents);
@@ -7757,11 +7756,13 @@ OUTPUT CONTRACT
         console.log(`[GeminiClient] Iteration ${ interactions }: thoughts only, no tools/answer. Streak: ${ noToolCallStreak }`);
         if (fullResponseContent) contents.push(fullResponseContent);
 
-        const trackerState = (!plannerToolsDisabled && (taskDecomposerUsed || wantsLoopResume || !!survivorState))
+        const trackerState = (!plannerToolsDisabled() && (taskDecomposerUsed || wantsLoopResume || !!survivorState))
           ? this.readTaskTrackerState(chatId)
           : '';
         let nudge: string;
-        if (noToolCallStreak >= 3) {
+        if (context.planMode) {
+          nudge = 'Finish the proposal, ask about a consequential choice, or answer the question directly.';
+        } else if (noToolCallStreak >= 3) {
           // Aggressive nudge
           nudge = trackerState
             ? `CRITICAL: You've been thinking for ${ noToolCallStreak } rounds WITHOUT acting. EXECUTE NOW. Use tools. ${ trackerState }`
@@ -7798,7 +7799,7 @@ OUTPUT CONTRACT
         git_operations: { text: 'Git operation', type: 'command', iconCategory: 'terminal', argKey: 'operation' },
         screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKey: 'target' },
         desktop_notification: { text: 'Notifying', type: 'command', iconCategory: 'computer', argKey: 'title' },
-        task_decomposer: { text: 'Generating task plan', type: 'task_plan', iconCategory: 'computer', argKey: 'complexTask' },
+        task_decomposer: { text: 'Preparing plan', type: 'task_plan', iconCategory: 'plan', argKey: 'complexTask' },
         image_generator: { text: 'Generating image', type: 'file_edit', iconCategory: 'image', argKey: 'prompt' },
         video_generator: { text: 'Generating video', type: 'file_edit', iconCategory: 'image', argKey: 'prompt' },
         gateway_bridge: { text: 'Using Gateway channel', type: 'communication', iconCategory: 'connector', argKey: 'platform' },
@@ -7814,7 +7815,7 @@ OUTPUT CONTRACT
         scheduled_tasks: { text: 'Managing scheduled task', type: 'command', iconCategory: 'clock', argKey: 'title' },
         wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKey: 'title' },
         ask_user: { text: 'Asking user', type: 'ask_user', iconCategory: 'computer', argKey: 'question' },
-      task_checkpoint: { text: 'Updating task plan', type: 'task_plan', iconCategory: 'computer', argKey: 'action' },
+      task_checkpoint: { text: 'Updating plan', type: 'exploration', iconCategory: 'plan', argKey: 'action' },
       context_memory: { text: 'Recalling chat context', type: 'exploration', iconCategory: 'folder_read', argKey: 'query' },
         image_asset_search: { text: 'Searching images', type: 'exploration', iconCategory: 'image', argKey: 'query' },
       };
@@ -7896,22 +7897,6 @@ OUTPUT CONTRACT
             functionResponse: {
               name: call.name,
               response: { output: { error: failureWarning } },
-              ...(call.id ? { id: call.id } : {})
-            }
-          };
-        }
-
-        if (normalizeRegistryToolName(call.name) === 'task_decomposer' && taskDecomposerUsed) {
-          return {
-            functionResponse: {
-              name: call.name,
-              response: {
-                output: {
-                  success: true,
-                  skippedDuplicate: true,
-                  message: 'Plan generation already ran for this task. Continue the existing plan or execute directly; do not generate it again.',
-                },
-              },
               ...(call.id ? { id: call.id } : {})
             }
           };
@@ -8071,14 +8056,6 @@ OUTPUT CONTRACT
         };
         // Safety metadata is prepared here, but both it and the action are
         // surfaced only after the call passes runtime admission below.
-        // NOTE: task_decomposer complexity guard already handled at the top of executeSingleCall()
-
-        // === SOFT HINT: task_decomposer reuse guidance (AI decides) ===
-        if (call.name === 'task_decomposer' && taskDecomposerUsed) {
-          console.log(`[GeminiClient] ðŸ’¡ Soft hint: task_decomposer already used, passing guidance to AI`);
-          // Don't block â€” let the AI decide. Just add context about existing plan.
-        }
-
         // Exploration counts are telemetry, not an execution boundary. A
         // fixed count must not permanently refuse justified follow-up reads.
 
@@ -8154,7 +8131,7 @@ OUTPUT CONTRACT
         };
 
         const toolEligible = !(
-          (plannerToolsDisabled && plannerHiddenTools.has(call.name))
+          (plannerToolsDisabled() && plannerHiddenTools.has(call.name))
           || ((context as any).disableSubAgents && call.name === 'spawn_sub_agent')
           || preflightError
           || argumentRequest
@@ -8169,7 +8146,7 @@ OUTPUT CONTRACT
         const ownsAuthoritativePlanLifecycle = canonicalToolName === 'task_decomposer'
           || (
             canonicalToolName === 'task_checkpoint'
-            && ['advance', 'skip', 'fail', 'activate', 'revise', 'complete'].includes(String(effectiveArgs?.action || ''))
+            && ['view', 'start', 'advance', 'skip', 'fail', 'activate', 'revise', 'complete'].includes(String(effectiveArgs?.action || ''))
           );
         const genericActionPublished = actionAdmitted && !ownsAuthoritativePlanLifecycle;
 
@@ -8236,7 +8213,7 @@ OUTPUT CONTRACT
         let contextObservationToolName = canonicalToolName;
         let contextObservationArgs = effectiveArgs;
         let pendingToolCacheScope = '';
-        if (plannerToolsDisabled && plannerHiddenTools.has(call.name)) {
+        if (plannerToolsDisabled() && plannerHiddenTools.has(call.name)) {
           toolOutput = {
             error: 'This internal planning/background tool is disabled for Telegram direct mode. Complete only the current Telegram request in the main agent.',
           };
@@ -8261,7 +8238,7 @@ OUTPUT CONTRACT
         } else if (executeTool) {
           // === INTELLIGENT CACHE: Check for cached result first ===
           const cacheScope = this.getToolCacheScope(context);
-          const cachedResult = sharedCacheDisabled || ['computer', 'screen_agent'].includes(canonicalToolName) ? null : intelligentCache.get(canonicalToolName, effectiveArgs, cacheScope);
+          const cachedResult = sharedCacheDisabled || ['computer', 'screen_agent', 'task_decomposer', 'task_checkpoint'].includes(canonicalToolName) ? null : intelligentCache.get(canonicalToolName, effectiveArgs, cacheScope);
           if (cachedResult) {
             toolOutput = cachedResult;
             toolOutput._cached = true;
@@ -8278,6 +8255,8 @@ OUTPUT CONTRACT
             try {
               // No timeout â€” tools run until complete. User has Stop button for manual cancel.
               toolExec.throwIfCancelled();
+              const currentDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+              if (!currentDecision.allowed) throw new Error(currentDecision.reason);
               toolOutput = await executeTool(effectiveArgs as any, toolExec.context);
               toolExec.throwIfCancelled();
               rawToolOutput = toolOutput;
@@ -8423,6 +8402,8 @@ OUTPUT CONTRACT
                 // exception. Stateful failures return to the model first.
                 try {
                   toolExec.throwIfCancelled();
+                  const currentDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+                  if (!currentDecision.allowed) throw new Error(currentDecision.reason);
                   toolOutput = await executeTool(effectiveArgs as any, toolExec.context);
                   toolExec.throwIfCancelled();
                   rawToolOutput = toolOutput;
@@ -8488,7 +8469,7 @@ OUTPUT CONTRACT
               intelligentCache.set(canonicalToolName, effectiveArgs, toolOutput, pendingToolCacheScope);
               pendingToolCacheScope = '';
             }
-            this.recordPlanToolResult(canonicalToolName, effectiveArgs || {}, toolOutput, chatId);
+            if (!planModeForContext(context)) this.recordPlanToolResult(canonicalToolName, effectiveArgs || {}, rawToolOutput ?? toolOutput, chatId);
             if (evidenceNode.kind === 'verification' || evidenceNode.kind === 'failure') {
               trace.push({
                 type: 'evidence',

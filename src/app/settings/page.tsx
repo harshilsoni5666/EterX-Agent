@@ -14,6 +14,7 @@ type SettingsTab =
   | 'mcp'
   | 'hooks'
   | 'models'
+  | 'subscription'
   | 'api'
   | 'live-convo'
   | 'git'
@@ -43,6 +44,7 @@ const VALID_TABS = new Set<SettingsTab>([
   'mcp',
   'hooks',
   'models',
+  'subscription',
   'api',
   'live-convo',
   'git',

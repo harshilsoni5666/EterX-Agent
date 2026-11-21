@@ -93,10 +93,11 @@ export async function POST(req: NextRequest) {
     if (isDirectChatRunning(chatId)) {
       return attachAgentApiSessionCookie(jsonError('A reply is already running in this chat. Stop it or wait for it to finish.', 409), session);
     }
-    const finishDirectRun = beginDirectChatRun(chatId);
     const encoder = new TextEncoder();
     const streamAbortController = new AbortController();
     const normalizedRunId = String(runId || '').trim().slice(0, 160) || undefined;
+    const finishDirectRun = beginDirectChatRun(chatId, normalizedRunId, streamAbortController.signal);
+    let completed = false;
     let streamClosed = false;
     const forwardAbort = () => streamAbortController.abort();
     req.signal.addEventListener('abort', forwardAbort, { once: true });
@@ -137,6 +138,7 @@ export async function POST(req: NextRequest) {
           runtimeSettings: buildScopedRuntimeSettings(),
         }, trace => send({ type: 'trace', data: trace }), streamAbortController.signal)
           .then(result => {
+            completed = true;
             send({ type: 'done', data: { success: true, ...result } });
             close();
           })
@@ -167,7 +169,7 @@ export async function POST(req: NextRequest) {
             close();
           })
           .finally(() => {
-            finishDirectRun();
+            finishDirectRun(completed);
             req.signal.removeEventListener('abort', forwardAbort);
           });
       },

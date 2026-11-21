@@ -1,6 +1,7 @@
 import type { ToolDefinition } from '../../schemas';
 import { isConfiguredToolAllowed, isComputerUseDisabled, isBrowserAccessDisabled } from '../../builtin-agent-tool-policy';
 import { swarmCoordinator, SWARM_LIMITS } from '../../swarm-coordinator';
+import { allowsPlanningTool, planModeForContext } from '../../plan-mode';
 
 export type ToolCapabilityDecision = {
   allowed: boolean;
@@ -80,6 +81,12 @@ export function enforceToolCapability(
   _args: any,
   context?: any,
 ): ToolCapabilityDecision {
+  if (context?.disablePlannerTools && (toolName === 'task_decomposer' || toolName === 'task_checkpoint')) {
+    return { allowed: false, reason: 'Planning tools are disabled for this run. Answer or work directly with the available tools.' };
+  }
+  if (planModeForContext(context) && !allowsPlanningTool(toolName, _args)) {
+    return { allowed: false, reason: 'Plan mode supports investigation and proposals. Use the available inspection tools or finish the proposal. Implementation requires Auto mode.' };
+  }
   if (toolName === 'spawn_sub_agent' && ['spawn', 'consensus', 'debate', 'specialist'].includes(String(_args?.mode || ''))) {
     if (context?.disableSubAgents === true || context?.allowAgentSpawning !== true || Number(context?.agentDepth || 0) >= SWARM_LIMITS.maxDepth) {
       return { allowed: false, reason: 'Delegation is disabled or this branch reached its depth limit. Complete the work locally.', capability: 'agent.spawn' };

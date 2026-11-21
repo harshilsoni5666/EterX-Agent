@@ -134,6 +134,12 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
     baseURL: envOr('openai', 'OPENAI_BASE_URL', 'https://api.openai.com/v1'),
     visionModelPattern: /\b(gpt-4o|gpt-4\.1|gpt-5|o[134](?:\b|-)|chatgpt)/i,
   },
+  codex: {
+    label: 'Codex · ChatGPT plan',
+    compactLabel: 'Codex',
+    baseURL: 'https://api.openai.com/v1',
+    visionModelPattern: /^gpt-\d/i,
+  },
   openrouter: {
     label: 'OpenRouter',
     compactLabel: 'Router',
@@ -341,6 +347,7 @@ export function getProviderRuntime(provider: MainAgentProvider): ProviderRuntime
 }
 
 export function getProviderBaseURL(provider: MainAgentProvider, scopedOverrides?: Partial<Record<MainAgentProvider, string>>): string {
+  if (provider === 'codex') return 'https://api.openai.com/v1';
   const override = (scopedOverrides || runtimeBaseURLs)[provider];
   if (override) return override;
   if (provider === 'anthropic') {

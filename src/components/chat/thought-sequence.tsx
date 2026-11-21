@@ -26,6 +26,7 @@ import { markdownComponents, MarkdownStreamContext, normalizeMarkdownForRenderin
 import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, localAwareUrlTransform } from './local-file-link';
 import { ReplyImage } from './image-gallery';
 import { AGENT_ICONS, resolveAgentIcon, resolveToolTraceIcon, TerminalIcon as ToolTerminalIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace, FileAddIcon, FileEditIcon, FileDeleteIcon, SkillIcon, MonitorPlayIcon, MouseIcon, MousePointerClickIcon, W } from './agent-icons';
+import { TaskPlanCard } from './task-plan-card';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { canGroupThoughtStreams, isThoughtStreamOpen, shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
@@ -4360,6 +4361,7 @@ const JoinedActionGroup = React.memo(({ logs, isActiveGroup, keepOpenWhileRunnin
   logs: any[]; isActiveGroup: boolean; keepOpenWhileRunning: boolean; allLogs: any[];
 }) => {
   if (!logs.length) return null;
+  if (logs.length === 1 && logs[0].type === 'task_plan') return <TaskPlanCard plan={logs[0]} />;
   if (logs.every(log => ['progress', 'task_plan'].includes(log.type))) {
     return <ActionGroupRows logs={logs} isActiveGroup={isActiveGroup} allLogs={allLogs} />;
   }

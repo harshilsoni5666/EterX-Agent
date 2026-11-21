@@ -1,7 +1,11 @@
 'use client';
 
+import { codexCatalogPending, codexModelLabel, codexThinkingCatalog, getDesktopSubscription, withCodexSubscriptionModels } from '../../lib/chatgpt-subscription-client';
+
+import { planStepLabels, planTitle, type PlanImplementation, type TaskTrackerState } from '../../lib/task-plan-trace';
+import { openPlanInWorkspace, PlanPanelOwner } from '../chat/task-plan-card';
 import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
-import { readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, type summarizeChatUsage } from '../../lib/chat-command-state';
+import { CHAT_PLAN_MODE_CHANGED, readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, type summarizeChatUsage } from '../../lib/chat-command-state';
 import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
 import { PASTED_TEXT_MIME, shouldAttachPaste } from '../../lib/pasted-text';
 import { AttachmentTextPreviewHost } from '../chat/attachment-text-preview';
@@ -69,6 +73,7 @@ import { buildFilePreviewUrl, getNativeFilePath } from '../../lib/path-utils';
 import { getFileIconPath } from '../../lib/utils/file-icon-utils';
 import {
   CONTEXT_USAGE_CATEGORIES,
+  formatContextUsagePercent,
   formatContextUsageTokenCount,
   normalizeContextUsageBreakdown,
   type ContextUsageBreakdown,
@@ -111,6 +116,7 @@ const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
   gemini: 'Google Gemini',
   mistral: 'Mistral',
   openai: 'OpenAI',
+  codex: 'Codex · ChatGPT plan',
   openrouter: 'OpenRouter',
   groq: 'Groq',
   anthropic: 'Anthropic',
@@ -203,21 +209,22 @@ const readStoredModelSettings = (): StoredModelSettings => {
     ? (appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
     : AUTO_MODEL_SELECTION;
   const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
-  const modelEntries = normalizeModelSelectorEntries(savedEntries, modelCatalog);
+  const modelEntries = withCodexSubscriptionModels(normalizeModelSelectorEntries(savedEntries, modelCatalog));
   const modelOverrides = Object.fromEntries(
     Object.entries(storedModelOverrides).filter(([provider, modelId]) =>
       modelEntries.some(entry => entry.provider === provider && entry.modelId === modelId)
     ),
   ) as Partial<Record<MainAgentProvider, string>>;
   const modelApiKeys = readStringRecord(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
-  const thinkingCapabilities = readThinkingCapabilityRecord();
+  const thinkingCapabilities = { ...readThinkingCapabilityRecord(), ...codexThinkingCatalog() };
   const usableEntries = modelEntries.filter(entry =>
-    isLocalModelProvider(entry.provider)
+    entry.provider === 'codex' || isLocalModelProvider(entry.provider)
     || Boolean(apiKeys[entry.provider])
     || Boolean(modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
   );
-  const chatModelSelection = parsedStoredChatModel && usableEntries.some(entry =>
-    modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
+  const chatModelSelection = parsedStoredChatModel && (
+    (parsedStoredChatModel.provider === 'codex' && codexCatalogPending())
+    || usableEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
   )
     ? storedChatModelSelection
     : AUTO_MODEL_SELECTION;
@@ -327,32 +334,6 @@ interface Attachment {
   localPath?: string;
 }
 
-interface TaskTrackerStep {
-  id?: string;
-  step: number;
-  name: string;
-  description?: string;
-  status: 'pending' | 'blocked' | 'in_progress' | 'done' | 'skipped' | 'failed';
-  tools?: string[];
-  done_when?: string;
-  step_type?: string;
-  expected_output?: string;
-  risk?: string;
-  artifacts?: string[];
-}
-
-interface TaskTrackerState {
-  goal?: string;
-  phase?: 'generating' | 'generated' | 'progress' | 'complete' | 'failed';
-  status?: 'generating' | 'in_progress' | 'completed' | 'failed' | 'stopped';
-  complexity?: string;
-  estimatedMinutes?: number;
-  completedSteps?: number;
-  totalSteps?: number;
-  activeStepName?: string | null;
-  steps?: TaskTrackerStep[];
-}
-
 interface QueuedFollowUpItem {
   id: string;
   chatId?: string;
@@ -411,6 +392,7 @@ export interface ChatInputProps {
   allowModelSelectionWhileThinking?: boolean;
   modelSelectionScope?: 'global' | 'surface';
   taskTracker?: TaskTrackerState | null;
+  onImplementPlan?: (reference: PlanImplementation) => Promise<boolean | void>;
   isNetworkPaused?: boolean;
   onNetworkPausedAction?: () => void;
   onOpenAgents?: () => void;
@@ -427,17 +409,18 @@ export interface ChatInputProps {
   composerPlaceholder?: string;
   onAgentChange?: (agentId: string | null, agentName: string, chatMode?: boolean) => void;
   workspacePath?: string | null;
-  onWorkspacePathChange?: (path: string | null) => void;
+  onWorkspaceChange?: (path: string | null, runLocation: RunLocation, sourcePath: string | null, target: { owner: string; path: string | null; runLocation: RunLocation }) => boolean | void;
   workspaceOwnerId?: string;
   onWorkspacePickerStateChange?: (state: { owner: string; path: string | null; name: string; locked: boolean }) => void;
   runLocation?: RunLocation;
-  onRunLocationChange?: (location: RunLocation) => void;
+  prepareManagedWorkspace?: boolean;
   chatModelSelection?: string;
   onModelSelectionChange?: (selection: string) => void;
   onOpenSettingsTab?: (tab: 'api' | 'models' | 'general') => void;
   chatTitle?: string;
   chatUsage?: ReturnType<typeof summarizeChatUsage>;
   onCompact?: () => Promise<void>;
+  compactMainChat?: boolean;
   compacting?: boolean;
   onPlanModeChange?: (enabled: boolean) => Promise<void>;
   onSwarmModeChange?: (enabled: boolean) => Promise<void>;
@@ -706,7 +689,7 @@ type SlashCommand = {
   description: string;
   prompt: string;
   iconSrc: string;
-  action?: 'agents' | 'goal' | 'plan' | 'swarm' | 'pet' | 'compact' | 'usage' | 'workspace';
+  action?: 'agents' | 'goal' | 'plan' | 'auto' | 'swarm' | 'pet' | 'compact' | 'usage' | 'workspace';
 };
 
 type SlashPanel = 'agents' | 'goal' | 'usage' | 'workspace' | null;
@@ -793,7 +776,8 @@ const writeStoredGoal = (chatId: string | null | undefined, goal: string) => {
 
 const SLASH_COMMANDS: SlashCommand[] = [
   { id: 'compact', label: 'Compact', description: "Compact this chat’s context", prompt: '', iconSrc: '', action: 'compact' },
-  { id: 'plan-mode', label: 'Plan mode', description: 'Require a plan for each request', prompt: '', iconSrc: '/icons/agent-ui/commands/plan-mode.svg', action: 'plan' },
+  { id: 'plan', label: 'Plan mode', description: 'Explore the request and prepare a proposal', prompt: '', iconSrc: '', action: 'plan' },
+  { id: 'auto', label: 'Auto mode', description: 'Work directly and track steps when useful', prompt: '', iconSrc: '', action: 'auto' },
   { id: 'swarm-mode', label: 'Swarm Mode', description: 'Coordinate a team around the work', prompt: '', iconSrc: '', action: 'swarm' },
   { id: 'chat-usage', label: 'Chat usage', description: 'View tokens, cache hits, and current context', prompt: '', iconSrc: '', action: 'usage' },
   { id: 'workspace', label: 'Workspace', description: 'View or change this chat’s workspace', prompt: '', iconSrc: '', action: 'workspace' },
@@ -941,9 +925,11 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
     );
   }
 
-  if (active || status === 'in_progress') {
+  if (active) {
     return <ProgressLoader />;
   }
+  if (status === 'blocked') return <span data-status="blocked" className="eterx-task-status-glyph block h-4 w-4 rounded-full border border-dashed border-current opacity-45" />;
+  if (status === 'in_progress') return <span data-status="in_progress" className="eterx-task-status-glyph block h-4 w-4 rounded-full border-2 border-current opacity-75" />;
 
   return <span className="eterx-task-status-glyph block h-4 w-4 rounded-full border-[2px] border-[#A9A9A9]/62" data-status="pending" />;
 });
@@ -964,23 +950,26 @@ const GeneratingDots = React.memo(({ className = '' }: { className?: string }) =
 const TaskTrackerDock = React.memo(({
   tracker,
   isThinking,
-  isCompressed,
+  onOpen,
+  onImplement,
 }: {
   tracker?: TaskTrackerState | null;
   isThinking: boolean;
-  isCompressed: boolean;
+  onOpen: () => void;
+  onImplement?: () => void;
 }) => {
   const [open, setOpen] = useState(false);
   const steps = tracker?.steps || [];
   const hasTracker = steps.length > 0;
   const generating = tracker?.phase === 'generating' || tracker?.status === 'generating';
-  const completed = tracker?.completedSteps ?? steps.filter(step => step.status === 'done').length;
+  const completed = tracker?.completedSteps ?? steps.filter(step => step.status === 'done' || step.status === 'skipped').length;
   const total = tracker?.totalSteps ?? steps.length;
-  const activeStep = steps.find(step => step.status === 'in_progress') || steps.find(step => step.status === 'pending') || null;
+  const proposed = tracker?.status === 'proposed';
+  const activeStep = proposed ? undefined : steps.find(step => step.status === 'in_progress');
   const isComplete = tracker?.status === 'completed' || (total > 0 && completed >= total);
   const currentStepName = (tracker?.activeStepName || activeStep?.name || '').trim();
-  const liveHeader = !open && !isComplete && (generating || isThinking);
-  const headerTitle = open ? 'Progress' : liveHeader ? (currentStepName || (generating ? 'Generating progress' : 'Working')) : 'Progress';
+  const liveHeader = !proposed && !open && !isComplete && (generating || Boolean(isThinking && activeStep));
+  const headerTitle = proposed ? 'Proposed plan' : tracker?.status === 'failed' ? 'Plan failed' : tracker?.status === 'stopped' ? 'Plan stopped' : isComplete ? 'Plan complete' : (liveHeader && currentStepName) || 'Plan progress';
 
   useEffect(() => {
     if (!hasTracker) return;
@@ -1008,7 +997,7 @@ const TaskTrackerDock = React.memo(({
           {liveHeader ? (
             <ProgressLoader className="h-[15px] w-[15px]" />
           ) : (
-            <ListTodo className="h-[14px] w-[14px] shrink-0 text-[#F2EFEA]/82" strokeWidth={2.25} />
+            proposed ? <Lightbulb className="h-[15px] w-[15px] shrink-0" /> : <ListTodo className="h-[14px] w-[14px] shrink-0 text-[#F2EFEA]/82" strokeWidth={2.25} />
           )}
           <span className="flex min-w-0 items-center">
             <Shimmer active={liveHeader} className="truncate text-[12.5px] font-semibold leading-5 tracking-normal text-[#F4F1EA]">
@@ -1018,6 +1007,7 @@ const TaskTrackerDock = React.memo(({
           </span>
         </span>
 
+        <span className="text-xs opacity-60">{proposed ? `${total} ${total === 1 ? 'step' : 'steps'}` : `${completed}/${total} resolved`}</span>
         <ChevronDown className={`h-4 w-4 shrink-0 text-white/45 transition-transform duration-200 group-hover:text-white/70 ${ open ? 'rotate-180' : '' }`} strokeWidth={2.1} />
       </button>
 
@@ -1031,17 +1021,24 @@ const TaskTrackerDock = React.memo(({
             className="overflow-hidden"
           >
             <div className="eterx-task-tracker-body px-2.5 pb-2.5 pt-0.5">
+              <div className="flex items-center justify-between gap-2 px-2.5 py-1">
+                <button type="button" onClick={onOpen} className="flex min-w-0 items-center gap-1 text-left text-xs font-medium" title="Open plan in side panel">
+                  <span className="truncate">{planTitle(tracker!)}</span><ArrowUpRight size={14} className="shrink-0" />
+                </button>
+                {onImplement && <button type="button" className="eterx-implement-plan shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold" onClick={onImplement}>Implement plan</button>}
+              </div>
               <div className="relative">
                   <div className="eterx-task-tracker-list relative max-h-[176px] space-y-0.5 overflow-y-auto py-1 pr-1 eterx-scrollbar">
                     {steps.map((step) => {
                       const active = step === activeStep;
-                      const activeWorking = active && !isComplete && (isThinking || step.status === 'in_progress');
+                      const activeWorking = active && !isComplete && isThinking && tracker?.status !== 'stopped';
                       return (
                         <div
                           key={step.id || step.step}
                           data-status={step.status}
                           data-active={activeWorking ? 'true' : undefined}
-                          title={step.name || `Task ${ step.step }`}
+                          title={[step.name, planStepLabels[step.status], step.failureReason].filter(Boolean).join(' · ')}
+                          aria-label={step.name + ', ' + planStepLabels[step.status]}
                           className="eterx-task-tracker-step relative flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors hover:bg-white/[0.018]"
                         >
                           <span className="relative z-10 shrink-0">
@@ -1087,6 +1084,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   allowModelSelectionWhileThinking = false,
   modelSelectionScope = 'global',
   taskTracker = null,
+  onImplementPlan,
   isNetworkPaused = false,
   onNetworkPausedAction = () => { },
   onOpenAgents = () => { },
@@ -1104,16 +1102,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onAgentChange,
   workspacePath,
   workspaceOwnerId,
-  onWorkspacePathChange,
+  onWorkspaceChange,
   onWorkspacePickerStateChange,
   runLocation: propRunLocation,
-  onRunLocationChange,
+  prepareManagedWorkspace = false,
   chatModelSelection: propChatModelSelection,
   onModelSelectionChange,
   onOpenSettingsTab,
   chatTitle = 'New chat',
   chatUsage,
   onCompact,
+  compactMainChat = false,
   compacting = false,
   onPlanModeChange,
   onSwarmModeChange,
@@ -1419,30 +1418,42 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const modeRequestsRef = useRef(new Set<string>());
   const modeChatRef = useRef(activeChatId);
   modeChatRef.current = activeChatId;
-  const setComposerMode = useCallback((kind: 'plan' | 'swarm', enabled: boolean) => {
+  const composerMounted = useRef(true);
+  React.useLayoutEffect(() => {
+    composerMounted.current = true;
+    return () => { composerMounted.current = false; };
+  }, []);
+  const ownsComposer = useCallback((id: typeof activeChatId) => composerMounted.current && modeChatRef.current === id, []);
+  const planPanelOwner = React.useContext(PlanPanelOwner);
+  const setComposerMode = useCallback(async (kind: 'plan' | 'swarm', enabled: boolean) => {
     const chatId = activeChatId;
     const key = `${chatId || 'new_chat'}:${kind}`;
-    if (modeRequestsRef.current.has(key)) return;
+    if (modeRequestsRef.current.has(key)) return false;
     const read = kind === 'plan' ? readChatPlanMode : readChatSwarmMode;
     const write = kind === 'plan' ? writeChatPlanMode : writeChatSwarmMode;
     const setState = kind === 'plan' ? setPlanModeState : setSwarmModeState;
     const update = kind === 'plan' ? onPlanModeChange : onSwarmModeChange;
     const previous = read(chatId);
+    if (previous === enabled) { setState(enabled); return true; }
     write(chatId, enabled);
     setState(enabled);
     modeRequestsRef.current.add(key);
     setPendingModes(new Set(modeRequestsRef.current));
-    void Promise.resolve().then(() => update?.(enabled)).catch(error => {
+    try {
+      await update?.(enabled);
+      return true;
+    } catch (error) {
       write(chatId, previous);
-      if (modeChatRef.current === chatId) {
+      if (ownsComposer(chatId)) {
         setState(previous);
         showComposerNotice(`Could not update ${kind === 'plan' ? 'Plan' : 'Swarm'} mode`, error instanceof Error ? error.message : 'Please try again.');
       }
-    }).finally(() => {
+      return false;
+    } finally {
       modeRequestsRef.current.delete(key);
-      setPendingModes(new Set(modeRequestsRef.current));
-    });
-  }, [activeChatId, onPlanModeChange, onSwarmModeChange, showComposerNotice]);
+      if (composerMounted.current) setPendingModes(new Set(modeRequestsRef.current));
+    }
+  }, [activeChatId, onPlanModeChange, onSwarmModeChange, ownsComposer, showComposerNotice]);
   const setPlanModeActive = useCallback((enabled: boolean) => setComposerMode('plan', enabled), [setComposerMode]);
   const setSwarmModeActive = useCallback((enabled: boolean) => setComposerMode('swarm', enabled), [setComposerMode]);
   useEffect(() => {
@@ -1451,10 +1462,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       setSwarmModeState(readChatSwarmMode(activeChatId));
     };
     restoreModes();
+    const syncPlan = (event: Event) => {
+      if ((event as CustomEvent<string>).detail === (activeChatId || 'new_chat')) setPlanModeState(readChatPlanMode(activeChatId));
+    };
+    window.addEventListener(CHAT_PLAN_MODE_CHANGED, syncPlan);
     window.addEventListener(FOLDER_STORAGE_READY_EVENT, restoreModes);
     setSlashPanel(null);
     setSlashTrigger(null);
-    return () => window.removeEventListener(FOLDER_STORAGE_READY_EVENT, restoreModes);
+    return () => {
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, restoreModes);
+      window.removeEventListener(CHAT_PLAN_MODE_CHANGED, syncPlan);
+    };
   }, [activeChatId]);
   const [storedModelSettings, setStoredModelSettings] = useState<StoredModelSettings>(() => ({
     apiKeys: {},
@@ -1474,7 +1492,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const exists = storedModelSettings.modelEntries.some(candidate =>
       modelEntryKey(candidate.provider, candidate.modelId) === selection
     );
-    const hasCredential = isLocalModelProvider(entry.provider)
+    const hasCredential = entry.provider === 'codex' || isLocalModelProvider(entry.provider)
       || Boolean(storedModelSettings.apiKeys[entry.provider])
       || Boolean(storedModelSettings.modelApiKeys[selection]);
     return exists && hasCredential ? entry : null;
@@ -1482,31 +1500,34 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const connectors = useConnectors();
   const [localRunLocation, setLocalRunLocation] = useState<RunLocation>('local');
   const runLocation = propRunLocation !== undefined ? propRunLocation : localRunLocation;
-  const handleRunLocationChange = useCallback((location: RunLocation) => {
-    if (onRunLocationChange) {
-      onRunLocationChange(location);
+  const [localWorkspacePath, setLocalWorkspacePath] = useState<string | null>(null);
+  const activeWorkspacePath = workspacePath !== undefined ? workspacePath : localWorkspacePath;
+  const projectPickerOwner = workspaceOwnerId || activeChatId || 'terminal-draft-initial';
+  const applyWorkspaceChange = useCallback((location: RunLocation, path: string | null, sourcePath = path) => {
+    if (onWorkspaceChange) {
+      const target = { owner: projectPickerOwner, path: activeWorkspacePath, runLocation };
+      if (onWorkspaceChange(path, location, sourcePath, target) === false) return false;
     } else {
+      setLocalWorkspacePath(path);
       setLocalRunLocation(location);
     }
     setOpenStatusMenu(null);
-  }, [onRunLocationChange]);
-
-  const [localWorkspacePath, setLocalWorkspacePath] = useState<string | null>(null);
-  const activeWorkspacePath = workspacePath !== undefined ? workspacePath : localWorkspacePath;
+    return true;
+  }, [activeWorkspacePath, onWorkspaceChange, projectPickerOwner, runLocation]);
   const handleWorkspacePathChange = useCallback((path: string | null) => {
-    handleRunLocationChange('local');
-    if (onWorkspacePathChange) {
-      onWorkspacePathChange(path);
-    } else {
-      setLocalWorkspacePath(path);
-    }
-  }, [onWorkspacePathChange, handleRunLocationChange]);
+    applyWorkspaceChange('local', path);
+  }, [applyWorkspaceChange]);
 
-  const managedWorkspace = useManagedWorkspace(workspaceOwnerId || activeChatId || 'terminal-draft-initial', activeWorkspacePath || null, (location, path) => {
-    if (onWorkspacePathChange) onWorkspacePathChange(path);
-    else setLocalWorkspacePath(path);
-    handleRunLocationChange(location);
-  });
+  const managedWorkspace = useManagedWorkspace(projectPickerOwner, activeWorkspacePath, applyWorkspaceChange);
+  const withPreparedWorkspace = useCallback((dispatch: () => void) => {
+    if (managedWorkspace.busy) return;
+    if (prepareManagedWorkspace && runLocation !== 'local') {
+      void managedWorkspace.choose(runLocation).then(prepared => { if (prepared) dispatch(); });
+      return;
+    }
+    dispatch();
+  }, [managedWorkspace.busy, managedWorkspace.choose, prepareManagedWorkspace, runLocation]);
+  const startLiveWithWorkspace = useCallback(() => withPreparedWorkspace(onLiveStart), [onLiveStart, withPreparedWorkspace]);
   const runLocationLabel = runLocation === 'worktree' ? 'Worktree' : runLocation === 'sandbox' ? 'Scratch workspace' : 'Work locally';
   useEffect(() => {
     if (managedWorkspace.error) setOpenStatusMenu('run');
@@ -1515,12 +1536,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const workspaceName = managedWorkspace.workspace?.kind === 'sandbox' ? 'Scratch workspace'
     : managedWorkspace.workspace?.kind === 'worktree' ? (managedWorkspace.workspace.sourcePath ? projectFolderName(managedWorkspace.workspace.sourcePath) : 'Project') + ' worktree'
       : projectFolderName(activeWorkspacePath);
-  const projectPickerOwner = workspaceOwnerId || activeChatId || 'terminal-draft-initial';
   const projectPickerLocked = executionContextLocked || managedWorkspace.busy || isThinking;
   React.useLayoutEffect(() => {
     onWorkspacePickerStateChange?.({ owner: projectPickerOwner, path: activeWorkspacePath, name: workspaceName, locked: projectPickerLocked });
   }, [onWorkspacePickerStateChange, projectPickerOwner, activeWorkspacePath, workspaceName, projectPickerLocked]);
-  const handleSelectFolderDialog = useProjectFolderBrowse(projectPickerOwner, projectPickerLocked, handleWorkspacePathChange, () => {
+  const handleSelectFolderDialog = useProjectFolderBrowse(projectPickerOwner, activeWorkspacePath, projectPickerLocked, handleWorkspacePathChange, () => {
     showComposerNotice('Folder picker unavailable', 'Try again or paste a folder path into project search.');
   });
 
@@ -1529,18 +1549,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const storedThinkingLevels = readModelThinkingLevels();
     const usableModelKeys = new Set(loaded.modelEntries.map(entry => modelEntryKey(entry.provider, entry.modelId)));
     const loadedThinkingLevels = Object.fromEntries(
-      Object.entries(storedThinkingLevels).filter(([modelKey]) => usableModelKeys.has(modelKey)),
+      Object.entries(storedThinkingLevels).filter(([modelKey]) => usableModelKeys.has(modelKey) || parseModelEntryKey(modelKey)?.provider === 'codex'),
     ) as Record<string, MainAgentThinkingLevel>;
     const cleanOverrides = Object.fromEntries(
       Object.entries(loaded.modelOverrides).filter(([, modelId]) => !isEmbeddedModelLabel(modelId)),
     ) as Partial<Record<MainAgentProvider, string>>;
-    const cleanCatalog = entriesToModelCatalog(loaded.modelEntries);
+    const durableEntries = loaded.modelEntries.filter(entry => entry.provider !== 'codex');
+    const cleanCatalog = entriesToModelCatalog(durableEntries);
     const cleanSelection = loaded.chatModelSelection;
 
     // Persist the migration once so the removed placeholder cannot return
     // from the folder snapshot on the next refresh or another device.
     const durableValues: Array<[string, string]> = [
-      [MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(loaded.modelEntries)],
+      [MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(durableEntries)],
       [MODEL_CATALOG_STORAGE_KEY, JSON.stringify(cleanCatalog)],
       [MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(cleanOverrides)],
       [CHAT_MODEL_SELECTION_STORAGE_KEY, cleanSelection],
@@ -1889,7 +1910,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const filteredSlashCommands = useMemo(() => {
     if (!slashTrigger) return [];
     const availableCommands = chatMode
-      ? SLASH_COMMANDS.filter(command => command.action !== 'plan' && command.action !== 'swarm')
+      ? SLASH_COMMANDS.filter(command => !['auto', 'plan', 'swarm'].includes(command.action || ''))
       : SLASH_COMMANDS;
     const query = slashTrigger.query.trim();
     if (!query) return availableCommands;
@@ -1973,8 +1994,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
         return;
       }
-      if (command.action === 'plan') {
-        setPlanModeActive(!planModeActive);
+      if (command.action === 'plan' || command.action === 'auto') {
+        void setPlanModeActive(command.action === 'plan');
         window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
         return;
       }
@@ -2499,6 +2520,66 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     stopRequestsRef.current.set(chatKey, stopPromise);
   }, [activeChatId, handleStop, showComposerNotice]);
 
+  const implementingPlan = useRef(false);
+  const replaceComposerDraft = useCallback((value: string) => {
+    latestInputValueRef.current = value;
+    setInputValue(value);
+    setHasPromptText(Boolean(value.trim()));
+    setSlashTrigger(null);
+  }, [setInputValue]);
+
+  const implementPlan = useCallback(async (draft = '') => {
+    if (!onImplementPlan || !taskTracker?.planId || taskTracker.status !== 'proposed' || implementingPlan.current || isAgentRunning || !activeChatId) return;
+    if (!activeConfiguredChatModel || isNetworkPaused || managedWorkspace.busy) return;
+    const owner = activeChatId;
+    if (latestInputValueRef.current !== draft || attachments.length) return;
+    let cleared = false;
+    implementingPlan.current = true;
+    try {
+      if (prepareManagedWorkspace && runLocation !== 'local' && !await managedWorkspace.choose(runLocation)) return;
+      if (!ownsComposer(owner) || latestInputValueRef.current !== draft || !await setPlanModeActive(false)) return;
+      if (!ownsComposer(owner) || readChatPlanMode(owner) || latestInputValueRef.current !== draft) return;
+      if (draft) {
+        replaceComposerDraft('');
+        cleared = true;
+      }
+      const sent = await onImplementPlan({ planId: taskTracker.planId, revision: taskTracker.revision || 1 });
+      if (sent === false) throw new Error('The implementation request was not accepted.');
+    } catch (error) {
+      if (ownsComposer(owner)) {
+        if (cleared && !latestInputValueRef.current) replaceComposerDraft(draft);
+        showComposerNotice('Could not start implementation', error instanceof Error ? error.message : 'Please try again.');
+      }
+    } finally {
+      implementingPlan.current = false;
+    }
+  }, [onImplementPlan, taskTracker, isAgentRunning, activeChatId, activeConfiguredChatModel, isNetworkPaused, managedWorkspace, setPlanModeActive, prepareManagedWorkspace, runLocation, showComposerNotice, attachments.length, replaceComposerDraft, ownsComposer]);
+
+  const dispatchPrompt = useCallback(async () => {
+    const owner = activeChatId;
+    const draft = latestInputValueRef.current;
+    if (modeRequestsRef.current.has(`${owner || 'new_chat'}:plan`) || implementingPlan.current) return;
+    const command = chatMode ? null : draft.match(/^\/(plan|auto)(?:\s+([\s\S]*))?$/i);
+    const message = command ? command[2] || '' : draft;
+    if (command) {
+      const planning = command[1].toLowerCase() === 'plan';
+      if (!await setPlanModeActive(planning) || !ownsComposer(owner) || latestInputValueRef.current !== draft) return;
+      replaceComposerDraft(message);
+      if (!message.trim() && !attachments.length) return;
+    }
+    if (!chatMode && !isAgentRunning && !attachments.length && taskTracker?.status === 'proposed' && taskTracker.planId && onImplementPlan
+      && command?.[1]?.toLowerCase() !== 'plan' && /^(?:please\s+)?implement\s+(?:(?:the|this|that)\s+)?(?:proposed\s+|implementation\s+)?plan[.!]?$/i.test(message.trim())) {
+      await implementPlan(message);
+      return;
+    }
+    if (isAgentRunning) { handleSteer(); return; }
+    withPreparedWorkspace(() => {
+      if (!ownsComposer(owner) || latestInputValueRef.current !== message) return;
+      notifyAgentFaceSend();
+      handleSend();
+    });
+  }, [activeChatId, chatMode, attachments.length, setPlanModeActive, replaceComposerDraft, taskTracker, onImplementPlan, implementPlan, isAgentRunning, handleSteer, withPreparedWorkspace, handleSend, ownsComposer]);
+
   useEffect(() => {
     if (isLiveActive || isStopping || managedWorkspace.busy || queuedSendRef.current !== activeComposerChatKey || hasPreparingAttachments || hasErroredAttachments) return;
     if (!latestInputValueRef.current.trim() && attachments.length === 0) {
@@ -2517,15 +2598,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       showComposerNotice(attachmentIssue.title, attachmentIssue.message);
       return;
     }
-    if (isAgentRunning) {
-      if (hasComposerPayload) handleSteer();
-      return;
-    }
-    notifyAgentFaceSend();
-    handleSend();
-  }, [isLiveActive, isStopping, managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isAgentRunning, showComposerNotice]);
+    void dispatchPrompt();
+  }, [isLiveActive, isStopping, managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isAgentRunning, dispatchPrompt, showComposerNotice]);
 
   const submitPrompt = useCallback(() => {
+    if (modeRequestsRef.current.has(`${activeComposerChatKey}:plan`) || implementingPlan.current) return;
     if (isStopping && !isLiveActive) return;
     if (managedWorkspace.busy) {
       showComposerNotice('Preparing workspace', 'Your workspace is still being created. Send your message once it is ready.');
@@ -2569,22 +2646,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       return;
     }
 
-    if (isAgentRunning) {
-      if (hasCurrentPayload) {
-        handleSteer();
-      }
-      return;
-    }
-    if (!activeConfiguredChatModel) {
+    if (!isAgentRunning && !activeConfiguredChatModel) {
       showComposerNotice('No model configured', 'Add an API key in Settings > API, then choose a live model in Settings > Models.');
       return;
     }
     // Never invoke the send handler for an empty composer. This can happen
     // when Enter is pressed while the UI is transitioning between states.
     if (!hasCurrentPayload) return;
-    notifyAgentFaceSend();
-    handleSend();
-  }, [managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isLiveActive, isNetworkPaused, isAgentRunning, isStopping, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
+    void dispatchPrompt();
+  }, [managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, hasErroredAttachments, hasPreparingAttachments, isLiveActive, isNetworkPaused, isAgentRunning, isStopping, onLiveSendText, onNetworkPausedAction, dispatchPrompt, setInputValue, showComposerNotice]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter also finalizes IME composition. Do not submit while an input method
@@ -2628,7 +2698,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // New chats can already have a reserved/persisted ID while still showing
   // the centered empty composer. Anchor direction follows layout, not ID.
   const isNewChatHome = isEmptyHome;
-  const resolvedComposerPlaceholder = composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send a message while EterX works" : isNewChatHome ? "What should EterX work on?" : "Message EterX");
+  const showWorkspaceRail = isNewChatHome || runLocation !== 'local' || openStatusMenu === 'project';
+  const resolvedComposerPlaceholder = composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send a message while EterX works" : planModeActive && !chatMode ? "What would you like to plan?" : isNewChatHome ? "What should EterX work on?" : "Message EterX");
   const toggleStatusMenu = useCallback((event: React.MouseEvent, menu: Exclude<StatusRailMenu, null>) => {
     event.stopPropagation();
     setOpenPillDrop(null);
@@ -2650,18 +2721,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const modelOptions = useMemo<ChatModelOption[]>(() => {
     return storedModelSettings.modelEntries
       .filter(entry =>
-        isLocalModelProvider(entry.provider)
+        entry.provider === 'codex' || isLocalModelProvider(entry.provider)
         || Boolean(storedModelSettings.apiKeys[entry.provider])
         || Boolean(storedModelSettings.modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
       )
       .map(entry => {
         const mode = MODEL_PROVIDER_MODE[entry.provider];
+        const label = (entry.provider === 'codex' ? codexModelLabel(entry.modelId) : undefined) || formatModelName(entry.modelId);
         return {
           optionKey: modelEntryKey(entry.provider, entry.modelId),
           id: mode,
           provider: entry.provider,
-          label: formatModelName(entry.modelId),
-          compactLabel: formatModelName(entry.modelId),
+          label,
+          compactLabel: label,
           modelName: entry.modelId,
           modelId: entry.modelId,
         };
@@ -2905,11 +2977,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     const nextOverrides = { ...storedModelSettings.modelOverrides, [option.provider]: option.modelId || option.modelName };
     const nextEntries = ensureModelSelectorEntry(storedModelSettings.modelEntries, option.provider, option.modelId || option.modelName);
-    const nextCatalog = entriesToModelCatalog(nextEntries);
+    const durableEntries = nextEntries.filter(entry => entry.provider !== 'codex');
+    const nextCatalog = entriesToModelCatalog(durableEntries);
 
     appStorage.setItems({
       [CHAT_MODEL_SELECTION_STORAGE_KEY]: option.optionKey,
-      [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(nextEntries),
+      [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(durableEntries),
       [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(nextCatalog),
       [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(nextOverrides),
     });
@@ -2965,7 +3038,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     : null;
   const contextUsageRows = contextUsageBreakdown
     ? CONTEXT_USAGE_CATEGORIES
-        .filter(category => category.key !== 'providerOverhead')
+        .filter(category => category.key !== 'providerOverhead' || contextUsageBreakdown.providerOverhead > 0)
         .map(category => ({
           ...category,
           label: category.key === 'skills'
@@ -3004,7 +3077,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       {liveError && (
         <div role="alert" className="mb-2 flex items-center gap-3 rounded-xl border border-amber-400/20 bg-[#25221d] px-3 py-2 text-[12px] text-amber-100">
           <span className="min-w-0 flex-1 break-words">{liveError}</span>
-          {!isLiveActive && <button type="button" onClick={onLiveStart} className="shrink-0 rounded-lg px-2 py-1 font-medium hover:bg-white/10">Retry Live</button>}
+          {!isLiveActive && <button type="button" disabled={managedWorkspace.busy} onClick={startLiveWithWorkspace} className="shrink-0 rounded-lg px-2 py-1 font-medium hover:bg-white/10">Retry Live</button>}
         </div>
       )}
       {traceLogsLength === 0 && !isThinking && liveState === 'idle' && (
@@ -3148,7 +3221,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           data-compressed={isCompressed ? 'true' : undefined}
           data-composer-controls={showComposerControls ? undefined : 'hidden'}
          data-new-chat={isNewChatHome ? 'true' : undefined}
-         data-status-rail={isNewChatHome || runLocation !== 'local' ? 'true' : undefined}
+         data-status-rail={showWorkspaceRail ? 'true' : undefined}
          data-task-tracker={taskTracker?.steps?.length ? 'true' : undefined}
          data-agent-builder={isAgentBuilder ? 'true' : undefined}
          data-typing={hasPromptText ? 'true' : undefined}
@@ -3159,7 +3232,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         <TaskTrackerDock
           tracker={taskTracker}
           isThinking={isThinking}
-          isCompressed={isCompressed}
+          onOpen={() => { if (activeChatId && taskTracker) openPlanInWorkspace(planPanelOwner || activeChatId, activeChatId, taskTracker); }}
+          onImplement={taskTracker?.status === 'proposed' && taskTracker.planId && onImplementPlan && !isAgentRunning && !isStopping && !isLiveActive && !isNetworkPaused && !hasComposerPayload && !managedWorkspace.busy && activeConfiguredChatModel && !chatMode ? () => void implementPlan() : undefined}
         />
         {activeChatId && approvalRunActive && <ComposerToolApprovals key={activeChatId} chatId={activeChatId} />}
 
@@ -3216,16 +3290,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                 <div className="mt-3 flex items-end justify-between gap-4 tabular-nums">
                   <div>
-                    <div className="eterx-context-panel-percent text-[13px] font-semibold">{Math.round(utilization)}% used</div>
+                    <div className="eterx-context-panel-percent text-[13px] font-semibold">
+                      {contextUsage.awaitingSelectedModelMeasurement ? 'Awaiting model count' : `${formatContextUsagePercent(utilization)} used`}
+                    </div>
                     <div className="eterx-context-panel-meta mt-0.5 text-[10.5px] font-medium">
                       {contextUsage.awaitingSelectedModelMeasurement
-                        ? 'Awaiting selected model count'
+                        ? `Selected window · ${formatExactContextTokens(safeContextWindow)} tokens`
                         : <>{contextUsage.isEstimated ? '~' : ''}{formatContextUsageTokenCount(remainingTokens)} tokens available</>}
                     </div>
                   </div>
-                  <div className="eterx-context-panel-total text-right text-[12px] font-medium">
-                    {contextUsage.isEstimated ? '~' : ''}{formatContextUsageTokenCount(safeUsedTokens)} / {formatExactContextTokens(safeContextWindow)} tokens
-                  </div>
+                  {!contextUsage.awaitingSelectedModelMeasurement && (
+                    <div className="eterx-context-panel-total text-right text-[12px] font-medium">
+                      {contextUsage.isEstimated ? '~' : ''}{formatContextUsageTokenCount(safeUsedTokens)} / {formatExactContextTokens(safeContextWindow)} tokens
+                    </div>
+                  )}
                 </div>
                 {contextUsage.contextLimitNote && (
                   <div className="eterx-context-panel-meta mt-1 text-[10.5px] leading-4">
@@ -3239,7 +3317,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 )}
 
                 <div className="eterx-context-panel-track mt-2 h-1.5 overflow-hidden rounded-full">
-                  <div className="flex h-full min-w-[2px] overflow-hidden rounded-full" style={{ width: `${utilization}%` }}>
+                  <div className="flex h-full overflow-hidden rounded-full" style={{ width: `${contextUsage.awaitingSelectedModelMeasurement ? 0 : utilization}%` }}>
                     {contextUsageRows.length > 0
                       ? contextUsageRows.filter(row => row.tokens > 0).map(row => (
                           <span
@@ -3274,7 +3352,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   <div
                     className="eterx-context-compaction-state mt-3 rounded-[10px] px-2.5 py-2"
                     data-phase={compaction.phase}
-                    role={compaction.phase === 'failed' ? 'alert' : 'status'}
+                    role={compaction.phase === 'failed' && !compactionCancelled ? 'alert' : 'status'}
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="eterx-context-compaction-title text-[11px] font-semibold">{compactionTitle}</span>
@@ -3426,7 +3504,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   ['Latest request agent', chatUsage?.latestCacheOwner || 'Not reported'],
                   ['Latest request model', chatUsage?.latestCacheModel || 'Not reported'],
                   ['Cache reporting coverage', chatUsage?.cacheReportingCoverage == null ? 'Not reported' : `${(chatUsage.cacheReportingCoverage * 100).toFixed(1)}% of input tokens`],
-                  ['Current context (active agent)', contextUsage && contextUsage.contextWindow > 0 ? `${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
+                  ['Current context (active agent)', contextUsage?.awaitingSelectedModelMeasurement ? 'Awaiting selected model count'
+                    : contextUsage && contextUsage.contextWindow > 0 ? `${contextUsage.isEstimated ? '~' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
                 ].map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4"><dt className="opacity-65">{label}</dt><dd className="text-right font-medium tabular-nums">{value}</dd></div>)}
               </dl>
               {chatUsage?.latestCacheExplanation && <p className="mt-3 text-xs leading-relaxed opacity-75">{chatUsage.latestCacheExplanation}</p>}
@@ -3437,9 +3516,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <div className="min-w-0 flex-1"><p className="text-[13px] font-medium">{activeWorkspacePath ? workspaceName : 'No workspace selected'}</p><p className="mt-1 break-all text-xs opacity-60">{activeWorkspacePath || 'Choose a folder for this chat.'}</p></div>
               </div>
               <div className="mt-3 flex items-center gap-2">
-                <button type="button" disabled={executionContextLocked} onClick={() => { closeSlashPanel(); setOpenStatusMenu('project'); }} className="rounded-lg bg-white/[0.06] px-3 py-2 text-xs font-medium text-[var(--context-panel-title,inherit)] hover:bg-white/10 disabled:opacity-40">{activeWorkspacePath ? 'Change workspace' : 'Select workspace'}</button>
+                <button type="button" disabled={projectPickerLocked} onClick={() => { closeSlashPanel(); setOpenStatusMenu('project'); }} className="rounded-lg bg-white/[0.06] px-3 py-2 text-xs font-medium text-[var(--context-panel-title,inherit)] hover:bg-white/10 disabled:opacity-40">{activeWorkspacePath ? 'Change workspace' : 'Select workspace'}</button>
                 <button type="button" disabled={projectPickerLocked} onClick={() => { setOpenStatusMenu(null); void handleSelectFolderDialog(); }} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/10 disabled:opacity-40">Browse folders</button>
-                {activeWorkspacePath && <button type="button" disabled={executionContextLocked} onClick={() => handleWorkspacePathChange(null)} className="ml-auto rounded-lg px-3 py-2 text-xs opacity-60 hover:bg-white/10 disabled:opacity-40">Remove</button>}
+                {activeWorkspacePath && <button type="button" disabled={projectPickerLocked} onClick={() => handleWorkspacePathChange(null)} className="ml-auto rounded-lg px-3 py-2 text-xs opacity-60 hover:bg-white/10 disabled:opacity-40">Remove</button>}
               </div>
               {executionContextLocked && <p className="mt-3 text-xs opacity-60">Workspace changes are available when this run finishes.</p>}
             </>}
@@ -3456,8 +3535,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               {filteredSlashCommands.length > 0 ? (
                 filteredSlashCommands.map((command, index) => {
                   const active = index === slashActiveIndex;
-                  const isModeCommand = command.action === 'plan' || command.action === 'swarm';
-                  const modeEnabled = command.action === 'plan' ? planModeActive : command.action === 'swarm' ? swarmModeActive : false;
+                  const planningChoice = command.action === 'plan' || command.action === 'auto';
+                  const isModeCommand = planningChoice || command.action === 'swarm';
+                  const modeEnabled = planningChoice ? planModeActive === (command.action === 'plan') : command.action === 'swarm' && swarmModeActive;
                   return (
                     <button
                       key={command.id}
@@ -3466,7 +3546,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       aria-selected={active}
                       aria-label={isModeCommand ? `${command.label}, ${modeEnabled ? 'enabled' : 'disabled'}` : undefined}
                       data-mode-enabled={modeEnabled ? 'true' : undefined}
-                      disabled={Boolean((command.action === 'plan' || command.action === 'swarm') && pendingModes.has(`${activeChatId || 'new_chat'}:${command.action}`))}
+                      disabled={(command.action === 'compact' && compacting) || (isModeCommand && pendingModes.has(`${activeChatId || 'new_chat'}:${planningChoice ? 'plan' : 'swarm'}`))}
                       onMouseEnter={() => setSlashActiveIndex(index)}
                       onMouseDown={event => event.preventDefault()}
                       onClick={() => selectSlashCommand(command)}
@@ -3484,7 +3564,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           {command.label}
                         </span>
                         <span className="eterx-composer-command-description min-w-0 truncate text-[11.5px] font-normal text-[#8C8984]">
-                          {command.action === 'compact' && compacting ? 'Compacting context…' : modeEnabled ? 'Enabled · click to turn off' : command.description}
+                          {command.action === 'compact' && compactMainChat ? (compacting ? 'Compacting main chat…' : 'Compact the main chat’s context')
+                            : command.action === 'compact' && compacting ? 'Compacting context…'
+                              : modeEnabled && command.action === 'swarm' ? 'Enabled · click to turn off' : command.description}
                         </span>
                       </span>
                       {modeEnabled && <Check className="eterx-composer-mode-check h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />}
@@ -3737,7 +3819,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <div className="eterx-composer-textarea-wrap relative w-full">
                   {!chatMode && (planModeActive || swarmModeActive) && (
                     <div className="eterx-composer-mode-row" role="group" aria-label="Active modes">
-                      {([{ kind: 'plan', active: planModeActive, label: 'Plan', tooltip: 'Create a plan', Icon: Lightbulb, toggle: setPlanModeActive },
+                      {([{ kind: 'plan', active: planModeActive, label: 'Plan', tooltip: 'Explore and propose changes', Icon: Lightbulb, toggle: setPlanModeActive },
                         { kind: 'swarm', active: swarmModeActive, label: 'Swarm', tooltip: 'Coordinate a team', Icon: Network, toggle: setSwarmModeActive }] as const).filter(mode => mode.active).map(mode => {
                         const pending = pendingModes.has(`${activeChatId || 'new_chat'}:${mode.kind}`);
                         return (
@@ -4102,8 +4184,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   Number.isFinite(contextUsage!.usedTokens) ? contextUsage!.usedTokens : 0,
                 ));
                 const exactUtilization = Math.max(0, Math.min(100, (safeUsedTokens / safeContextWindow) * 100));
-                const usedPercent = Math.round(exactUtilization);
-                const leftPercent = Math.max(0, 100 - usedPercent);
+                const pending = contextUsage!.awaitingSelectedModelMeasurement;
+                const usedPercent = formatContextUsagePercent(exactUtilization);
+                const leftPercent = formatContextUsagePercent(100 - exactUtilization);
                 return (
                 <Tooltip
                   side="top"
@@ -4114,14 +4197,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   content={(
                     <div className="flex h-[68px] w-full flex-col items-center justify-center px-2 text-center">
                       <div className="eterx-context-usage-label text-[11px] font-medium leading-[14px]">
-                        {contextUsage!.awaitingSelectedModelMeasurement ? 'Awaiting model count:' : contextUsage!.isEstimated ? 'Estimated context:' : 'Context window:'}
+                        {pending ? 'Awaiting model count' : contextUsage!.isEstimated ? 'Estimated context' : 'Context window'}
                       </div>
                       <div className="eterx-context-usage-primary mt-px whitespace-nowrap text-[12.5px] font-semibold leading-4">
-                        {usedPercent}% used <span className="eterx-context-usage-muted font-medium">({leftPercent}% left)</span>
+                        {pending ? `${formatContextTokenCount(safeContextWindow)} token window` : <>{usedPercent} used <span className="eterx-context-usage-muted font-medium">({leftPercent} left)</span></>}
                       </div>
-                      <div className="eterx-context-usage-secondary whitespace-nowrap text-[11.5px] font-medium leading-[15px] tabular-nums">
-                        {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
-                      </div>
+                      {!pending && (
+                        <div className="eterx-context-usage-secondary whitespace-nowrap text-[11.5px] font-medium leading-[15px] tabular-nums">
+                          {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
+                        </div>
+                      )}
                     </div>
                   )}
                 >
@@ -4130,7 +4215,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     type="button"
                     onClick={() => setShowContextUsagePanel(open => !open)}
                     className="eterx-context-usage-trigger relative grid h-[38px] w-[24px] shrink-0 place-items-center"
-                    aria-label={`${contextUsage!.isEstimated ? 'Estimated context' : 'Context window'} ${usedPercent} percent used`}
+                    aria-label={pending ? 'Context usage, awaiting selected model count' : `${contextUsage!.isEstimated ? 'Estimated context' : 'Context window'} ${usedPercent} used`}
                     aria-expanded={showContextUsagePanel}
                     aria-haspopup="dialog"
                     data-open={showContextUsagePanel ? 'true' : undefined}
@@ -4148,7 +4233,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         strokeWidth="2.4"
                         strokeLinecap="round"
                         pathLength="100"
-                        strokeDasharray={`${exactUtilization} 100`}
+                        strokeDasharray={`${pending ? 0 : exactUtilization} 100`}
                       />
                     </svg>
                   </button>
@@ -4470,7 +4555,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         return !query || `${option.label} ${MODEL_PROVIDER_LABEL[option.provider]} ${option.modelName}`.toLowerCase().includes(query);
                       })).map(group => (
                         <section key={group.provider} aria-label={(MODEL_PROVIDER_LABEL[group.provider] || group.provider)} className="eterx-model-provider-group">
-                          <div className="eterx-model-provider-heading">{(MODEL_PROVIDER_LABEL[group.provider] || group.provider)}</div>
+                          <div className="eterx-model-provider-heading flex items-center justify-between gap-2">
+                            {MODEL_PROVIDER_LABEL[group.provider] || group.provider}
+                            {group.provider === 'codex' && (
+                              <button type="button" className="text-[10px] normal-case tracking-normal hover:underline" onClick={() => {
+                                void getDesktopSubscription()?.openUsage().catch(() => showComposerNotice('Could not open ChatGPT usage', 'Try again from Settings → Subscription.'));
+                              }}>Manage usage ↗</button>
+                            )}
+                          </div>
                           {group.models.map(option => {
                             const selected = option.optionKey === selectedModel?.optionKey;
                             const optionLabel = getModelOptionLabel(option);
@@ -4551,7 +4643,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       )}
                       {allModelOptions.length === 0 && (
                         <div className="px-2.5 py-4 text-center text-[11.5px] text-[#A3A19E]">
-                          Add an API key in Settings &gt; API, then choose a live model in Settings &gt; Models.
+                          Connect ChatGPT in Settings → Subscription or add a provider key in Settings → API.
                         </div>
                       )}
                     </div>
@@ -4604,8 +4696,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <Tooltip text={composerActionTooltip} side="top">
                   <button
                     type="button"
-                    onClick={composerAction === 'stop' ? handleStopClick : composerAction === 'network-paused' ? onNetworkPausedAction : composerAction === 'live' ? onLiveStart : submitPrompt}
-                    disabled={isStopping || (composerAction === 'send' && (!hasComposerPayload || managedWorkspace.busy))}
+                    onClick={composerAction === 'stop' ? handleStopClick : composerAction === 'network-paused' ? onNetworkPausedAction : composerAction === 'live' ? startLiveWithWorkspace : submitPrompt}
+                    disabled={isStopping || (composerAction === 'send' && !hasComposerPayload) || ((composerAction === 'send' || composerAction === 'live') && managedWorkspace.busy)}
                     aria-label={composerActionLabel}
                     aria-busy={isStopping || composerAction === 'network-paused'}
                     data-active={composerAction === 'live' && hasAnyLiveSession ? 'true' : undefined}
@@ -4646,7 +4738,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           )}
         </motion.div>
 
-        {(isNewChatHome || runLocation !== 'local') && (
+        {showWorkspaceRail && (
           <div
             className="eterx-new-chat-status-rail"
             aria-label="Workspace status"

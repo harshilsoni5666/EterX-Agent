@@ -42,7 +42,7 @@ export type RuntimeApiKeyProvider =
   | 'github';
 
 export type RuntimeApiKeyPayload = Partial<Record<RuntimeApiKeyProvider, string | string[]>>;
-export type RuntimeModelProvider = Exclude<RuntimeApiKeyProvider, 'tavily' | 'github'>;
+export type RuntimeModelProvider = Exclude<RuntimeApiKeyProvider, 'tavily' | 'github'> | 'codex';
 export type RuntimeModelOverridePayload = Partial<Record<RuntimeModelProvider, string>>;
 
 export type RuntimeApiKeyProviderStatus = {
@@ -138,9 +138,10 @@ const runtimeApiKeyCursor: Record<RuntimeApiKeyProvider, number> =
     return acc;
   }, {} as Record<RuntimeApiKeyProvider, number>));
 
-const MODEL_PROVIDERS: RuntimeModelProvider[] = PROVIDERS.filter(
-  (provider): provider is RuntimeModelProvider => provider !== 'tavily' && provider !== 'github',
-);
+const MODEL_PROVIDERS: RuntimeModelProvider[] = [
+  ...PROVIDERS.filter(provider => provider !== 'tavily' && provider !== 'github'),
+  'codex',
+];
 
 const runtimeModelOverrides: Record<RuntimeModelProvider, string> =
   (globalThis as typeof globalThis & { __eterxRuntimeModelOverrides?: Record<RuntimeModelProvider, string> }).__eterxRuntimeModelOverrides ||
@@ -400,12 +401,14 @@ export function buildScopedRuntimeSettings(): ScopedRuntimeSettings {
   };
 }
 
-export function getScopedRuntimeApiKeyValues(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider): string[] {
+export function getScopedRuntimeApiKeyValues(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider | 'codex'): string[] {
+  if (provider === 'codex') return [];
   const scoped = settings?.apiKeys?.[provider] || [];
   return scoped.length > 0 ? [...scoped] : getRuntimeApiKeyValues(provider);
 }
 
-export function getScopedRuntimeApiKey(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider): string {
+export function getScopedRuntimeApiKey(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider | 'codex'): string {
+  if (provider === 'codex') return '';
   const scoped = settings?.apiKeys?.[provider] || [];
   return scoped[0] || getRuntimeApiKey(provider);
 }

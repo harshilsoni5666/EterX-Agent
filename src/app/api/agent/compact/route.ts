@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { parseModelEntryKey } from '../../../../lib/agent/model-selector-store';
-import { attachAgentApiSessionCookie, getOrCreateAgentApiSession, isSafeChatId, jsonError, readJsonObject, rejectCrossOrigin, requireChatOwner } from '../_shared';
+import { attachAgentApiSessionCookie, getOrCreateAgentApiSession, isSafeChatId, isSafeRunId, jsonError, readJsonObject, rejectCrossOrigin, requireChatOwner } from '../_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -24,9 +24,14 @@ export async function POST(req: NextRequest) {
       || !Array.isArray(message.parts) || message.parts.some((part: any) => typeof part?.text !== 'string'))) {
       return respond(jsonError('Invalid chat history.', 400));
     }
-    await agentRegistry.compactChat(body.chatId, body.contextCompaction,
-      model ? { provider: model.provider, model: model.modelId, history } : undefined);
-    return respond(NextResponse.json({ success: true }));
+    if ([body.runId, body.historyRunId].some(id => id !== undefined && !isSafeRunId(id))) {
+      return respond(jsonError('Invalid run identifier.', 400));
+    }
+    const result = await agentRegistry.compactChat(body.chatId, body.contextCompaction,
+      model ? { provider: model.provider, model: model.modelId, history } : undefined,
+      body.runId, body.historyRunId);
+    const success = result.status !== 'failed';
+    return respond(NextResponse.json({ ...result, success }, { status: success ? 200 : 500 }));
   } catch (error) {
     return respond(jsonError(error instanceof Error ? error.message : 'Could not compact context.', 500));
   }

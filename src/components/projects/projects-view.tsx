@@ -1,5 +1,7 @@
 "use client";
 
+import { codexCatalogPending, codexModelLabel, codexThinkingCatalog, withCodexSubscriptionModels } from '../../lib/chatgpt-subscription-client';
+
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2, Search, Pencil, Pause, RotateCcw } from 'lucide-react';
@@ -86,6 +88,7 @@ const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
   gemini: 'Google Gemini',
   mistral: 'Mistral',
   openai: 'OpenAI',
+  codex: 'Codex · ChatGPT plan',
   openrouter: 'OpenRouter',
   groq: 'Groq',
   anthropic: 'Anthropic',
@@ -178,21 +181,22 @@ const readStoredModelSettings = (): StoredModelSettings => {
     ? (appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
     : AUTO_MODEL_SELECTION;
   const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
-  const modelEntries = normalizeModelSelectorEntries(savedEntries, modelCatalog);
+  const modelEntries = withCodexSubscriptionModels(normalizeModelSelectorEntries(savedEntries, modelCatalog));
   const modelOverrides = Object.fromEntries(
     Object.entries(storedModelOverrides).filter(([provider, modelId]) =>
       modelEntries.some(entry => entry.provider === provider && entry.modelId === modelId)
     ),
   ) as Partial<Record<MainAgentProvider, string>>;
   const modelApiKeys = readStringRecord(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
-  const thinkingCapabilities = readThinkingCapabilityRecord();
+  const thinkingCapabilities = { ...readThinkingCapabilityRecord(), ...codexThinkingCatalog() };
   const usableEntries = modelEntries.filter(entry =>
-    isLocalModelProvider(entry.provider)
+    entry.provider === 'codex' || isLocalModelProvider(entry.provider)
     || Boolean(apiKeys[entry.provider])
     || Boolean(modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
   );
-  const chatModelSelection = parsedStoredChatModel && usableEntries.some(entry =>
-    modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
+  const chatModelSelection = parsedStoredChatModel && (
+    (parsedStoredChatModel.provider === 'codex' && codexCatalogPending())
+    || usableEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
   )
     ? storedChatModelSelection
     : usableEntries[0]
@@ -712,7 +716,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const modelOptions = useMemo<ChatModelOption[]>(() => {
     return storedModelSettings.modelEntries.filter(entry => (
-      isLocalModelProvider(entry.provider)
+      entry.provider === 'codex' || isLocalModelProvider(entry.provider)
       || Boolean(storedModelSettings.apiKeys[entry.provider])
       || Boolean(storedModelSettings.modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
     )).map(entry => {
@@ -722,7 +726,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
         optionKey: modelEntryKey(entry.provider, entry.modelId),
         id: mode,
         provider: entry.provider,
-        label: entry.modelId || entry.provider,
+        label: (entry.provider === 'codex' ? codexModelLabel(entry.modelId) : undefined) || entry.modelId || entry.provider,
         compactLabel: baseOption.compactLabel,
         modelName: entry.modelId || entry.provider,
         modelId: entry.modelId,

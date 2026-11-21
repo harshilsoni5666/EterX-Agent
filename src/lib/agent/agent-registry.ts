@@ -1,7 +1,8 @@
 import { setRuntimePlanMode } from './plan-mode';
 import { setRuntimeSwarmMode } from './swarm-mode';
-import { requestManualCompaction, isManualCompactionActive, isDirectChatRunning } from './manual-compaction';
-import { compactSavedWorkingContext, type ManualCompactionFallback } from './working-context-checkpoint';
+import { requestManualCompaction, isManualCompactionActive, getManualCompactionJob, getDirectCompactionRun, type ManualCompactionResult } from './manual-compaction';
+import { compactSavedWorkingContext, recoverCheckpointMeasurement, type ManualCompactionFallback } from './working-context-checkpoint';
+import { loadChatById } from '../chat-store';
 import { compactContextAtBoundary } from './resilience/context-compaction';
 import { GoogleGenAI } from '@google/genai';
 import { isPastedText, pastedTextManifest } from '../pasted-text';
@@ -28,7 +29,7 @@ import { filterLiveUserVisibleTraces, isLiveUserVisibleTrace } from './trace-vis
 import { areLikelySameFeedActionLifecycle, createStoppedRunTrace, getFeedActionSingletonIdentity, getFeedTraceWorkerScope, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary } from '../chat-feed-lifecycle';
 import { getContextFabricForChat } from './context-fabric';
 import { formatUnknownError } from './error-format';
-import { contextMeasurementTime, contextUsageScopeKey } from '../context-usage-snapshot';
+import { contextMeasurementTime, contextPayloadSuperseded, contextUsageScopeKey, isPendingContextCompaction, isTerminalContextCompaction } from '../context-usage-snapshot';
 import { getCodingMode } from '../code/coding-modes';
 import { sameUserAdmission, normalizeAdmissionId } from '../steering-delivery';
 import { normalizeChatPermissionMode, type ChatPermissionMode } from '../chat-permissions';
@@ -845,7 +846,7 @@ class AgentRegistry {
         if (!usageKey || contextUsageScopeKey(existing) !== usageKey) continue;
         // Producer-local counters (e.g. direct chat / a worker) are not this
         // registry's sequence yet. Compare event time before assigning ours.
-        if (contextMeasurementTime(traceEvent) < contextMeasurementTime(existing)) return existingEntry;
+        if (contextPayloadSuperseded(existing, traceEvent) || contextMeasurementTime(traceEvent) < contextMeasurementTime(existing)) return existingEntry;
         execution.traceBuffer.splice(index, 1);
         traceEvent = {
           ...traceEvent,
@@ -1579,6 +1580,18 @@ class AgentRegistry {
       }
       // Check per-chat cancellation
       if (execution.cancelled || execution.status !== 'running') {
+        // Stop can win the race with the journal commit or its abort handler.
+        // Only the closing receipt for an already advertised transaction may
+        // amend that execution after termination. appendTrace scopes the disk
+        // write to this run even if a successor already owns the chat.
+        const closingPhase = isTerminalContextCompaction(traceEvent);
+        const committedUsage = traceEvent?.type === 'context_usage' && traceEvent.contextReplaced === true;
+        if ((closingPhase || committedUsage) && traceEvent.compactionId && execution.traceBuffer.some(({ data }) =>
+          data?.chatId === traceEvent.chatId && (closingPhase
+            ? isPendingContextCompaction(data) && data.compactionId === traceEvent.compactionId
+            : data.type === 'context_usage' && data.contextRequestId === traceEvent.contextRequestId))) {
+          this.appendTrace(execution, traceEvent, !pinnedContext?.disableTaskStore);
+        }
         return;
       }
       const currentExecution = this.executions.get(chatId);
@@ -2680,31 +2693,56 @@ class AgentRegistry {
   /**
    * Check if a specific chat has a running agent.
    */
-  public compactChat(chatId: string, rawSettings?: unknown, fallback?: ManualCompactionFallback): Promise<void> {
-    return requestManualCompaction(chatId, () => this.isRunning(chatId) || isDirectChatRunning(chatId), async () => {
-      const execution = this.executions.get(chatId);
-      // A stopped worker may still be committing its last checkpoint.
+  public compactChat(chatId: string, rawSettings?: unknown, fallback?: ManualCompactionFallback,
+    expectedRunId?: string, historyRunId?: string): Promise<ManualCompactionResult> {
+    const execution = this.executions.get(chatId);
+    const direct = getDirectCompactionRun(chatId);
+    const agentRun = execution?.status === 'running' ? {
+      runId: execution.runId, signal: execution.abortController.signal, finished: execution.promise,
+      completed: () => execution.status === 'completed',
+    } : undefined;
+    const requestedOwner = expectedRunId || historyRunId;
+    const run = direct && !direct.signal.aborted && (!agentRun || !requestedOwner || requestedOwner === direct.runId)
+      ? direct : agentRun;
+    if (expectedRunId && run?.runId !== expectedRunId) return Promise.resolve({ status: 'cancelled' });
+    if (!expectedRunId && historyRunId && run?.runId && historyRunId !== run.runId) return Promise.resolve({ status: 'cancelled' });
+    return requestManualCompaction(chatId, run, async () => {
+      if (direct) await direct.finished;
       if (execution && !execution.settled) await execution.promise.catch(() => undefined);
       const fabric = await getContextFabricForChat(chatId);
+      const savedTask = await taskStore.getTask(chatId);
+      let receipt: ManualCompactionResult = { status: 'failed', error: 'No context measurement was available.' };
       await compactSavedWorkingContext(chatId, async checkpoint => {
+        const owner = run?.runId || historyRunId || checkpoint.runId;
+        const traceOwner = (!direct || (agentRun && run === agentRun)) && execution && (!owner || owner === execution.runId) ? execution : undefined;
+        if (!checkpoint.fixedContext || !checkpoint.calibration) {
+          const logs = traceOwner?.traceBuffer.map(entry => entry.data) || savedTask?.traceLogs || [];
+          recoverCheckpointMeasurement(checkpoint, logs, owner);
+          if (!checkpoint.fixedContext || !checkpoint.calibration) {
+            const stored = await loadChatById(chatId).catch(() => null) as { traceLogs?: any[] } | null;
+            if (Array.isArray(stored?.traceLogs)) recoverCheckpointMeasurement(checkpoint, stored.traceLogs, owner);
+          }
+        }
         const result = await compactContextAtBoundary({
-          chatId, kind: checkpoint.kind === 'gemini' ? 'gemini' : 'provider',
+          chatId, runId: owner, kind: checkpoint.kind === 'gemini' ? 'gemini' : 'provider',
           contents: checkpoint.contents,
+          savedFixedContext: checkpoint.fixedContext,
           activeModel: { provider: checkpoint.provider as any, modelId: checkpoint.model },
           providerReportedInputTokens: checkpoint.calibration?.inputTokens,
           providerReportedLocalEstimatedTokens: checkpoint.calibration?.localTokens,
-          rawSettings: rawSettings || execution?.launchSpec.pinnedContext?.contextCompaction,
-          runtimeSettings: execution?.launchSpec.runtimeSettings || buildScopedRuntimeSettings(),
+          rawSettings: rawSettings || traceOwner?.launchSpec.pinnedContext?.contextCompaction,
+          runtimeSettings: traceOwner?.launchSpec.runtimeSettings || buildScopedRuntimeSettings(),
           forceCompaction: true, semanticBoundary: 'safe', manualCompaction: true,
           continuityManifestFactory: () => fabric.buildContinuityManifest(),
           onEvent: event => {
-            if (execution) this.appendTrace(execution, event);
-            else taskStore.addTrace(chatId, event);
+            if (traceOwner) this.appendTrace(traceOwner, event);
+            else if (savedTask && (!owner || savedTask.runId === owner)) taskStore.addTrace(chatId, event, savedTask.runId);
           },
         });
-        if (result.failed) throw new Error('Context compaction failed. The original context was preserved.');
-        return result.contents;
+        receipt = result.manualResult;
+        return result.failed ? null : result.contents;
       }, fallback, fabric);
+      return receipt;
     }, rawSettings);
   }
 
@@ -3088,7 +3126,11 @@ class AgentRegistry {
   private async startNextQueuedWork(chatId: string): Promise<void> {
     const current = this.executions.get(chatId);
     if (current && (current.status === 'running' || !current.settled)) return;
-
+    const compaction = getManualCompactionJob(chatId);
+    if (compaction) {
+      await compaction.catch(() => undefined);
+      return this.startNextQueuedWork(chatId);
+    }
     const queue = this.userFollowUpQueues.get(chatId);
     const next = queue?.[0];
     if (next) {
@@ -3202,6 +3244,11 @@ class AgentRegistry {
     if (!admissionControl.enabled || admissionControl.paused) return;
     const current = this.findExecution(chatId);
     if (current && (current.status === 'running' || !current.settled)) return;
+    const compaction = getManualCompactionJob(chatId);
+    if (compaction) {
+      await compaction.catch(() => undefined);
+      return this.startNextQueuedWork(chatId);
+    }
     const task = claimNextProxyTask(chatId);
     if (!task) return;
 

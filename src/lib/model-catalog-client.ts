@@ -48,6 +48,7 @@ export async function refreshSavedModelCatalog(providers?: MainAgentProvider[]):
   await appStorageReady;
   const entries = readEntries();
   await Promise.all([...new Set(providers || entries.map(entry => entry.provider))].map(provider => {
+    if (provider === 'codex') return;
     const active = pending.get(provider);
     if (active) return active;
     const isCurrent = beginModelCatalogRequest(provider);

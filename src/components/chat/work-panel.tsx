@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type RefObject } from 'react';
-import { ArrowUpRight, Check, ChevronDown, ChevronRight, Circle, CircleAlert, FileDiff, FolderClosed, GitBranch, GitCommitHorizontal, GitFork, ListTodo, Loader2, MoreHorizontal, Pin } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleDashed, CircleSlash, FileDiff, FolderClosed, GitBranch, GitCommitHorizontal, GitFork, Lightbulb, Loader2, MoreHorizontal, Pin } from 'lucide-react';
 import type { readChatContextUsage } from '../../lib/chat-context-usage';
 import { agentIdentitiesOverlap } from '../../lib/chat-feed-lifecycle';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../../lib/app-visibility';
@@ -30,11 +30,7 @@ type WorkPanelAgent = WorkspaceSubAgentsProps['agents'][number] & {
   runScope?: string;
 };
 
-type WorkPanelPlan = {
-  goal?: string;
-  activeStepName?: string | null;
-  steps?: Array<{ id?: string; step: number; name: string; status: string }>;
-};
+type WorkPanelPlan = import('../../lib/task-plan-trace').TaskTrackerState;
 
 type Source = {
   id: string;
@@ -361,7 +357,7 @@ export function WorkPanel({
   const sourcesId = useId();
   const plansId = useId();
   const previousId = useId();
-  const browse = useProjectFolderBrowse(owner, workspaceLocked, onSelectWorkspace, () => setProjectError('Folder picker unavailable. Try again or paste a path.'));
+  const browse = useProjectFolderBrowse(owner, workspacePath, workspaceLocked, onSelectWorkspace, () => setProjectError('Folder picker unavailable. Try again or paste a path.'));
 
   useEffect(() => {
     if (!projectOpen && !sourcesOpen && !agentMenuOpen) return;
@@ -438,7 +434,7 @@ export function WorkPanel({
   const running = currentAgents.filter(agent => runningStatuses.has(String(agent.status || '').toLowerCase())).length;
   const failed = previousAgents.filter(agent => ['failed', 'error'].includes(String(agent.status || '').toLowerCase())).length;
   const steps = (plan?.steps || []).filter(step => step?.name && typeof step.status === 'string');
-  const completeSteps = steps.filter(step => step.status === 'done' || step.status === 'skipped').length;
+  const completeSteps = steps.filter(step => step.status === 'done').length;
   const summary = repository.data;
   const totals = summary?.files.reduce((sum, file) => ({
     added: sum.added + (file.linesAdded || 0), removed: sum.removed + (file.linesRemoved || 0),
@@ -599,20 +595,23 @@ export function WorkPanel({
 
           {steps.length > 0 && <section className="eterx-work-panel-section" aria-label="Task Plan">
             <button type="button" className="eterx-work-panel-row" title={plan?.goal} aria-expanded={planOpen} aria-controls={plansId} onClick={() => setPlanOpen(value => !value)}>
-              <ListTodo size={16} /><span className="eterx-work-panel-label">Task Plan</span>
-              <span className="eterx-work-panel-meta">{completeSteps}/{steps.length}</span><ChevronDown size={14} data-open={planOpen} />
+              <Lightbulb size={16} /><span className="eterx-work-panel-label">{plan?.status === 'proposed' ? 'Proposed plan' : 'Task plan'}</span>
+              <span className="eterx-work-panel-meta">{plan?.status === 'proposed' ? `${steps.length} steps` : `${completeSteps}/${steps.length} done`}</span><ChevronDown size={14} data-open={planOpen} />
             </button>
             <ul id={plansId} hidden={!planOpen} className="eterx-work-panel-plan">
               {steps.map(step => {
-                const complete = step.status === 'done' || step.status === 'skipped';
-                const active = step.status === 'in_progress' || (step.status === 'pending' && plan?.activeStepName === step.name);
-                const Icon = complete ? Check : step.status === 'failed' || step.status === 'blocked' ? CircleAlert : active ? Loader2 : Circle;
+                const active = plan?.status === 'in_progress' && step.status === 'in_progress';
+                const Icon = step.status === 'done' ? Check : step.status === 'skipped' ? CircleSlash
+                  : step.status === 'failed' ? CircleAlert : step.status === 'blocked' ? CircleDashed : active ? Loader2 : Circle;
                 return <li key={step.id || step.step} className="eterx-work-panel-row" data-status={step.status}
                   aria-current={active ? 'step' : undefined} aria-label={step.name + ', ' + step.status.replaceAll('_', ' ')} title={step.name}>
                   <Icon size={13} className={active ? 'animate-spin' : undefined} /><span className="eterx-work-panel-label">{step.name}</span>
                 </li>;
               })}
             </ul>
+            {plan && planOpen && <button type="button" className="eterx-work-panel-row" onClick={() => { addWorkspaceTab(owner, 'plan', { plan, planChatId: owner }); onClose(); }}>
+              <span className="eterx-work-panel-label">Open full plan</span><ArrowUpRight size={15} />
+            </button>}
           </section>}
 
           {hasAgents && <section ref={agentSection} className="eterx-work-panel-section" aria-label="Sub-Agents">
@@ -647,10 +646,11 @@ export function WorkPanel({
       </div>
     </div>
 
-    {context && context.contextWindow > 0 && <div className="eterx-work-panel-context" title={`${context.usedTokens.toLocaleString()} of ${context.contextWindow.toLocaleString()} tokens used`}>
+    {context && context.contextWindow > 0 && <div className="eterx-work-panel-context" title={context.awaitingSelectedModelMeasurement
+      ? 'Awaiting selected model count' : `${context.isEstimated ? '~' : ''}${context.usedTokens.toLocaleString()} of ${context.contextWindow.toLocaleString()} tokens used`}>
       <span>Context</span>
-      <meter min={0} max={context.contextWindow} value={Math.min(context.usedTokens, context.contextWindow)} aria-label="Context usage" />
-      <span>{tokenCount.format(context.usedTokens)} / {tokenCount.format(context.contextWindow)}</span>
+      {!context.awaitingSelectedModelMeasurement && <meter min={0} max={context.contextWindow} value={Math.min(context.usedTokens, context.contextWindow)} aria-label="Context usage" />}
+      <span>{context.awaitingSelectedModelMeasurement ? 'Awaiting count' : `${context.isEstimated ? '~' : ''}${tokenCount.format(context.usedTokens)}`} / {tokenCount.format(context.contextWindow)}</span>
     </div>}
   </aside>;
 }

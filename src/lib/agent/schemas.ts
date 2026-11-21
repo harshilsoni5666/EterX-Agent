@@ -53,6 +53,7 @@ export const ProjectContextSchema = z.object({
   userName: z.string().optional(),
   allowAgentSpawning: z.boolean().optional(),
   planMode: z.boolean().optional(),
+  planImplementation: z.object({ planId: z.string().min(1), revision: z.number().int().positive() }).optional(),
   swarmMode: z.boolean().optional(),
   swarmRunId: z.string().optional(),
   agentDepth: z.number().int().min(0).max(8).optional(),

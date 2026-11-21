@@ -1,4 +1,5 @@
 import { agentIdentitiesOverlap } from './chat-feed-lifecycle';
+import { contextWorkerId } from './context-usage-snapshot';
 
 /** The supplied history belongs to this chat; legacy rows can lack ownership fields. */
 export function traceBelongsToUsageChat(log: any, chatId?: string | null): boolean {
@@ -13,8 +14,9 @@ export function selectSubAgentUsageLogs(logs: any[], agent: any, chatId?: string
   if (!agent) return [];
   return logs.filter(log => {
     if (!traceBelongsToUsageChat(log, chatId)) return false;
-    if (!agentIdentitiesOverlap(log, agent)) return false;
-    if (log.subAgentChatId || log.subAgentId || log.agentId) return true;
+    const child = contextWorkerId(log);
+    if (!agentIdentitiesOverlap(child && !log.subAgentId && !log.subAgentChatId ? { ...log, subAgentChatId: child } : log, agent)) return false;
+    if (child || log.agentId) return true;
     const scope = String(log.turnId || log.runId || '').trim();
     return !agent.turnScope || !scope || scope === agent.turnScope;
   });
@@ -24,8 +26,7 @@ export function selectSubAgentUsageLogs(logs: any[], agent: any, chatId?: string
 export function selectMainContextLogs(logs: any[], chatId?: string | null, agents: any[] = []): any[] {
   return logs.filter(log => traceBelongsToUsageChat(log, chatId)
     && log.auxiliaryRuntime !== true
-    && !log.subAgentId && !log.subAgentChatId && log.isSubAgent !== true
-    && !String(log.chatId || '').includes('::sub-agent::')
+    && !contextWorkerId(log) && log.isSubAgent !== true
     && !['subagent', 'sub_agent', 'sub-agent'].includes(String(log.agentRole || '').toLowerCase())
     && (!log.subAgent || String(log.subAgent).toLowerCase() === 'main' || log.agentRuntime === 'agent_builder')
     && !agents.some(agent => agentIdentitiesOverlap(log, agent)));

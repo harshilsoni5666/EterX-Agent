@@ -35,6 +35,7 @@ import {
 import * as vm from 'vm';
 import { agentToolLoadTool, agentToolUnloadTool } from '../../tool-injector';
 import { formatUnknownError } from '../../error-format';
+import { planModeForContext } from '../../plan-mode';
 
 const requireBuilderContext = (context: any, argsAgentId?: string) => {
   if (!isAgentBuilderRuntimeContext(context)) {
@@ -1034,6 +1035,7 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
         : Number.POSITIVE_INFINITY;
 
       while (currentStepId) {
+        if (planModeForContext(context)) throw new Error('Workflow execution stopped because Plan mode is active.');
         if (context?.abortSignal?.aborted || context?.signal?.aborted) {
           throw new Error('Flow cancelled by user.');
         }
@@ -1118,6 +1120,7 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
           let currentPrompt = basePrompt;
 
           while (attempts < maxRetries && !approved) {
+            if (planModeForContext(context)) throw new Error('Workflow execution stopped because Plan mode is active.');
             attempts++;
 
             if (attempts > 1) {

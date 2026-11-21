@@ -34,7 +34,7 @@ export const CODING_TOOL_DETAILS: Record<string, { label: string; description: s
   screen_agent: { label: 'Computer actions', description: 'Use native app controls, screenshots, mouse and keyboard when Computer Use is enabled.' },
   web_search: { label: 'Web research', description: 'Find current documentation and technical references.' },
   ask_user: { label: 'Clarification', description: 'Ask focused questions when a missing decision blocks safe progress.' },
-  task_decomposer: { label: 'Task planning', description: 'Create a tracker when dependencies or scope justify one.' },
+  task_decomposer: { label: 'Task planning', description: 'Track dependent steps or propose a full implementation plan.' },
   task_checkpoint: { label: 'Plan updates', description: 'Advance, revise or save an existing plan with actual evidence.' },
   context_memory: { label: 'Context recall', description: 'Retrieve exact earlier observations and decisions from this chat.' },
   wait_timer: { label: 'Waiting', description: 'Wait for ongoing work without busy polling.' },

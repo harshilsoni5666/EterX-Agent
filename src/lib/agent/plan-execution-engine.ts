@@ -66,11 +66,17 @@ export type StepTraceEntry = {
 // ─── Plan State ───────────────────────────────────────────────────────────────
 
 export type PlanState = {
+  planId?: string;
+  title?: string;
+  document?: string;
+  context?: string;
+  complexity?: string;
+  estimatedMinutes?: number;
   goal: string;
   steps: ExecutionStep[];
   createdAt: number;
   updatedAt: number;
-  status: 'executing' | 'completed' | 'failed';
+  status: 'proposed' | 'executing' | 'completed' | 'failed';
   totalToolCalls: number;
   revision: number;
   revisionHistory: Array<{ timestamp: number; reason: string }>;
@@ -89,11 +95,12 @@ export type PlanState = {
 // These are what the MODEL calls through the task_checkpoint tool.
 
 export type PlanAction =
+  | { type: 'start' }
   | { type: 'advance'; reason: string; evidence?: string[] } // Mark active step done, move to next
   | { type: 'skip'; reason: string }               // Skip active step
   | { type: 'fail'; reason: string }               // Mark active step failed
   | { type: 'activate'; stepNumber: number }        // Jump to a specific step
-  | { type: 'revise'; reason: string; steps: any[]; goal?: string } // Replace unfinished plan
+  | { type: 'revise'; reason: string; steps?: any[]; goal?: string; title?: string; document?: string; proposed?: boolean }
   | { type: 'complete'; summary: string; force?: boolean; evidence?: string[] }; // Mark entire plan done
 
 export type PlanActionResult = {
@@ -113,8 +120,12 @@ export class PlanExecutionEngine {
     return this.state !== null && this.state.status === 'executing';
   }
 
+  public hasOpenPlan(): boolean {
+    return this.hasActivePlan() || this.state?.status === 'proposed';
+  }
+
   /** Load a plan from the task decomposer output. */
-  public loadPlan(goal: string, rawSteps: any[]): void {
+  public loadPlan(goal: string, rawSteps: any[], metadata: Pick<PlanState, 'planId' | 'title' | 'document' | 'context' | 'complexity' | 'estimatedMinutes'> = {}, proposed = false): void {
     const steps: ExecutionStep[] = rawSteps.map((raw, i) => ({
       id: String(raw.id || `step_${i + 1}`),
       step: i + 1,
@@ -140,11 +151,12 @@ export class PlanExecutionEngine {
     }));
 
     this.state = {
+      ...metadata,
       goal,
       steps,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      status: 'executing',
+      status: proposed ? 'proposed' : 'executing',
       totalToolCalls: 0,
       revision: 1,
       revisionHistory: [],
@@ -155,12 +167,7 @@ export class PlanExecutionEngine {
 
     this.resolveReadiness();
 
-    // Auto-activate the first ready step
-    const first = this.state.steps.find(s => s.status === 'ready');
-    if (first) {
-      first.status = 'active';
-      first.startedAt = Date.now();
-    }
+    this.activateNext();
   }
 
   /**
@@ -169,7 +176,7 @@ export class PlanExecutionEngine {
    * It only records what happened so the model has context.
    */
   public recordToolCall(toolName: string, args: any, output: any, succeeded: boolean): void {
-    if (!this.state) return;
+    if (!this.state || this.state.status !== 'executing') return;
     if (toolName === 'task_decomposer' || toolName === 'task_checkpoint') return;
     this.state.totalToolCalls++;
     this.state.updatedAt = Date.now();
@@ -204,7 +211,19 @@ export class PlanExecutionEngine {
       return { success: false, message: 'No active plan.', activeStep: null, planCompleted: false };
     }
 
+    if (this.state.status === 'proposed' && action.type !== 'start' && action.type !== 'revise') {
+      return { success: false, message: 'This proposal is awaiting implementation. Revise it, or start it in Auto mode when the user requests implementation.', activeStep: null, planCompleted: false };
+    }
     switch (action.type) {
+      case 'start': {
+        if (this.state.status !== 'proposed') {
+          return { success: this.hasActivePlan(), message: this.hasActivePlan() ? 'Implementation is already underway.' : 'This plan has settled.', activeStep: this.getActiveStep(), planCompleted: this.isComplete() };
+        }
+        this.state.status = 'executing';
+        this.activateNext();
+        this.recordAction('start', this.getActiveStep()?.step ?? null, 'Started implementation of the proposal.');
+        return { success: true, message: 'Implementation started with the existing steps.', activeStep: this.getActiveStep(), planCompleted: false };
+      }
       case 'advance': {
         const active = this.getActiveStep();
         if (!active) {
@@ -341,14 +360,32 @@ export class PlanExecutionEngine {
         if (!String(action.reason || '').trim()) {
           return { success: false, message: 'A reason is required to revise the plan.', activeStep: this.getActiveStep(), planCompleted: false };
         }
-        if (!Array.isArray(action.steps) || action.steps.length === 0) {
+        if (action.steps && !action.steps.length) {
           return { success: false, message: 'Revised plan must contain at least one step.', activeStep: this.getActiveStep(), planCompleted: false };
         }
-        this.revisePlan(action.steps, action.reason, action.goal);
+        if (!action.steps && action.title === undefined && action.document === undefined && !action.goal) {
+          return { success: false, message: 'Supply a revised title, document, goal or step list.', activeStep: this.getActiveStep(), planCompleted: false };
+        }
+        if (action.steps) {
+          const error = this.replaceSteps(action.steps);
+          if (error) return { success: false, message: error, activeStep: this.getActiveStep(), planCompleted: false };
+        }
+        if (action.goal?.trim()) this.state.goal = action.goal.trim();
+        if (action.title !== undefined) this.state.title = action.title;
+        if (action.document !== undefined) this.state.document = action.document;
+        if (action.proposed) {
+          this.state.status = 'proposed';
+          for (const step of this.state.steps) if (step.status === 'active') step.status = 'ready';
+        }
+        this.state.revision += 1;
+        this.state.updatedAt = Date.now();
+        this.state.revisionHistory.push({ timestamp: this.state.updatedAt, reason: action.reason.trim() });
+        this.resolveReadiness();
+        this.activateNext();
         this.recordAction('revise', this.getActiveStep()?.step ?? null, action.reason);
         return {
           success: true,
-          message: `Plan revised intelligently (${this.state.revision} revisions). Active step: ${this.getActiveStep()?.name || 'none'}.`,
+          message: `Saved plan revision ${this.state.revision}.`,
           activeStep: this.getActiveStep(),
           planCompleted: false,
         };
@@ -389,7 +426,7 @@ export class PlanExecutionEngine {
 
   /** Get the currently active step. */
   public getActiveStep(): ExecutionStep | null {
-    if (!this.state) return null;
+    if (!this.state || this.state.status !== 'executing') return null;
     return this.state.steps.find(s => s.status === 'active') ||
            this.state.steps.find(s => s.status === 'ready') ||
            null;
@@ -403,8 +440,19 @@ export class PlanExecutionEngine {
    * is done, and whether to adjust the plan.
    */
   public buildModelContext(): string {
+    const document = this.state?.document || '';
+    const excerpt = document.length > 4_000 ? document.slice(0, 4_000) + '\n[Full document available via task_checkpoint action="view".]' : document;
+    if (this.state?.status === 'proposed') {
+      return ['[PROPOSED PLAN]', this.state.title, this.state.goal,
+        'Awaiting implementation. Discuss the proposal or revise it. In Auto mode, start it with task_checkpoint action="start" only for a user request to implement it.',
+        this.state.context, ...this.state.steps.map(step => `${step.step}. [${step.id}] ${step.name} — ${step.done_when}`),
+        excerpt,
+        '[END PROPOSED PLAN]'].filter(Boolean).join('\n');
+    }
     if (!this.state) return '';
     const sections: string[] = [];
+    if (this.state.title) sections.push(this.state.title);
+    if (this.state.context) sections.push(this.state.context);
     const active = this.getActiveStep();
 
     const done = this.state.steps.filter(s => s.status === 'done').length;
@@ -422,7 +470,7 @@ export class PlanExecutionEngine {
       sections.push('COMPLETED:');
       for (const step of completedSteps) {
         const status = step.status === 'done' ? '✓' : '⊘';
-        sections.push(`  ${status} Step ${step.step}: ${step.name} (${step.trace.length} tool calls)`);
+        sections.push(`  ${status} Step ${step.step} [${step.id}]: ${step.name}. Done when: ${step.done_when}`);
         if (step.completionReason) sections.push(`    Completion claim: ${step.completionReason}`);
         if (step.completionEvidence.length > 0) sections.push(`    Evidence: ${step.completionEvidence.join('; ')}`);
       }
@@ -493,9 +541,9 @@ export class PlanExecutionEngine {
 
     if (resolved === total && total > 0) {
       sections.push('ALL RECORDED STEPS RESOLVED. This does not settle a newer human request or prove skipped work succeeded; respond to the effective request using the actual evidence.');
-      this.state.status = 'completed';
     }
 
+    if (excerpt) sections.push('IMPLEMENTATION PLAN', excerpt);
     return `[PLAN EXECUTION STATE]\n${sections.join('\n')}\n[END PLAN STATE]`;
   }
 
@@ -556,17 +604,29 @@ export class PlanExecutionEngine {
     this.state.updatedAt = Date.now();
   }
 
-  private revisePlan(rawSteps: any[], reason: string, goal?: string): void {
+  private replaceSteps(rawSteps: any[]): string | undefined {
     if (!this.state) return;
     const priorById = new Map(this.state.steps.map(step => [step.id, step]));
-    const priorByNumber = new Map(this.state.steps.map(step => [step.step, step]));
-
-    this.state.steps = rawSteps.map((raw, index): ExecutionStep => {
+    // Revision positions can move. Legacy callers without ids retain identity
+    // by exact title. Never attach completion evidence to a new step by index.
+    const usedIds = new Set<string>();
+    const nextSteps: ExecutionStep[] = [];
+    for (const [index, raw] of rawSteps.entries()) {
       const stepNumber = index + 1;
-      const id = String(raw?.id || `step_${stepNumber}`);
-      const prior = priorById.get(id) || priorByNumber.get(stepNumber);
+      const prior = raw?.id ? priorById.get(raw.id) : this.state.steps.find(step => step.name === raw?.name && !usedIds.has(step.id));
+      const id = String(raw?.id || prior?.id || `revision_${this.state.revision + 1}_step_${stepNumber}`);
+      if (usedIds.has(id)) return `Step identity ${id} is repeated.`;
+      usedIds.add(id);
       const terminal = prior && ['done', 'skipped'].includes(prior.status);
-      return {
+      if (terminal && (raw.name !== prior.name || raw.done_when !== prior.done_when)) return `Keep the original title and completion condition for resolved step "${prior.name}". Add changed work as a new step.`;
+      // An omitted dependency list retains the old prerequisites by identity
+      // even if the revision inserts or reorders steps. [] explicitly clears it.
+      const dependencies: number[] = raw.depends_on ?? (prior?.depends_on || []).map(number => {
+        const oldId = this.state!.steps.find(step => step.step === number)?.id;
+        return nextSteps.find(step => step.id === oldId)?.step ?? 0;
+      });
+      if (dependencies.some(n => !Number.isInteger(n) || n < 1 || n >= stepNumber)) return `Step ${stepNumber} needs an earlier prerequisite. Supply its revised depends_on list.`;
+      nextSteps.push({
         id,
         step: stepNumber,
         name: String(raw?.name || prior?.name || ''),
@@ -575,9 +635,7 @@ export class PlanExecutionEngine {
         tools: Array.isArray(raw?.tools) ? raw.tools : (prior?.tools || []),
         done_when: String(raw?.done_when || prior?.done_when || ''),
         expected_output: String(raw?.expected_output || prior?.expected_output || ''),
-        depends_on: Array.isArray(raw?.depends_on)
-          ? Array.from(new Set(raw.depends_on.map(Number).filter((value: number) => Number.isInteger(value) && value > 0 && value < stepNumber)))
-          : (stepNumber > 1 ? [stepNumber - 1] : []),
+        depends_on: Array.from(new Set(dependencies)),
         artifacts: Array.isArray(raw?.artifacts) ? raw.artifacts : (prior?.artifacts || []),
         risk: String(raw?.risk || prior?.risk || 'low'),
         priority: String(raw?.priority || prior?.priority || 'high'),
@@ -588,15 +646,11 @@ export class PlanExecutionEngine {
         completionReason: terminal ? prior!.completionReason : null,
         completionEvidence: terminal ? prior!.completionEvidence : [],
         trace: terminal ? prior!.trace : (prior?.trace || []),
-      };
-    });
-    if (String(goal || '').trim()) this.state.goal = String(goal).trim();
-    this.state.status = 'executing';
-    this.state.revision += 1;
-    this.state.updatedAt = Date.now();
-    this.state.revisionHistory.push({ timestamp: Date.now(), reason: reason.trim() });
-    this.resolveReadiness();
-    this.activateNext();
+      });
+    }
+    const omitted = this.state.steps.find(step => ['done', 'skipped'].includes(step.status) && !usedIds.has(step.id));
+    if (omitted) return `Include the resolved step "${omitted.name}" in revisedSteps to preserve its evidence.`;
+    this.state.steps = nextSteps;
   }
 
   private resolveReadiness(): void {
@@ -612,7 +666,7 @@ export class PlanExecutionEngine {
   }
 
   private activateNext(): void {
-    if (!this.state) return;
+    if (!this.state || this.state.status !== 'executing') return;
     const hasActive = this.state.steps.some(s => s.status === 'active');
     if (hasActive) return;
     const next = this.state.steps.find(s => s.status === 'ready');

@@ -4138,39 +4138,49 @@
   overflow-wrap: anywhere;
 }
 
-.eterx-website-link::after {
-  position: absolute;
-  z-index: 80;
-  bottom: calc(100% + 0.62rem);
-  left: 50%;
+.eterx-website-link-tooltip {
+  /* Keep the body portal above floating panels and below the startup loader. */
+  z-index: 2147483645;
+  box-sizing: border-box;
   width: max-content;
-  max-width: min(30rem, calc(100vw - 2rem));
-  padding: 0.55rem 0.72rem;
+  max-width: min(15.5rem, calc(100vw - 24px), var(--radix-tooltip-content-available-width, 100vw));
+  padding: 6px 9px;
   border: 1px solid var(--eterx-md-border-strong);
-  border-radius: 0.7rem;
-  background: color-mix(in srgb, var(--eterx-md-card-soft) 97%, black 3%);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  border-radius: 8px;
+  background: var(--eterx-md-card-soft);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.18), 0 1px 3px rgb(0 0 0 / 0.1);
   color: var(--eterx-md-strong);
-  content: attr(data-website-url);
   font-family: var(--font-sans), sans-serif;
   font-size: 0.75rem;
   font-weight: 500;
-  line-height: 1.35;
-  opacity: 0;
-  overflow-wrap: anywhere;
-  pointer-events: none;
+  line-height: 1.4;
   text-align: left;
-  transform: translate(-50%, 0.22rem);
-  transition: opacity 120ms ease, transform 120ms ease;
-  visibility: hidden;
-  white-space: normal;
 }
 
-.eterx-website-link:hover::after,
-.eterx-website-link:focus-visible::after {
-  opacity: 1;
-  transform: translate(-50%, 0);
-  visibility: visible;
+.eterx-website-link-tooltip-url {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.eterx-website-link-tooltip-arrow {
+  overflow: visible;
+  fill: var(--eterx-md-card-soft);
+  filter: drop-shadow(0 1px 0 var(--eterx-md-border-strong));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .eterx-website-link-tooltip {
+    animation: eterx-website-link-tooltip-in 100ms ease-out;
+  }
+}
+
+@keyframes eterx-website-link-tooltip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .eterx-markdown-code-block,

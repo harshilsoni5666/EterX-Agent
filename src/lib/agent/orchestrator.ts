@@ -532,6 +532,7 @@ export class AgentOrchestrator {
     // as disabled instead of silently inheriting the broad Main capability.
     (context as any).rootUserRequest = context.workingContextRequest?.visibleText || userRequest;
     context.planMode = pinnedContext?.planMode === true;
+    context.planImplementation = pinnedContext?.planImplementation;
     context.swarmMode = isRuntimeSwarmMode(projectId, pinnedContext?.swarmMode === true);
     context.swarmRunId = context.runId || context.turnId || projectId;
     context.agentDepth = 0;

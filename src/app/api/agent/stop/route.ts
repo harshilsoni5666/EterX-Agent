@@ -71,6 +71,8 @@ export async function POST(req: NextRequest) {
       );
       if (stopped && beforeStop.status === 'running') cancelAgent(chatId);
       const afterStop = agentRegistry.getTraces(chatId, -1);
+      const measuredRequests = new Set(afterStop.traces.filter(trace =>
+        trace.type === 'context_usage' && trace.contextRequestId).map(trace => trace.contextRequestId));
       const success = stopped || afterStop.status !== 'running';
       console.log(`[API] 🛑 Stop requested for chat ${chatId.substring(0, 8)}... — ${stopped ? 'stopped' : 'not running'}`);
       return attachAgentApiSessionCookie(NextResponse.json({
@@ -92,7 +94,8 @@ export async function POST(req: NextRequest) {
             // Include the answer snapshot as well as lifecycle markers. Stop
             // can beat the poll carrying the last tokens to the renderer.
             traces: afterStop.traces.filter(trace =>
-              (isTerminalWorkTrace(trace) || trace.type === 'answer' &&
+              (isTerminalWorkTrace(trace) || trace.type === 'context_usage' || trace.type === 'context_compaction'
+                || (trace.type === 'model_usage' && measuredRequests.has(trace.contextRequestId)) || trace.type === 'answer' &&
                 !trace.subAgent && !trace.subAgentId && !trace.subAgentChatId &&
                 !trace.isSubAgent && !trace.auxiliaryRuntime) &&
               (!afterStop.terminalTurnId || trace.turnId === afterStop.terminalTurnId)),

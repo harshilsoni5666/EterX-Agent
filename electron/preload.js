@@ -93,6 +93,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-get'),
   saveSecureRuntimeSettings: (settings) => ipcRenderer.invoke('secure-runtime-settings-save', settings),
   clearSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-clear'),
+  chatGptSubscription: {
+    getState: () => ipcRenderer.invoke('chatgpt-subscription-state'),
+    signIn: differentAccount => ipcRenderer.invoke('chatgpt-subscription-sign-in', differentAccount === true),
+    cancel: () => ipcRenderer.invoke('chatgpt-subscription-cancel'),
+    refreshModels: () => ipcRenderer.invoke('chatgpt-subscription-refresh'),
+    disconnect: () => ipcRenderer.invoke('chatgpt-subscription-disconnect'),
+    openUsage: () => ipcRenderer.invoke('chatgpt-subscription-usage'),
+    onChange: callback => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('chatgpt-subscription-changed', listener);
+      return () => ipcRenderer.removeListener('chatgpt-subscription-changed', listener);
+    },
+  },
   getGatewayState: () => ipcRenderer.invoke('gateway-get-state'),
   saveTelegramBot: (bot) => ipcRenderer.invoke('telegram-bot-save', bot),
   removeTelegramBot: (id) => ipcRenderer.invoke('telegram-bot-remove', id),

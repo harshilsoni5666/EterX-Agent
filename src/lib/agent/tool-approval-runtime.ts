@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { ChatPermissionMode, PendingToolApproval, ToolApprovalDecision } from '../chat-permissions';
 import { terminalInvocationText } from './terminal-result-trace';
 import { getToolDisplayLabel } from './tool-trace';
-import { getRuntimeWorkspaceRoot, resolveWorkspaceDirectoryForContext, resolveWorkspacePathForContext } from './workspace/path_resolver';
+import { getRuntimeWorkspaceRoot, resolveReadableWorkspacePathForContext, resolveWorkspaceDirectoryForContext, resolveWorkspacePathForContext } from './workspace/path_resolver';
 
 type RunScope = {
   mode: ChatPermissionMode;
@@ -56,6 +56,22 @@ export function runWithToolApprovals<T>(run: RunScope, execute: () => T): T {
   return scope.run({ ...run, decisions: new Map() }, execute);
 }
 
+function needsPathReview(relative: string): boolean {
+  return path.isAbsolute(relative) || relative.split(path.sep).some(part => part.startsWith('.') || /[:\u0000-\u001f]/.test(part) ||
+    /^(?:credentials?|secrets?|passwd|id_(?:rsa|ed25519))(?:\.|$)|\.(?:pem|key|pfx|p12)$/i.test(part) ||
+    (process.platform === 'win32' && /[. ]$|^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)));
+}
+
+function isOrdinaryWorkspaceInspection(inspection: any, context: any, workspace: string): boolean {
+  if (!workspace || typeof inspection?.path !== 'string') return false;
+  try {
+    const location = realpathSync(resolveReadableWorkspacePathForContext(inspection.path, context));
+    if (needsPathReview(path.relative(realpathSync(workspace), location))) return false;
+    const stat = lstatSync(location);
+    return inspection.action === 'list' ? stat.isDirectory() : stat.isFile() && stat.nlink === 1;
+  } catch { return false; }
+}
+
 function isOrdinaryWorkspaceEdit(args: Record<string, any>, context: any, workspace: string): boolean {
   const edits = Array.isArray(args.files) && args.files.length ? args.files : [args];
   if (args.delete === true || !edits.every(edit => edit && edit.delete !== true)) return false;
@@ -69,11 +85,7 @@ function isOrdinaryWorkspaceEdit(args: Record<string, any>, context: any, worksp
       const parent = realpathSync(path.dirname(target));
       const resolved = path.join(parent, path.basename(target));
       const relative = path.relative(root, resolved);
-      if (!relative || path.isAbsolute(relative)) return false;
-      // Hidden files, device/stream paths, and common credential files need review.
-      if (relative.split(path.sep).some(part => part.startsWith('.') || /[:\u0000-\u001f]/.test(part) ||
-        /^(?:credentials?|secrets?|passwd|id_(?:rsa|ed25519))(?:\.|$)|\.(?:pem|key|pfx|p12)$/i.test(part) ||
-        (process.platform === 'win32' && /[. ]$|^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)))) return false;
+      if (!relative || needsPathReview(relative)) return false;
       const stat = lstatSync(resolved, { throwIfNoEntry: false });
       return !stat || (stat.isFile() && stat.nlink === 1);
     });
@@ -87,6 +99,7 @@ function workspaceFor(context: any): string {
 }
 
 function approvalPreview(tool: string, args: Record<string, any>, context: any): string {
+  if (tool === 'workspace_run_command' && args.mode === 'inspect') return JSON.stringify(args.inspection, null, 2);
   if (tool !== 'workspace_run_command') {
     return JSON.stringify(args, (key, value) => (
       /^(?:authorization|password|api[_-]?key|access[_-]?token|client[_-]?secret|token|secret)$/i.test(key) ? '[redacted]' : value
@@ -147,6 +160,7 @@ export async function requestToolApproval(tool: string, args: Record<string, any
   const workspace = workspaceFor(context);
   if (mode === 'review' && (
     (tool === 'web_search' && (!args.action || args.action === 'search')) ||
+    (tool === 'workspace_run_command' && args.mode === 'inspect' && isOrdinaryWorkspaceInspection(args.inspection, context, workspace)) ||
     (tool === 'workspace_edit_file' && isOrdinaryWorkspaceEdit(args, context, workspace))
   )) return null;
 
@@ -156,7 +170,7 @@ export async function requestToolApproval(tool: string, args: Record<string, any
 
   const view = {
     id: randomUUID(), tool,
-    label: tool === 'workspace_run_command' ? 'Shell' : getToolDisplayLabel(tool),
+    label: tool === 'workspace_run_command' ? (args.mode === 'inspect' ? 'Inspect workspace' : 'Shell') : getToolDisplayLabel(tool),
     agent: context?.subAgentId ? String(context.agentName || context.subAgentName || 'Subagent') : '',
     workspace,
     preview: approvalPreview(tool, args, context),

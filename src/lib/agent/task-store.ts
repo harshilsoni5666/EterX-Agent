@@ -22,7 +22,7 @@ import {
 } from '../chat-feed-lifecycle';
 import { formatUnknownError } from './error-format';
 import { sameUserAdmission } from '../steering-delivery';
-import { contextUsageScopeKey, mergeContextCompactionSnapshot, mergeContextUsageSnapshot, upsertContextUsageSnapshot } from '../context-usage-snapshot';
+import { contextUsageScopeKey, isPendingContextCompaction, mergeContextCompactionSnapshot, mergeContextUsageSnapshot, upsertContextUsageSnapshot } from '../context-usage-snapshot';
 import { reconcileModelUsageLogs, upsertModelUsageReceipt } from '../model-usage';
 import { taskPlanTraceIdentity } from '../task-plan-trace';
 
@@ -589,6 +589,9 @@ function trimTask(task: PersistedTask, compactAll = false, reconcileActions = tr
 
 function settleOrphanedLiveTraces(traceLogs: any[], completedAt: number, interrupted = true): any[] {
   return (Array.isArray(traceLogs) ? traceLogs : []).map((trace: any) => {
+    if (isPendingContextCompaction(trace)) {
+      return { ...trace, interrupted: true, endTime: trace.endTime || completedAt };
+    }
     const isLive = !isStreamFinalEvent(trace) && (
       trace?.isLive === true ||
       trace?.isStreaming === true ||

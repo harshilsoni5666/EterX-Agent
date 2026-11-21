@@ -40,7 +40,8 @@ export const isConcreteModelId = (value: unknown) => {
     && !/^(auto|default|latest|recommended)(?:[\s_-]|$)/i.test(id);
 };
 
-export const MODEL_PROVIDER_ORDER: MainAgentProvider[] = [
+// Subscription connections use their own settings and catalog, outside the API provider list.
+export const MODEL_PROVIDER_ORDER: Exclude<MainAgentProvider, 'codex'>[] = [
   'gemini', 'openai', 'anthropic', 'mistral', 'openrouter', 'groq',
   'deepseek', 'grok', 'cerebras', 'together', 'fireworks', 'sambanova',
   'perplexity', 'deepinfra', 'huggingface', 'nvidia', 'cloudflare',
@@ -53,6 +54,7 @@ export const MODEL_PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = {
   gemini: 'think',
   mistral: 'mistral',
   openai: 'openai',
+  codex: 'codex',
   openrouter: 'openrouter',
   groq: 'groq',
   anthropic: 'anthropic',
@@ -89,7 +91,7 @@ export const MODEL_PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = {
 };
 
 export const isModelProvider = (value: unknown): value is MainAgentProvider =>
-  typeof value === 'string' && (MODEL_PROVIDER_ORDER as string[]).includes(value);
+  value === 'codex' || (typeof value === 'string' && (MODEL_PROVIDER_ORDER as string[]).includes(value));
 
 export const modelEntryKey = (provider: MainAgentProvider | string, modelId: string) =>
   `${String(provider).trim()}:${encodeURIComponent(String(modelId || '').trim())}`;

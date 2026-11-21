@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import subscription from '../electron/chatgpt-subscription.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const nextCli = path.join(repositoryRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
@@ -27,6 +28,7 @@ let shuttingDown = false;
 let shutdownPromise = null;
 let launcherLockOwned = false;
 let devEnvironment = null;
+let codexBridgeEnvironment = null;
 const childProcesses = new Set();
 const expectedElectronExits = new WeakSet();
 const sourceWatchers = [];
@@ -239,7 +241,8 @@ function shutdown(exitCode = 0) {
   shuttingDown = true;
   closeSourceWatchers();
   shutdownPromise = Promise.allSettled(Array.from(childProcesses, (child) => stopChild(child)))
-    .then(() => {
+    .then(async () => {
+      await subscription.disposeCodexBridgeEnvironment(codexBridgeEnvironment);
       releaseLauncherLock();
       process.exitCode = exitCode;
     });
@@ -376,7 +379,9 @@ async function main() {
   const startPort = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 3000;
   const port = await findAvailablePort(startPort);
   const target = `http://127.0.0.1:${port}`;
+  codexBridgeEnvironment = await subscription.createCodexBridgeEnvironment();
   devEnvironment = createDevEnvironment({
+    ...codexBridgeEnvironment,
     HOSTNAME: '127.0.0.1',
     PORT: String(port),
     ETERX_PORT: String(port),

@@ -665,3 +665,8 @@
 :root[data-theme] .eterx-composer-shell .eterx-composer-mode-option .eterx-composer-command-description {
   color: var(--composer-menu-muted) !important;
 }
+.eterx-implement-plan {
+  background: var(--foreground, #f2f0ed);
+  color: var(--background, #191919);
+}
+.eterx-implement-plan:hover { opacity: .86; }

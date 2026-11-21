@@ -13,6 +13,8 @@ import { AgentToolsSettings } from './agent-tools-settings';
 import { ComputerUseSettings } from './computer-use-settings';
 import { MicrophoneSettings } from './microphone-settings';
 import { SettingsProfile } from './settings-profile';
+import { SubscriptionSettings } from './subscription-settings';
+import { codexCatalogPending, codexModelIsAvailable, getDesktopSubscription } from '../../lib/chatgpt-subscription-client';
 import { TokenUsageRowsSkeleton } from './settings-usage-skeleton';
 import { ImportSettings } from './import-settings';
 import { SettingsSearch, type SettingsSearchTabInfo } from './settings-search';
@@ -63,6 +65,7 @@ import {
   Coins,
   BookText,
   Brain,
+  BadgeCheck,
   Key,
   Mic,
   Cable,
@@ -591,6 +594,7 @@ const SETTINGS_TABS: readonly SettingsSearchTabInfo[] = [
   { id: 'tokens', label: 'Tokens', icon: Coins },
   { id: 'context', label: 'Context', icon: BookText },
   { id: 'models', label: 'Models', icon: Brain },
+  { id: 'subscription', label: 'Subscription', icon: BadgeCheck },
   { id: 'api', label: 'API', icon: Key },
   { id: 'live-convo', label: 'Live Convo', icon: Mic },
   { id: 'git', label: 'Git', icon: Cable },
@@ -782,6 +786,8 @@ type ContextChatSummary = {
   title: string;
   updatedAt: number;
   usedTokens: number;
+  estimated: boolean;
+  awaitingModel: boolean;
   reportedWindow: number;
   modelMaximum: number;
   provider: string;
@@ -891,6 +897,7 @@ const normalizeSettingsTab = (tab: any): Tab => {
     'hooks',
     'context',
     'models',
+    'subscription',
     'api',
     'live-convo',
     'git',
@@ -2387,10 +2394,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         if (cancelled) return summaries;
         if (!chat || typeof chat.id !== 'string') continue;
         const logs = selectMainContextLogs(Array.isArray(chat.traceLogs) ? chat.traceLogs : [], chat.id);
-        const meter = readContextUsageMeter(logs);
-        const usage = meter.latestContextUsage;
         const selection = parseModelEntryKey(chat.modelSelection);
-        const measured = meter.latestProviderUsage || usage;
+        const meter = readContextUsageMeter(logs, '', selection);
+        const usage = meter.latestContextUsage;
+        const latestModelLog = meter.latestModelLog;
+        const measured = latestModelLog?.type === 'context_compaction' && latestModelLog.usage
+          ? latestModelLog.usage : latestModelLog;
         const provider = selection?.provider || String(measured?.provider || '');
         const modelId = selection?.modelId || String(measured?.model || measured?.modelId || '');
         const measuredModelMatches = usage?.provider === provider && String(usage?.model || usage?.modelId || '') === modelId;
@@ -2399,7 +2408,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           title: String(chat.title || 'Untitled chat').trim() || 'Untitled chat',
           updatedAt: Number(chat.updatedAt || 0),
           usedTokens: meter.usedTokens,
-          reportedWindow: normalizeContextWindow(meter.contextWindow),
+          estimated: meter.isEstimated,
+          awaitingModel: meter.awaitingSelectedModelMeasurement,
+          reportedWindow: measuredModelMatches ? normalizeContextWindow(meter.contextWindow) : 0,
           modelMaximum: measuredModelMatches ? normalizeContextWindow(usage?.modelContextWindow) : 0,
           provider,
           modelId,
@@ -3030,8 +3041,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         || Boolean(normalizedApiKeys[entry.provider])
         || Boolean(normalizedModelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
       );
-      const resolvedChatModelSelection = parsedStoredChatModel && usableResolvedEntries.some(entry =>
-        modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
+      const resolvedChatModelSelection = parsedStoredChatModel && (
+        (parsedStoredChatModel.provider === 'codex' && (codexCatalogPending() || codexModelIsAvailable(parsedStoredChatModel.modelId)))
+        || usableResolvedEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
       )
         ? storedChatModelSelection
         : usableResolvedEntries[0]
@@ -3165,8 +3177,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const storedChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
       const syncedEntries = normalizeModelSelectorEntries(storedEntries, storedCatalog);
       const syncedCatalog = entriesToModelCatalog(syncedEntries) as ModelCatalog;
-      const syncedChatModelSelection = parseModelEntryKey(storedChatModelSelection)
-        && syncedEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
+      const parsed = parseModelEntryKey(storedChatModelSelection);
+      const syncedChatModelSelection = parsed && (
+        (parsed.provider === 'codex' && (codexCatalogPending() || codexModelIsAvailable(parsed.modelId)))
+        || syncedEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
+      )
         ? storedChatModelSelection
         : syncedEntries[0]
           ? modelEntryKey(syncedEntries[0].provider, syncedEntries[0].modelId)
@@ -3264,8 +3279,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         ? String((detail as { chatModelSelection: string }).chatModelSelection)
         : appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
       const entries = modelEntriesRef.current;
-      const nextSelection = parseModelEntryKey(requested)
-        && entries.some(entry => modelEntryKey(entry.provider, entry.modelId) === requested)
+      const parsed = parseModelEntryKey(requested);
+      const nextSelection = parsed && (
+        (parsed.provider === 'codex' && (codexCatalogPending() || codexModelIsAvailable(parsed.modelId)))
+        || entries.some(entry => modelEntryKey(entry.provider, entry.modelId) === requested)
+      )
         ? requested
         : AUTO_MODEL_SELECTION;
       setChatModelSelection(current => current === nextSelection ? current : nextSelection);
@@ -4421,7 +4439,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           {manualOpen ? 'User manual' : SETTINGS_TABS.find(t => t.id === activeTab)?.label}
                           {activeTab === 'models' && (
                             <span className="ml-2 text-[11px] font-normal tracking-normal text-[#8E8A84]">
-                              (For fetching models, please add at least one API key for that provider.)
+                              (Connect ChatGPT in Subscription. Other providers use API credentials.)
                             </span>
                           )}
                         </h3>
@@ -4791,7 +4809,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     options={contextChats.map(chat => ({
                                       value: chat.id,
                                       label: chat.title,
-                                      description: `${compactTokenLabel(chat.usedTokens)} used${chat.id === activeContextChatId ? ' · Current chat' : ''}`,
+                                      description: `${chat.awaitingModel ? 'Awaiting selected model count' : `${chat.estimated ? '~' : ''}${compactTokenLabel(chat.usedTokens)} used`}${chat.id === activeContextChatId ? ' · Current chat' : ''}`,
                                     }))}
                                   />
                                 </div>
@@ -4815,7 +4833,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   <div className="grid grid-cols-2 gap-2">
                                     <div className="rounded-xl border border-white/[0.07] bg-[#171717] px-3 py-2.5">
                                       <div className="text-[10.5px] font-medium tracking-[0.08em] text-[#707070]">Current usage</div>
-                                      <div className="mt-1 text-[14px] font-medium text-[#EAEAEA]">{compactTokenLabel(selectedContextChat.usedTokens)}</div>
+                                      <div className="mt-1 text-[14px] font-medium text-[#EAEAEA]">{selectedContextChat.awaitingModel ? 'Awaiting count'
+                                        : `${selectedContextChat.estimated ? '~' : ''}${compactTokenLabel(selectedContextChat.usedTokens)}`}</div>
                                     </div>
                                     <div className="rounded-xl border border-white/[0.07] bg-[#171717] px-3 py-2.5">
                                       <div className="text-[10.5px] font-medium tracking-[0.08em] text-[#707070]">Effective budget</div>
@@ -4984,6 +5003,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       )}
 
                       {/* ═══ API KEYS TAB ═══ */}
+                      {activeTab === 'subscription' && <SubscriptionSettings />}
                       {activeTab === 'models' && (
                         <div>
                           <SectionHeader
@@ -5949,7 +5969,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="Data" />
                           <SettingsStack>
-                            <SettingsStackRow title="Clear agent memory" description="Wipe stored memories, API keys, model overrides, and local preferences.">
+                            <SettingsStackRow title="Clear agent memory" description="Wipe stored memories, connected credentials, model overrides, and local preferences.">
                               <button
                                 type="button"
                                 onClick={() => {
@@ -6002,7 +6022,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     setHasChanges(false);
                                     void (async () => {
                                       try {
-                                        await (window as any)?.electronAPI?.clearSecureRuntimeSettings?.();
+                                        await Promise.all([
+                                          (window as any)?.electronAPI?.clearSecureRuntimeSettings?.(),
+                                          getDesktopSubscription()?.disconnect(),
+                                        ]);
                                         await fetch('/api/settings/runtime', { method: 'DELETE' });
                                         await fetch('/api/settings/keys', {
                                           method: 'POST',

@@ -236,6 +236,10 @@ class TelegramBotRuntime {
     }
     const provider = bot.model.provider;
     if (!isModelProvider(provider)) throw new Error('Invalid model provider.');
+    if (provider === 'codex') {
+      await this.send(event, 'Choose an API provider model for this bot. ChatGPT plan usage is available in your EterX desktop chats.', event.id);
+      await this.ack(event); return { status: 'needs-model' };
+    }
     const runtimeSettings = buildScopedRuntimeSettings();
     const coding = getCodingMode(bot.agentType);
     const customAgentId = bot.agentType.startsWith('custom:') ? bot.agentType.slice(7) : '';

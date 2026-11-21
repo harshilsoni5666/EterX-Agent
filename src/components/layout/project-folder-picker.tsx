@@ -34,9 +34,9 @@ function rememberProject(path: string) {
   ].slice(0, 8));
 }
 
-export function useProjectFolderBrowse(owner: string, locked: boolean, select: (path: string) => void, onError: () => void) {
-  const current = useRef({ owner, locked, select, onError });
-  current.current = { owner, locked, select, onError };
+export function useProjectFolderBrowse(owner: string, workspacePath: string | null, locked: boolean, select: (path: string) => void, onError: () => void) {
+  const current = useRef({ owner, workspacePath, locked, select, onError });
+  current.current = { owner, workspacePath, locked, select, onError };
   const mounted = useRef(false);
   const pending = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -51,7 +51,7 @@ export function useProjectFolderBrowse(owner: string, locked: boolean, select: (
         ? await desktop.selectFolder()
         : window.prompt('Paste or type your local project folder path:');
       const latest = current.current;
-      if (!path?.trim() || !mounted.current || latest.owner !== target.owner || latest.locked) return;
+      if (!path?.trim() || !mounted.current || latest.owner !== target.owner || latest.workspacePath !== target.workspacePath || latest.locked) return;
       const folder = path.trim();
       rememberProject(folder);
       latest.select(folder);
@@ -85,6 +85,7 @@ export function ProjectFolderPicker({ workspacePath, workspaceName, locked, onSe
   const query = search.trim().toLowerCase();
   const pastedPath = search.trim();
   const looksLikePath = /[/\\]/.test(pastedPath);
+  const recentKeys = new Set(recentProjects.map(project => normalizePathForComparison(project.path)));
   const seen = new Set<string>();
   const projects = [
     ...(workspacePath ? [{ path: workspacePath, name: workspaceName }] : []),
@@ -98,7 +99,10 @@ export function ProjectFolderPicker({ workspacePath, workspaceName, locked, onSe
 
   const select = (path: string | null) => {
     if (locked) return;
-    onSelect(path);
+    if (!path || normalizePathForComparison(path) !== pathKey) {
+      if (path) rememberProject(path);
+      onSelect(path);
+    }
     onClose();
   };
 
@@ -133,7 +137,7 @@ export function ProjectFolderPicker({ workspacePath, workspaceName, locked, onSe
         <input autoFocus aria-label="Search projects by name or path" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search projects or paste path..." className="min-w-0 flex-1 bg-transparent text-[12px] outline-hidden" />
       </label>
       <div data-menu-scroll-region className="eterx-status-menu-section flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
-        {looksLikePath && <button type="button" disabled={locked} className="eterx-status-menu-item" onClick={() => { rememberProject(pastedPath); select(pastedPath); }}>
+        {looksLikePath && <button type="button" disabled={locked} className="eterx-status-menu-item" onClick={() => select(pastedPath)}>
           <FolderPlus className="eterx-status-menu-icon" />
           <span className="min-w-0 flex-1"><span className="block">Use pasted path</span><span className="block truncate text-[10px] opacity-65">{pastedPath}</span></span>
         </button>}
@@ -146,12 +150,11 @@ export function ProjectFolderPicker({ workspacePath, workspaceName, locked, onSe
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
               {selected && <Check className="eterx-project-selected-check h-4 w-4 shrink-0" strokeWidth={2.45} />}
             </button>
-            <button type="button" disabled={locked} className="eterx-project-picker-remove" aria-label={`Remove ${project.name} from recent projects`} title="Remove from list" onClick={() => {
+            {recentKeys.has(key) && <button type="button" disabled={locked} className="eterx-project-picker-remove" aria-label={`Remove ${project.name} from recent projects`} title="Remove from list" onClick={() => {
               const next = readRecentProjects().filter(item => normalizePathForComparison(item.path) !== key);
               writeRecentProjects(next);
               setRecentProjects(next);
-              if (selected) onSelect(null);
-            }}><X size={13} /></button>
+            }}><X size={13} /></button>}
           </div>;
         })}
         {!projects.length && !looksLikePath && <div className="eterx-status-empty" role="status">

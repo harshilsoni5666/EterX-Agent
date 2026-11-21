@@ -1,8 +1,9 @@
 import { appStorage } from './client-storage';
 import { resolveModelContextWindow } from './agent/model-context-window';
 import { modelEntryKey } from './agent/model-selector-store';
-import { readContextUsageMeter } from './context-usage-meter';
-import { contextMeasurementModel, orderContextMeasurementLogs } from './context-usage-snapshot';
+import { measureContextHistory, readContextUsageMeter } from './context-usage-meter';
+import { contextMeasurementModel, isPendingContextCompaction } from './context-usage-snapshot';
+import { contextTraceMatchesBoundary, isContextCompactionLive, isContextTurnBoundary } from './chat-feed-lifecycle';
 import { CONTEXT_BUDGET_REVISIONS_KEY, contextWindowLimitNote, normalizeContextWindow,
   resolveContextWindowBudget, resolveSavedContextBudget } from './context-window-policy';
 
@@ -12,29 +13,32 @@ const readPreference = (key: string): any => {
 };
 
 /** Shared presentation policy for main, worker, and side-chat context meters. */
-export function readChatContextUsage({ logs, chatId, draft = '', selectedModel, fallbackModel, running = false }: {
+export function readChatContextUsage({ logs, chatId, draft = '', selectedModel, fallbackModel, running = false, activeRunId, history }: {
   logs: any[];
   chatId?: string | null;
   draft?: string;
   selectedModel?: Model | null;
   fallbackModel?: Model;
   running?: boolean;
+  activeRunId?: string;
+  history?: ReturnType<typeof measureContextHistory>;
 }) {
-  const meter = readContextUsageMeter(logs, draft, selectedModel);
-  const latestModel = [...orderContextMeasurementLogs(logs)].reverse().find(log =>
-    ['model_selection', 'model_usage', 'context_usage'].includes(log?.type)
-    && log?.auxiliaryRuntime !== true && log?.phase !== 'chat_title'
-    && contextMeasurementModel(log));
+  const measuredHistory = history ?? measureContextHistory(logs);
+  const latestModelLog = measuredHistory.latestModelLog;
+  const latestModel = latestModelLog?.type === 'context_compaction' && latestModelLog.usage
+    ? latestModelLog.usage : latestModelLog;
   const model = selectedModel || (latestModel ? {
     provider: String(latestModel.provider), modelId: String(latestModel.model || latestModel.modelId),
   } : fallbackModel);
   if (!model) return null;
+  const meter = readContextUsageMeter(logs, draft, model, measuredHistory);
   const { provider, modelId } = model;
   const latestUsage = meter.latestContextUsage;
   const modelMatches = contextMeasurementModel(latestUsage) === contextMeasurementModel(model);
   const discoveredMaximum = normalizeContextWindow(readPreference('eterx_model_context_windows')[modelEntryKey(provider, modelId)]);
   const measuredMaximum = modelMatches ? normalizeContextWindow(latestUsage?.modelContextWindow) : 0;
-  const modelMaximum = (running ? measuredMaximum || discoveredMaximum : discoveredMaximum || measuredMaximum)
+  const currentTurn = running && contextTraceMatchesBoundary(latestUsage, logs.findLast(isContextTurnBoundary), activeRunId);
+  const modelMaximum = (currentTurn ? measuredMaximum || discoveredMaximum : discoveredMaximum || measuredMaximum)
     || resolveModelContextWindow(provider, modelId);
   const savedSettings = readPreference('eterx_settings');
   const override = readPreference('eterx_chat_context_window_overrides')[chatId || ''];
@@ -42,19 +46,25 @@ export function readChatContextUsage({ logs, chatId, draft = '', selectedModel, 
   const savedRevision = Math.max(Number(revisions.global || 0), Number(revisions.chats?.[chatId || ''] || 0));
   const budget = resolveContextWindowBudget(resolveSavedContextBudget(savedSettings, override), modelMaximum);
   const runtimeWindow = normalizeContextWindow(meter.contextWindow);
-  const pinned = running && modelMatches && runtimeWindow > 0;
+  const sameBudget = modelMatches && savedRevision <= Number(latestUsage?.contextBudgetRevision || 0);
+  const pinned = currentTurn && sameBudget && runtimeWindow > 0;
   let contextWindow = pinned ? Math.min(modelMaximum, runtimeWindow) : budget.configuredContextWindow;
-  const compaction = meter.latestCompactionEvent;
-  const compactionModel = contextMeasurementModel(compaction);
-  // Failure recovery is local to its model and budget revision. A subsequent
-  // setting/model change must not inherit the previous request's raised limit.
-  if (modelMatches && compaction?.phase === 'failed'
-    && (!compactionModel || compactionModel === contextMeasurementModel(model))
-    && savedRevision <= Number(compaction.contextBudgetRevision || 0)) {
-    const raised = normalizeContextWindow(compaction.nextContextWindow);
-    if (raised) contextWindow = Math.min(modelMaximum, Math.max(contextWindow, raised));
+  const candidate = meter.latestCompactionEvent;
+  const candidateModel = contextMeasurementModel(candidate);
+  const compatible = !candidateModel || candidateModel === contextMeasurementModel(model);
+  const recoveryEnded = candidate?.phase === 'failed' && (savedRevision > Number(candidate.contextBudgetRevision || 0)
+    || (latestUsage?.contextRequestId && latestUsage.contextRequestId !== candidate.contextRequestId
+      && (latestUsage.contextReplaced === true || (latestUsage.configuredContextWindow && runtimeWindow <= latestUsage.configuredContextWindow))));
+  const compaction = compatible && !recoveryEnded
+    && (!isPendingContextCompaction(candidate) || isContextCompactionLive(candidate, logs, running, activeRunId)) ? candidate : null;
+  // A later payload carries the actual recovery window, including a return to
+  // the configured budget after a successful manual compaction.
+  if (sameBudget && latestUsage?.configuredContextWindow === budget.configuredContextWindow && runtimeWindow > contextWindow) {
+    contextWindow = Math.min(modelMaximum, runtimeWindow);
+  } else if (sameBudget && compaction?.phase === 'failed' && (!compaction.contextRequestId
+    || compaction.contextRequestId === latestUsage?.contextRequestId)) {
+    contextWindow = Math.min(modelMaximum, Math.max(contextWindow, normalizeContextWindow(compaction.nextContextWindow)));
   }
-  const measured = meter.latestProviderUsage || latestUsage;
   return {
     ...meter,
     contextWindow,
@@ -63,8 +73,9 @@ export function readChatContextUsage({ logs, chatId, draft = '', selectedModel, 
       modelMaximum,
     ),
     utilizationPct: contextWindow > 0 ? Math.max(0, Math.min(100, meter.usedTokens / contextWindow * 100)) : 0,
-    providerName: String(measured?.provider || provider).trim() || undefined,
-    modelName: String(measured?.model || measured?.modelId || modelId).trim() || undefined,
+    providerName: provider,
+    modelName: modelId,
+    compactionInProgress: isPendingContextCompaction(compaction),
     compaction: compaction ? {
       phase: compaction.phase,
       beforeTokens: Number(compaction.beforeTokens || 0),

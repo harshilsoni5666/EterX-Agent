@@ -504,6 +504,7 @@ export const SubAgentIdentityIcon = ({
 };
 
 const CAT_MAP: Record<string, React.FC<IconProps>> = {
+  plan: LightbulbLineIcon,
   computer: ComputerIcon,
   desktop: ComputerIcon,
   browser: MonitorPlayIcon,
@@ -544,6 +545,10 @@ const CAT_MAP: Record<string, React.FC<IconProps>> = {
 };
 
 export const AGENT_ICONS: Record<string, { Icon: React.FC<IconProps>; color: string }> = {
+  'task_decomposer': { Icon: LightbulbLineIcon, color: W },
+  'task_checkpoint': { Icon: LightbulbLineIcon, color: W },
+  'Preparing plan': { Icon: LightbulbLineIcon, color: W },
+  'Updating plan': { Icon: LightbulbLineIcon, color: W },
   'Running command': { Icon: TerminalIcon, color: W },
   'Running project command': { Icon: TerminalIcon, color: W },
   'Managing scheduled task': { Icon: ClockIcon, color: W },
@@ -620,8 +625,8 @@ const TRACE_TOOL_CATEGORIES: Record<string, string> = {
     browser: 'browser', browser_use: 'browser', computer_use: 'computer',
     image_generator: 'image', load_skill: 'skill',
     spawn_sub_agent: 'agent', agent_communicate: 'agent', connector_mcp: 'connector',
-    wait_timer: 'clock', scheduled_tasks: 'schedule', task_decomposer: 'verification',
-    task_checkpoint: 'verification', context_memory: 'memory', get_skill_guidelines: 'skill',
+    wait_timer: 'clock', scheduled_tasks: 'schedule', task_decomposer: 'plan',
+    task_checkpoint: 'plan', context_memory: 'memory', get_skill_guidelines: 'skill',
     computer: 'computer', screen_agent: 'computer', screenshot_capture: 'image',
     image_asset_search: 'image', video_generator: 'image', desktop_notification: 'computer',
     channel_agent: 'connector', gateway_bridge: 'connector', ask_user: 'agent',
@@ -629,7 +634,7 @@ const TRACE_TOOL_CATEGORIES: Record<string, string> = {
 
 export const resolveToolTraceIcon = (log: any): { Icon: React.FC<IconProps>; color: string } => {
   const tool = String(log?.toolName || log?.tool || log?.name || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  const category = TRACE_TOOL_CATEGORIES[tool]
+  const category = (log?.type === 'task_plan' ? 'plan' : TRACE_TOOL_CATEGORIES[tool])
     || (log?.type === 'file_edit' ? 'file_edit' : '')
     || String(log?.iconCategory || '').toLowerCase();
   if (category && CAT_MAP[category]) return { Icon: CAT_MAP[category], color: W };

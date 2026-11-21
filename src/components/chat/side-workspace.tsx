@@ -2,7 +2,8 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { FolderOpen, GitBranch, GitFork, Globe, Loader2, Maximize2, Minimize2, Plus, TerminalSquare, X } from 'lucide-react';
+import { FolderOpen, GitBranch, GitFork, Globe, Lightbulb, Loader2, Maximize2, Minimize2, Plus, TerminalSquare, X } from 'lucide-react';
+import { WorkspacePlan } from './task-plan-card';
 import { addWorkspaceFolder, addWorkspaceTab, closeWorkspaceTab, resolveWorkspaceOwner, updateWorkspace, useSideWorkspace, type WorkspaceKind } from '../../lib/side-workspace-store';
 import { createTerminal, showTerminal, useChatTerminalControls } from '../../lib/chat-terminal-store';
 import { ChatTerminalDock } from './chat-terminal-dock';
@@ -25,6 +26,7 @@ import { useWorkspaceScrollBoundary } from './use-workspace-scroll-boundary';
 import { revealInWorkspaceScroller } from './workspace-scroll';
 
 const workspaceChoices = [
+  { kind: 'plan', title: 'Plan', detail: 'Read the plan and follow its steps', icon: Lightbulb, key: 'P' },
   { kind: 'chat', title: 'Side chat', detail: 'Keep two conversations in view', icon: MessagesCircle, key: 'S' },
   { kind: 'subagents', title: 'Sub-Agents', detail: 'Follow agents and switch between their chats', icon: GitFork, key: 'A' },
   { kind: 'files', title: 'Files', detail: 'Explore your project and read files', icon: FolderOpen, key: 'F' },
@@ -232,6 +234,8 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
     <div className="eterx-workspace-content" role="tabpanel">
       {!active ? <div className="eterx-workspace-launcher eterx-scrollbar"><div className="eterx-workspace-launcher-grid">{choices.map(choice => <button key={choice.kind} onClick={() => choose(choice.kind)}><span className="eterx-workspace-launcher-icon"><choice.icon size={20} /></span><span><strong>{choice.title}</strong></span></button>)}</div></div>
         : active.kind === 'terminal' ? terminal.open && terminal.placement === 'right' ? <ChatTerminalDock chatId={owner} cwd={terminalRoot} embedded /> : <div className="eterx-workspace-empty"><TerminalSquare size={32} /><h3>Your terminal sessions</h3><p>{terminal.open ? 'The terminal is currently docked below the chat.' : 'Open your local shell in this workspace.'}</p><button onClick={() => void openTerminal()}>Open terminal here</button></div>
+        : active.kind === 'plan' ? <WorkspacePlan key={active.id} tab={active} owner={owner} ledger={liveChatLedger}
+            logs={active.planChatId && active.planChatId !== owner ? chats.find(chat => chat.id === active.planChatId)?.traceLogs || [] : traceLogs} />
         : active.kind === 'browser' ? <Browser key={active.id} owner={owner} tab={active} occluded={menu && !nativeMenu} onCapture={capture} />
         : active.kind === 'subagents' ? <WorkspaceSubAgents key={active.id} {...agentNavigation} onSelect={agentId => { agentNavigation.onSelect(agentId); if (state.expanded) updateWorkspace(owner, { expanded: false }); }} />
         : active.kind === 'chat' ? <SideChat key={active.id} owner={owner} tab={active} chats={chats} liveChatLedger={liveChatLedger} mainChatId={mainChatId} runningChats={runningChats} actions={actions} /> : null}

@@ -894,11 +894,11 @@ export class SessionStateManager {
       parts.push(`Skills loaded: ${ state.loadedSkills.join(', ') } (DO NOT reload)`);
     }
 
-    if (state.taskDecomposerUsed) {
-      parts.push(`Task decomposer already used (DO NOT call again)`);
+    if (state.executionPlanState?.status === 'proposed') {
+      parts.push('An implementation proposal is awaiting a user decision.');
     }
 
-    if (state.taskPlanSteps.length > 0) {
+    if (state.taskPlanSteps.length > 0 && state.executionPlanState?.status !== 'proposed') {
       const done = state.taskPlanSteps.filter(s => s.status === 'done').length;
       const total = state.taskPlanSteps.length;
       const pending = state.taskPlanSteps.filter(s => s.status === 'pending');
@@ -1079,12 +1079,12 @@ export class SessionStateManager {
       parts.push(`Skills loaded: ${ this.state.loadedSkills.join(', ') } (DO NOT reload)`);
     }
 
-    if (this.state.taskDecomposerUsed) {
-      parts.push(`Task decomposer already used (DO NOT call again)`);
+    if (this.state.executionPlanState?.status === 'proposed') {
+      parts.push('An implementation proposal is awaiting a user decision.');
     }
 
     // Task plan progress
-    if (this.state.taskPlanSteps.length > 0) {
+    if (this.state.taskPlanSteps.length > 0 && this.state.executionPlanState?.status !== 'proposed') {
       const done = this.state.taskPlanSteps.filter(s => s.status === 'done').length;
       const total = this.state.taskPlanSteps.length;
       const pending = this.state.taskPlanSteps.filter(s => s.status === 'pending');

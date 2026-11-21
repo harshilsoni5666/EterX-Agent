@@ -1,10 +1,18 @@
+export const contextWorkerId = (log: any): string => {
+  const child = log?.subAgentChatId || log?.subAgentId;
+  if (child) return String(child).trim();
+  if (typeof log?.chatId === 'string' && log.chatId.includes('::sub-agent::')) return log.chatId.trim();
+  const owner = log?.ownerChatId;
+  return typeof owner === 'string' && owner.includes('::sub-agent::') ? owner.trim() : '';
+};
+
 /** Usage is a measurement of one request, not an append-only lifecycle row. */
 export const contextUsageScopeKey = (log: any): string | null => {
   const runId = String(log?.runId || '').trim();
   const turnId = String(log?.subAgentTurnId || log?.turnId || runId).trim();
   // Unowned legacy samples cannot safely replace a different query's sample.
   if (!turnId) return null;
-  const childId = String(log?.subAgentChatId || log?.subAgentId || '').trim();
+  const childId = contextWorkerId(log);
   const childMarker = '::sub-agent::';
   const owner = childId
     ? `child:${childId.includes(childMarker) ? childId.split(childMarker).pop() : childId}`
@@ -28,7 +36,20 @@ const finiteCursor = (value: unknown): number | null => {
 };
 
 export const contextUsageCursor = (log: any): number | null =>
-  finiteCursor(log?._contextMeasurementIdx) ?? finiteCursor(log?._pollIdx) ?? finiteCursor(log?._traceIdx) ?? finiteCursor(log?._originTraceIdx);
+  finiteCursor(log?._contextMeasurementIdx) ?? finiteCursor(log?._pollIdx) ?? finiteCursor(log?._traceIdx)
+  ?? (['context_usage', 'context_compaction', 'model_usage'].includes(log?.type) ? null : finiteCursor(log?._originTraceIdx));
+
+// Issued before measuring the request. A late receipt can have a newer poll
+// cursor and wall-clock timestamp than the preflight of the following request.
+export const contextRequestTime = (log: any): number =>
+  Number(/^context-request-(\d+)-/.exec(String(log?.contextRequestId || ''))?.[1]) || 0;
+
+export const contextPayloadSuperseded = (previous: any, incoming: any): boolean => {
+  const previousRequest = contextRequestTime(previous), nextRequest = contextRequestTime(incoming);
+  if (previousRequest && nextRequest && nextRequest < previousRequest) return true;
+  return Boolean(previous?.contextRequestId && previous.contextRequestId === incoming?.contextRequestId
+    && previous.compactionId && !incoming.compactionId && incoming.contextReplaced !== true);
+};
 
 export const contextMeasurementTime = (log: any): number => {
   let time = Number(log?.measurementAt || log?.timestamp || log?.endTime || log?.startTime || 0);
@@ -40,11 +61,17 @@ export const contextMeasurementTime = (log: any): number => {
 
 /** Counts from different tokenizers/payloads are not interchangeable. */
 export const contextMeasurementModel = (log: any): string => {
-  const payload = log?.type === 'context_compaction' ? log?.usage : log;
+  const payload = log?.type === 'context_compaction' && log.usage ? log.usage : log;
   const provider = String(payload?.provider || '').trim().toLowerCase();
   const model = String(payload?.model || payload?.modelId || '').trim();
   return provider && model ? JSON.stringify([provider, model]) : '';
 };
+
+export const isPendingContextCompaction = (log: any): boolean => log?.type === 'context_compaction'
+  && (log.phase === 'compacting' || log.phase === 'retrying');
+
+export const isTerminalContextCompaction = (log: any): boolean => log?.type === 'context_compaction'
+  && (log.phase === 'compacted' || log.phase === 'failed');
 
 const incomingMeasurementIsOlder = (previous: any, incoming: any): boolean => {
   const previousRun = String(previous?.runId || '').trim();
@@ -62,7 +89,14 @@ const incomingMeasurementIsOlder = (previous: any, incoming: any): boolean => {
 
 export const mergeContextUsageSnapshot = (previous: any, incoming: any): any => {
   if (!previous) return { ...incoming, startTime: incoming?.timestamp || incoming?.startTime };
-  if (incomingMeasurementIsOlder(previous, incoming)) return previous;
+  const sameRequest = previous.contextRequestId && previous.contextRequestId === incoming.contextRequestId;
+  // The POST receipt and the poll can carry the same sample. Preserve its
+  // server cursor, and never roll a committed capsule back to its preflight.
+  if (contextPayloadSuperseded(previous, incoming)) return previous;
+  const advancesCommit = sameRequest && incoming.compactionId && !previous.compactionId;
+  if (!advancesCommit && (incomingMeasurementIsOlder(previous, incoming)
+    || (sameRequest && contextUsageCursor(previous) !== null && contextUsageCursor(incoming) === null
+      && contextMeasurementTime(previous) === contextMeasurementTime(incoming)))) return previous;
   return {
     // Missing measurement fields must remain missing, not inherit a different
     // model's breakdown, calibration, capacity or token total.
@@ -85,6 +119,7 @@ export const mergeContextCompactionSnapshot = (previous: any, incoming: any): an
   return {
     ...previous,
     ...incoming,
+    ...(isTerminalContextCompaction(incoming) && previous?.interrupted ? { interrupted: false } : {}),
     id: previous?.id || incoming.id || `context-compaction:${incoming.compactionId}`,
     _feedPresentationId: previous?._feedPresentationId || incoming._feedPresentationId,
     _feedBoundaryId: previous?._feedBoundaryId || incoming._feedBoundaryId,

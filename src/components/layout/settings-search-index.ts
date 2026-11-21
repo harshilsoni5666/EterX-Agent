@@ -102,6 +102,11 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
     { title: 'Chat model list', keywords: 'models picker selector manage selected saved models remove' },
     { title: 'Live model discovery', keywords: 'refresh catalog fetch available models provider availability' },
   ],
+  subscription: [
+    { title: 'Connect ChatGPT', section: 'Codex', keywords: 'sign in openai subscription plan connect account', target: 'chatgpt-subscription' },
+    { title: 'ChatGPT usage', section: 'Codex', keywords: 'subscription limits quota manage usage', target: 'chatgpt-usage', fallbackTarget: 'chatgpt-subscription' },
+    { title: 'Available models', section: 'Codex', keywords: 'chatgpt catalog refresh models', target: 'chatgpt-models', fallbackTarget: 'chatgpt-subscription' },
+  ],
   api: [
     { title: 'Provider', section: 'API connections', keywords: 'select model provider vendor key pool credentials' },
     { title: 'API keys', section: 'API connections', keywords: 'apikey key pool credentials secret authentication provider model access token add rotate' },
@@ -179,7 +184,7 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
 
 export type SettingsSearchTab =
   | 'general' | 'profile' | 'appearance' | 'import' | 'configuration' | 'agents'
-  | 'personalization' | 'mcp' | 'tokens' | 'context' | 'models' | 'api' | 'live-convo'
+  | 'personalization' | 'mcp' | 'tokens' | 'context' | 'models' | 'subscription' | 'api' | 'live-convo'
   | 'git' | 'environments' | 'browser' | 'computer' | 'updates';
 
 export type SettingsSearchResult = Omit<Setting, 'keywords' | 'target'> & {

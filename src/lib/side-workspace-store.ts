@@ -2,12 +2,13 @@
 
 import { useCallback, useSyncExternalStore } from 'react';
 import { compactWorkspaceRoots } from './workspace-paths';
+import { planViewKey, type TaskTrackerState } from './task-plan-trace';
 import type { TurnChanges } from './turn-changes';
 import { recordBrowserHistory } from './browser-history';
 
-export type WorkspaceKind = 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents' | 'git';
+export type WorkspaceKind = 'plan' | 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents' | 'git';
 export type WorkspaceReviewState = { scope: 'chat' | 'working' | 'branch'; selected: string; filter: string; expanded: boolean; split: boolean; showTree: boolean; root: string; wrap?: boolean; loadFull?: boolean; richPreview?: boolean; ignoreWhitespace?: boolean; wordHighlights?: 'enabled' | 'disabled'; viewed?: string[]; hideViewed?: boolean; compactFolders?: boolean; baseRefs?: Record<string, string> };
-export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; browserNavigation?: { url: string }; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> }; gitNavigation?: { view: import('./git/types').GitView; focusCommit?: boolean } };
+export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; plan?: TaskTrackerState; planChatId?: string; url?: string; favicon?: string; browserNavigation?: { url: string }; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> }; gitNavigation?: { view: import('./git/types').GitView; focusCommit?: boolean } };
 // Keep the user's split relative to the workspace after the sidebar is laid
 // out. Pixel widths become stale when the sidebar or window changes size.
 type WorkspaceState = { open: boolean; widthRatio: number; expanded: boolean; tabs: WorkspaceTab[]; activeId: string | null; folders?: string[] };
@@ -43,7 +44,7 @@ function releaseBrowserEvents() {
   browserEventsStop?.(); browserEventsStop = undefined;
 }
 const read = (owner: string) => states.get(resolveWorkspaceOwner(owner)) || empty;
-const titles: Record<WorkspaceKind, string> = { review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat', subagents: 'Sub-Agents', git: 'Git' };
+const titles: Record<WorkspaceKind, string> = { plan: 'Plan', review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat', subagents: 'Sub-Agents', git: 'Git' };
 function subscribe(owner: string, fn: () => void) {
   const set = listeners.get(owner) || new Set();
   listeners.set(owner, set); set.add(fn);
@@ -90,7 +91,10 @@ export function addWorkspaceTab(owner: string, kind: WorkspaceKind, details: Par
   if (openChat) { updateWorkspace(owner, { open: true, activeId: openChat.id }); return openChat.id; }
   // Files is a reusable explorer. Selecting a different file updates its preview
   // instead of accumulating a tab for every click in the tree.
-  const existing = (kind === 'files' ? state.tabs.find(tab => tab.id === state.activeId && tab.kind === 'files') : undefined)
+  const selectedPlan = kind === 'plan' && state.tabs.find(tab => tab.kind === 'plan' &&
+    (tab.planChatId || owner) === (details.planChatId || owner) &&
+    (tab.plan ? planViewKey(tab.plan) : '') === (details.plan ? planViewKey(details.plan) : ''));
+  const existing = selectedPlan || (kind === 'files' ? state.tabs.find(tab => tab.id === state.activeId && tab.kind === 'files') : undefined)
     || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'changes' || kind === 'files' || kind === 'subagents' || kind === 'git'));
   if (existing) {
     const requestedReview = kind === 'review' && (details.path || details.review) ? { reviewPathRequest: (existing.reviewPathRequest || 0) + 1, ...(details.review ? { review: details.review } : existing.review ? { review: { ...existing.review, selected: details.path!, scope: 'chat' as const } } : {}) } : {};

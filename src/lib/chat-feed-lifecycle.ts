@@ -1,4 +1,4 @@
-import { contextUsageCursor, mergeContextCompactionSnapshot, mergeContextUsageSnapshot } from './context-usage-snapshot';
+import { contextMeasurementTime, contextUsageCursor, isPendingContextCompaction, isTerminalContextCompaction, mergeContextCompactionSnapshot, mergeContextUsageSnapshot } from './context-usage-snapshot';
 import { modelUsageReceiptKey, mergeModelUsageReceipt } from './model-usage';
 import { sameUserAdmission, userAdmissionKey, reconcileQueuedTurnDelivery } from './steering-delivery';
 import { mergeUserAttachments, visibleUserRequest } from './chat-user-payload';
@@ -637,11 +637,48 @@ export const ensureStableFeedPresentationIds = (
   };
 });
 
-/**
- * Render one chronological lifecycle row per compaction transaction. Retry and
- * terminal events share a compactionId, so only the newest state is visible;
- * this prevents a single transfer from leaving several permanent feed rows.
- */
+/** Queued guidance does not enter the provider payload until it is applied. */
+export const isContextTurnBoundary = (log: any): boolean => Boolean(log && !log._queuedFollowUp
+  && (log.type === 'user_action' || log.type === 'steering_applied'
+    || (log.type === 'steering_received' && log.deliveryState === 'applied')));
+
+export function contextTraceMatchesBoundary(log: any, boundary: any, activeRunId?: string): boolean {
+  if (!log) return false;
+  if (activeRunId && log.runId && log.runId !== activeRunId) return false;
+  if (!boundary) return true;
+  if (log.runId && boundary.runId && log.runId !== boundary.runId) return false;
+  if (log.turnId && boundary.turnId && log.turnId !== boundary.turnId) return false;
+  if (log.subAgentTurnId && boundary.subAgentTurnId && log.subAgentTurnId !== boundary.subAgentTurnId) return false;
+  const at = contextMeasurementTime(log), began = contextMeasurementTime(boundary);
+  return !at || !began || at >= began;
+}
+
+export function isContextCompactionLive(log: any, logs: any[], running: boolean, activeRunId?: string): boolean {
+  if (!running || !isPendingContextCompaction(log) || log.interrupted || log.status === 'stopped') return false;
+  const boundary = logs.findLast(isContextTurnBoundary);
+  if (!contextTraceMatchesBoundary(log, boundary, activeRunId)) return false;
+  const owner = getFeedTraceWorkerScope(log);
+  const cursor = contextUsageCursor(log), at = contextMeasurementTime(log);
+  return !logs.some(candidate => {
+    if (!candidate || candidate === log || candidate.auxiliaryRuntime || candidate.phase === 'chat_title') return false;
+    if (log.runId && candidate.runId && log.runId !== candidate.runId) return false;
+    if (log.turnId && candidate.turnId && log.turnId !== candidate.turnId) return false;
+    const nextCursor = contextUsageCursor(candidate);
+    const later = log.runId && candidate.runId === log.runId && cursor !== null && nextCursor !== null
+      ? nextCursor > cursor : contextMeasurementTime(candidate) >= at;
+    if (isTerminalWorkTrace(candidate)) return contextTraceMatchesBoundary(candidate, boundary, activeRunId)
+      && (later || Boolean(log.turnId && candidate.turnId === log.turnId));
+    if (later && SUB_AGENT_TERMINAL_TYPES.has(candidate.type) && agentIdentitiesOverlap(log, candidate)) return true;
+    if (getFeedTraceWorkerScope(candidate) !== owner) return false;
+    if (isTerminalContextCompaction(candidate) && log.compactionId && candidate.compactionId === log.compactionId) return true;
+    if (candidate.type === 'model_usage' && candidate.contextRequestId && candidate.contextRequestId === log.contextRequestId) return true;
+    if (candidate.type !== 'context_usage' || !candidate.contextRequestId) return false;
+    return candidate.contextRequestId === log.contextRequestId
+      ? Boolean(log.compactionId && candidate.compactionId === log.compactionId && candidate.contextReplaced)
+      : later && (nextCursor !== null || contextMeasurementTime(candidate) > at);
+  });
+}
+
 export const shouldRenderContextCompactionEvent = (
   log: any,
   index: number,
@@ -649,13 +686,15 @@ export const shouldRenderContextCompactionEvent = (
   isThinkingTurn: boolean,
 ): boolean => {
   if (log?.type !== 'context_compaction') return true;
+  if (!isTerminalContextCompaction(log)
+    && (!isPendingContextCompaction(log) || !isContextCompactionLive(log, logs, isThinkingTurn))) return false;
   const compactionId = String(log?.compactionId || '').trim();
   if (!compactionId) return true;
-  const phase = String(log?.phase || '').trim().toLowerCase();
-  if ((phase === 'compacting' || phase === 'retrying') && !isThinkingTurn) return false;
   return !logs.slice(index + 1).some(candidate =>
     candidate?.type === 'context_compaction'
     && String(candidate?.compactionId || '').trim() === compactionId
+    && getFeedTraceWorkerScope(candidate) === getFeedTraceWorkerScope(log)
+    && (!isTerminalContextCompaction(log) || isTerminalContextCompaction(candidate))
   );
 };
 

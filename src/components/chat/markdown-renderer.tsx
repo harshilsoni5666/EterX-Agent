@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
 // @ts-ignore
@@ -120,6 +121,8 @@ export const WebsiteLink = React.memo(({
 }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => {
   const website = useMemo(() => getWebsiteLinkMeta(href), [href]);
   const [failedFaviconUrl, setFailedFaviconUrl] = useState('');
+  const linkRef = useRef<HTMLAnchorElement>(null);
+  const [tooltip, setTooltip] = useState<{ boundary: Element | null } | null>(null);
   const localFiles = React.useContext(LocalFilePathsContext);
   const localPath = decodeLocalFileHref(href);
   if (localPath) return <LocalFileLinkChip filePath={localPath} compact />;
@@ -146,30 +149,64 @@ export const WebsiteLink = React.memo(({
     );
   }
 
+  const handleTooltipOpenChange = (open: boolean) => {
+    if (!open) {
+      setTooltip(null);
+      return;
+    }
+
+    // The live browser is a native surface that draws over the app renderer.
+    const chatColumn = linkRef.current?.closest('.eterx-chat-column');
+    const browserViewport = chatColumn?.closest('.eterx-main-panel')?.querySelector('.eterx-workspace-browser-viewport');
+    setTooltip({ boundary: browserViewport ? chatColumn ?? null : null });
+  };
+
   return (
-    <a
-      className={`eterx-website-link ${className}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      href={href}
-      data-website-url={href}
-      aria-label={`${getNodeText(children) || website.hostname} — ${href}`}
-      {...props}
-    >
-      <span className="eterx-website-link-icon" aria-hidden="true">
-        {failedFaviconUrl !== website.faviconUrl ? (
-          <img
-            src={website.faviconUrl}
-            alt=""
-            loading="lazy"
-            onError={() => setFailedFaviconUrl(website.faviconUrl)}
-          />
-        ) : (
-          <Globe2 />
-        )}
-      </span>
-      <span className="eterx-website-link-label">{children}</span>
-    </a>
+    <TooltipPrimitive.Provider delayDuration={180} skipDelayDuration={0}>
+      <TooltipPrimitive.Root open={tooltip !== null} onOpenChange={handleTooltipOpenChange}>
+        <TooltipPrimitive.Trigger asChild>
+          <a
+            ref={linkRef}
+            className={`eterx-website-link ${className}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            href={href}
+            data-website-url={href}
+            aria-label={getNodeText(children) || website.hostname}
+            {...props}
+          >
+            <span className="eterx-website-link-icon" aria-hidden="true">
+              {failedFaviconUrl !== website.faviconUrl ? (
+                <img
+                  src={website.faviconUrl}
+                  alt=""
+                  loading="lazy"
+                  onError={() => setFailedFaviconUrl(website.faviconUrl)}
+                />
+              ) : (
+                <Globe2 />
+              )}
+            </span>
+            <span className="eterx-website-link-label">{children}</span>
+          </a>
+        </TooltipPrimitive.Trigger>
+        <TooltipPrimitive.Portal>
+          <TooltipPrimitive.Content
+            className="eterx-website-link-tooltip"
+            side="top"
+            sideOffset={4}
+            collisionBoundary={tooltip?.boundary ?? undefined}
+            collisionPadding={12}
+            sticky="always"
+            hideWhenDetached
+            arrowPadding={8}
+          >
+            <span className="eterx-website-link-tooltip-url" dir="ltr">{href}</span>
+            <TooltipPrimitive.Arrow className="eterx-website-link-tooltip-arrow" width={10} height={5} aria-hidden="true" />
+          </TooltipPrimitive.Content>
+        </TooltipPrimitive.Portal>
+      </TooltipPrimitive.Root>
+    </TooltipPrimitive.Provider>
   );
 });
 WebsiteLink.displayName = 'WebsiteLink';

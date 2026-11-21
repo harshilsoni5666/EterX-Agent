@@ -109,6 +109,11 @@ export function providerAcceptsNativeAttachment(
   const kind = classifyProviderAttachment(name, mimeType);
   const capabilities = advertisedCapabilities.map(value => String(value || '').toLowerCase());
   const advertised = (pattern: RegExp) => capabilities.some(value => pattern.test(value));
+  if (provider === 'codex') {
+    if (kind !== 'image' && kind !== 'pdf') return false;
+    if (capabilities.includes('image-input:false')) return false;
+    return capabilities.includes('image-input:true') || providerAcceptsDirectImage(provider, modelName);
+  }
   if (kind === 'image' && advertised(/(?:^|[_.:-])(?:image|vision)(?:$|[_.:-])/)) return true;
   if (provider === 'gemini') return true;
   if (provider === 'anthropic') return kind === 'image' || kind === 'pdf' || kind === 'document';

@@ -2178,7 +2178,7 @@ const ChatFeedMessageGroup = React.memo(({
     !isHiddenStatusOnlyLog(l)
   );
   const rawStandardLogs = visibleGroupLogs.filter((log: any, index: number, logs: any[]) =>
-    shouldRenderContextCompactionEvent(log, index, logs, isThinkingTurn || isLiveSessionActive)
+    shouldRenderContextCompactionEvent(log, index, logs, isThinkingTurn)
   );
   const normalizedStandardLogs = rawStandardLogs.map((rawLog: any) => {
     const log = rawLog.type === 'thought' && !isInternalStatusThought(rawLog)

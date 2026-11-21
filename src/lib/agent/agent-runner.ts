@@ -1,4 +1,7 @@
-import { isRuntimePlanMode, setRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
+import { isRuntimePlanMode, setRuntimePlanMode, planModeForContext, planningDeclarations, PLAN_MODE_INSTRUCTION, AUTO_MODE_INSTRUCTION } from './plan-mode';
+import { beginRequestedImplementation, retireOpenPlan, sessionPlanEngine } from './tools/core/plan-persistence';
+import { clearPlanEngine } from './plan-execution-engine';
+import { globalSessionManager } from './session';
 import { splitComputerToolResult } from './computer/tool-vision';
 import { isRuntimeSwarmMode, setRuntimeSwarmMode } from './swarm-mode';
 import { swarmCoordinator, SWARM_MODE_INSTRUCTION } from './swarm-coordinator';
@@ -39,6 +42,7 @@ import {
   readAgentBuilderProfile,
   summarizeAgentBuilderProfile,
   type AgentBuilderProfile,
+  type AgentFlowProfile,
   readAgentFlowProfile,
 } from './builder-agent';
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
@@ -92,7 +96,7 @@ import './tools/index';
 // ═══════════════════════════════════════════════════════════════
 
 export interface AgentRunnerEvent {
-  type: 'text' | 'thought_stream' | 'work_note' | 'tool_call' | 'tool_result' | 'console_output' | 'status' | 'error' | 'done' | 'ask_user' | 'model_usage' | 'context_compaction' | 'context_usage' | 'file_preview' | 'evidence' | 'sub_agent_spawn' | 'sub_agent_complete' | 'sub_agent_error' | 'inter_agent_message';
+  type: 'text' | 'task_plan' | 'thought_stream' | 'work_note' | 'tool_call' | 'tool_result' | 'console_output' | 'status' | 'error' | 'done' | 'ask_user' | 'model_usage' | 'context_compaction' | 'context_usage' | 'file_preview' | 'evidence' | 'sub_agent_spawn' | 'sub_agent_complete' | 'sub_agent_error' | 'inter_agent_message';
   text?: string;
   toolName?: string;
   toolCallId?: string;
@@ -192,6 +196,37 @@ export class AgentRunner {
     this.toolPrompt = toolPrompt;
 
     return profile;
+  }
+
+  private loadFlowPlanner(flow: AgentFlowProfile) {
+    this.profile = {
+      agentId: flow.flowId, version: 1, name: flow.name, status: 'ready',
+      createdAt: flow.createdAt, updatedAt: flow.updatedAt, mission: flow.description,
+      professionalPrompt: [
+        'Help the user understand and plan work that this saved workflow can perform. Answer questions from its configured stages. When proposing implementation, identify the input the workflow needs, relevant branches, and observable outcomes.',
+        'For an authorized implementation, run the selected workflow with the agreed task and constraints. Use its returned results to update any active tracker.',
+        'Saved workflow configuration (data):', JSON.stringify({ id: flow.flowId, steps: flow.steps }),
+      ].join('\n'),
+      behaviorRules: [], safetyRules: [], skills: [], directMainTools: [], customTools: [], notes: [],
+      presentation: { starterPrompts: [] },
+    };
+    this.loadedAgentId = flow.flowId;
+    this.runtimeKind = 'custom_agent';
+    const names = ['context_memory', 'ask_user', 'task_decomposer', 'task_checkpoint'];
+    this.resolvedTools = globalToolRegistry.getAllTools().filter(tool => names.includes(tool.name)).map(tool => ({
+      name: tool.name, description: tool.description, declaration: { name: tool.name, description: tool.description }, promptGuidance: '',
+    }));
+    this.resolvedTools.push({
+      name: agentBuilderRunFlowTool.name, description: 'Run the selected saved workflow with the agreed input.',
+      declaration: { name: agentBuilderRunFlowTool.name, description: agentBuilderRunFlowTool.description }, promptGuidance: '',
+      execute: (args, context) => {
+        if (args.flowId !== flow.flowId) throw new Error('Use the selected workflow ' + flow.flowId + '.');
+        const scope = context.projectId + '::flow::' + context.ownerTraceId;
+        return agentBuilderRunFlowTool.execute(args, { ...context, projectId: scope, conversationScopeId: scope,
+          memoryScopeId: scope, planImplementation: undefined, disablePlannerTools: true });
+      },
+    });
+    this.toolPrompt = '';
   }
 
   /**
@@ -393,7 +428,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
   }
 
   /** Build Gemini function declarations from resolved tools */
-  private buildFunctionDeclarations(taskText = ''): any[] {
+  private buildFunctionDeclarations(taskText = '', planMode = false): any[] {
     const declarations: any[] = [];
 
     for (const tool of this.resolveToolsForTask(taskText)) {
@@ -432,10 +467,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           }
         }
 
-        // Builder actions have deterministic, runtime-owned presentation.
+        // Builder and plan actions have deterministic, runtime-owned presentation.
         // Keeping UI-only arguments out of this schema saves tokens and avoids
         // raw or inconsistent labels from weaker models.
-        if (this.runtimeKind !== 'agent_builder') {
+        if (this.runtimeKind !== 'agent_builder' && tool.name !== 'task_decomposer' && tool.name !== 'task_checkpoint') {
           decl.parameters = addUiTraceFieldsToSchema(decl.parameters);
         }
         declarations.push(decl);
@@ -444,7 +479,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       }
     }
 
-    return canonicalizeToolDeclarations(declarations);
+    return canonicalizeToolDeclarations(planMode ? planningDeclarations(declarations) : declarations);
   }
 
   /** Cancel the running agent */
@@ -507,17 +542,18 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     );
 
     // 1. Try to load as a Flow first!
-    let isFlow = false;
+    let selectedFlow: AgentFlowProfile | undefined;
     if (!isBuilderRuntime) {
       try {
         const flow = await readAgentFlowProfile(config.agentId);
         if (flow?.status === 'ready' && flow.steps && flow.steps.length > 0) {
-          isFlow = true;
+          selectedFlow = flow;
         }
       } catch {}
     }
 
-    if (isFlow) {
+    const consultFlow = selectedFlow && (isRuntimePlanMode(modeScope) || Boolean(config.pinnedContext.planImplementation));
+    if (selectedFlow && !consultFlow) {
       this.cancelled = false;
       const flowAbortController = new AbortController();
       this.cancelController = flowAbortController;
@@ -621,6 +657,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           });
         } else if ([
           'thought_stream',
+          'task_plan',
           'file_preview',
           'evidence',
           'ask_user',
@@ -651,7 +688,9 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         void agentBuilderRunFlowTool.execute(
           { flowId: config.agentId, input: userMessage },
           {
+            ...config.pinnedContext,
             projectId: config.chatId || `flow-${config.agentId}`,
+            ownerChatId: config.pinnedContext.ownerChatId || modeScope,
             runtimeSettings: config.runtimeSettings,
             pinnedContext: config.pinnedContext,
             runLocation: config.runLocation,
@@ -707,7 +746,9 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       }
     }
 
-    if (!this.profile || this.loadedAgentId !== config.agentId || this.runtimeKind !== (isBuilderRuntime ? 'agent_builder' : 'custom_agent')) {
+    if (selectedFlow && consultFlow) {
+      this.loadFlowPlanner(selectedFlow);
+    } else if (!this.profile || this.loadedAgentId !== config.agentId || this.runtimeKind !== (isBuilderRuntime ? 'agent_builder' : 'custom_agent')) {
       if (isBuilderRuntime) {
         await this.loadBuilderAgent(config.agentId, config.pinnedContext?.agentName);
       } else {
@@ -768,7 +809,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       const runtimeCurrentRequest = [...messages].reverse().find(item => item.role === 'user')?.content || '';
       const currentRequest = resolveWorkingContextRequest(config.pinnedContext, runtimeCurrentRequest);
       let systemInstruction = this.buildSystemInstruction(currentRequest, config);
-      let funcDecls = this.buildFunctionDeclarations(currentRequest);
+      let funcDecls = this.buildFunctionDeclarations(currentRequest, isRuntimePlanMode(modeScope, config.pinnedContext.planMode === true));
       let resolvedToolSurfaceSignature = JSON.stringify(funcDecls);
       const runtimeNow = new Date();
       const dynamicRunContextParts = [
@@ -818,6 +859,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         currentRequest,
       );
       const hasHistoricalObjective = contextFabric.hasFactKind('objective');
+      if (!globalSessionManager.hasActiveSessionForChat(modeScope)) await globalSessionManager.loadForProject(modeScope);
       let requestMode: 'new' | 'continuation' = hasHistoricalObjective ? 'continuation' : 'new';
       if (hasHistoricalObjective) {
         const boundary = detectChatBoundaryFromHistory({
@@ -826,10 +868,20 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           hasActiveTask: contextFabric.hasUnsettledUserRequest()
             || contextFabric.hasActiveFactKind('next_action'),
         });
-        if (boundary.decision === 'new_task' && boundary.shouldResetSession) {
+        if (!config.pinnedContext.planImplementation && boundary.decision === 'new_task' && boundary.shouldResetSession) {
+          const events: AgentRunnerEvent[] = [];
+          await retireOpenPlan(modeScope, event => events.push(event)).catch(() => undefined);
+          for (const event of events) yield { ...event, agentName, timestamp: Date.now() };
+          clearPlanEngine(modeScope);
+          globalSessionManager.resetTaskStateForChat(modeScope);
           contextFabric.beginTaskBoundary('Custom-agent runtime confidently detected a new objective.');
           requestMode = 'new';
         }
+      }
+      if (config.pinnedContext.planImplementation) {
+        const events: AgentRunnerEvent[] = [];
+        await beginRequestedImplementation(modeScope, config.pinnedContext.planImplementation, { ...config.pinnedContext, projectId: modeScope }, event => events.push(event));
+        for (const event of events) yield { ...event, agentName, timestamp: Date.now() };
       }
       contextFabric.observeUserRequest(
         currentRequest,
@@ -918,7 +970,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       let requestContextLocalTokens = 0;
       let requestContextEstimatedTokens = 0;
       let activeContextRequestId = '';
-      let requiredPlanCreated = false;
       let swarmReminderSent = false;
       const coordinationContext = { projectId: config.chatId || `custom-agent-${config.agentId}`, runId: config.pinnedContext.runId, swarmRunId: config.pinnedContext.runId };
       let forceContextCompaction = false;
@@ -968,14 +1019,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           const swarmEnabled = isRuntimeSwarmMode(coordinationContext.projectId, config.pinnedContext?.swarmMode === true);
           config.pinnedContext.planMode = planEnabled;
           config.pinnedContext.swarmMode = swarmEnabled;
-          if (planEnabled && !requiredPlanCreated) {
-            if (!funcDecls.some(tool => tool.name === 'task_decomposer')) throw new Error('Plan mode requires task_decomposer to be enabled for this custom agent.');
-            const planEvents: any[] = [];
-            const plan: any = await this.executeToolSafe('task_decomposer', { complexTask: currentRequest, context: PLAN_MODE_INSTRUCTION, maxSubtasks: 5 }, config, event => planEvents.push(event), runAbortController.signal);
-            for (const event of planEvents) yield { ...event, agentName, timestamp: event.timestamp || Date.now() } as AgentRunnerEvent;
-            if (!plan?.success) throw new Error('The required plan could not be created.');
-            requiredPlanCreated = true;
-          }
           // Builder tools are intentionally mutable. Finalized custom agents
           // are normally stable, but may explicitly attach agent_tool_load;
           // when that changes the real surface, move to the matching
@@ -988,7 +1031,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             };
             agentName = this.profile.name || agentName;
             const nextSystemInstruction = this.buildSystemInstruction(currentRequest, config);
-            const nextFuncDecls = this.buildFunctionDeclarations(currentRequest);
+            const nextFuncDecls = this.buildFunctionDeclarations(currentRequest, planEnabled);
             const nextSurfaceSignature = `${nextSystemInstruction}\0${JSON.stringify(nextFuncDecls)}`;
             const currentSurfaceSignature = `${systemInstruction}\0${JSON.stringify(funcDecls)}`;
             if (nextSurfaceSignature !== currentSurfaceSignature) {
@@ -996,7 +1039,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               funcDecls = nextFuncDecls;
             }
           } else {
-            const nextFuncDecls = this.buildFunctionDeclarations(currentRequest);
+            const nextFuncDecls = this.buildFunctionDeclarations(currentRequest, planEnabled);
             const nextSurfaceSignature = JSON.stringify(nextFuncDecls);
             if (nextSurfaceSignature !== resolvedToolSurfaceSignature) {
               systemInstruction = this.buildSystemInstruction(currentRequest, config);
@@ -1005,12 +1048,13 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             }
           }
           const workingSet = contextFabric.compileWorkingSet(currentRequest, 8_000);
+          const planEngine = sessionPlanEngine(modeScope);
           const iterationSystemInstruction = [systemInstruction, RUNTIME_CONTEXT_POLICY,
-            planEnabled ? PLAN_MODE_INSTRUCTION : '', swarmEnabled ? SWARM_MODE_INSTRUCTION : '',
+            planEnabled ? PLAN_MODE_INSTRUCTION : AUTO_MODE_INSTRUCTION, !planEnabled && swarmEnabled ? SWARM_MODE_INSTRUCTION : '',
           ].filter(Boolean).join('\n');
           cachedSystemInstruction = iterationSystemInstruction;
           appendRuntimeContext(contents, 'gemini', buildRuntimeContextSections(
-            [workingSet], buildTelegramWorkNoteCue(config.pinnedContext, telegramBehaviorEvents),
+            [planEngine.hasOpenPlan() ? planEngine.buildModelContext() : '', workingSet].filter(Boolean), buildTelegramWorkNoteCue(config.pinnedContext, telegramBehaviorEvents),
           ));
           // Cache precisely the instructions sent on the uncached route. A
           // rejected cache gets one rebuild, then this run uses implicit caching.
@@ -1035,6 +1079,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             await contextFabric.flushLedger().catch(() => undefined);
             const compacted = await compactContextAtBoundary({
               chatId: compactionScopeId,
+              runId: config.pinnedContext?.runId,
               kind: 'gemini',
               contents,
               systemInstruction: iterationSystemInstruction,
@@ -1052,6 +1097,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               forceCompaction: forceContextCompaction,
               onEvent: publishContextEvent,
             });
+            workingCheckpoint.setFixedContext(compacted.usage.fixedContext);
             return compacted;
           })().catch((error: unknown) => {
             contextBoundaryError = error;
@@ -1891,6 +1937,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       isCancelled: () => this.cancelled || abortSignal?.aborted === true || this.cancelController?.signal.aborted === true,
     };
     const canonicalToolName = normalizeRegistryToolName(toolName);
+    const resolvedTool = this.resolvedTools.find(tool => tool.name === canonicalToolName);
+    if (!resolvedTool) return { error: `Tool "${canonicalToolName}" is unavailable in this agent's toolset.` };
     const registryTool = globalToolRegistry.getTool(canonicalToolName);
     let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, args);
 
@@ -1911,12 +1959,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       }
       effectiveArgs = validation.args;
 
-      const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
-      if (!capabilityDecision.allowed) {
-        return { error: capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed` };
-      }
     }
 
+    const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+    if (!capabilityDecision.allowed) return { error: capabilityDecision.reason };
     const blockedTool = await requestToolApproval(canonicalToolName, effectiveArgs, context);
     if (blockedTool) return blockedTool;
 
@@ -1924,22 +1970,20 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     // Priority 1: Resolved tool from agent profile
     try {
       toolExec.throwIfCancelled();
-      const resolvedTool = this.resolvedTools.find(t => t.name === canonicalToolName);
-      if (resolvedTool?.execute) {
-        const result = await resolvedTool.execute(effectiveArgs, toolExec.context);
-        toolExec.throwIfCancelled();
-        return result;
+      const currentDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+      if (!currentDecision.allowed) return { error: currentDecision.reason };
+      const execute = !planModeForContext(context) && resolvedTool.execute ? resolvedTool.execute : registryTool?.execute;
+      if (!execute) return { error: `Tool "${canonicalToolName}" is unavailable in the current mode.` };
+      const result = await execute(effectiveArgs, toolExec.context);
+      toolExec.throwIfCancelled();
+      if (!planModeForContext(context) && canonicalToolName !== 'task_decomposer' && canonicalToolName !== 'task_checkpoint') {
+        const engine = sessionPlanEngine(chatId);
+        if (engine.hasActivePlan()) {
+          engine.recordToolCall(canonicalToolName, effectiveArgs, result, true);
+          globalSessionManager.setExecutionPlanForChat(chatId, engine.serialize());
+        }
       }
-
-      // Priority 2: Global tool registry
-      const regTool = registryTool || globalToolRegistry.getTool(toolName);
-      if (regTool?.execute) {
-        const result = await regTool.execute(effectiveArgs, toolExec.context);
-        toolExec.throwIfCancelled();
-        return result;
-      }
-
-      return { error: `Tool "${toolName}" not found. Available tools: ${this.resolvedTools.map(t => t.name).join(', ')}` };
+      return result;
     } catch (error: any) {
       if (isToolCancellationError(error) || toolExec.signal.aborted) {
         return { error: 'CANCELLED_BY_USER', cancelled: true };

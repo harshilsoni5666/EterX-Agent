@@ -4,6 +4,8 @@ import { Anthropic, OpenAI } from './model-clients';
 import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode, type MainAgentProvider } from './model-routing';
 import { getProviderBaseURL, isLocalModelProvider } from './provider-runtime';
 import { getRuntimeApiKey, type RuntimeApiKeyProvider } from './runtime-api-keys';
+import { createCodexSubscriptionClient } from './codex-subscription-runtime';
+import { createProviderChatStream } from './provider-stream-adapter';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 
 /**
@@ -31,6 +33,7 @@ export type PlannerStepType =
 export type PlannerRisk = 'low' | 'medium' | 'high';
 
 export type PlannerStep = {
+  id?: string;
   step: number;
   name: string;
   description: string;
@@ -555,8 +558,7 @@ function sortAndReindexSteps(steps: PlannerStep[], task: string, context: string
 function hasMeaningfulCoverage(steps: PlannerStep[], task: string, context: string): boolean {
   // Outcomes, not a fixed inspect/edit/verify template, define useful coverage.
   // Read-only investigations and verification-free requests are valid plans.
-  return steps.length > 0 && steps.every(step => Boolean(step.name && step.done_when && step.expected_output)) &&
-    steps.some(step => step.step_type !== 'deliver');
+  return steps.length > 0 && steps.every(step => Boolean(step.name && step.done_when && step.expected_output));
 }
 
 function cleanJsonText(rawText: string): string {
@@ -590,7 +592,11 @@ export class TaskPlannerClient {
     return clampInt(options?.maxSubtasks, DEFAULT_MAX_STEPS, 1, MAX_ALLOWED_STEPS);
   }
 
-  private normalizePlannerOutput(parsed: any, task: string, context: string, options: TaskPlanningOptions, modelName: string, startTime: number): PlannerPlan {
+  public fromSteps(steps: Partial<PlannerStep>[], task: string, context: string, options: TaskPlanningOptions): PlannerPlan {
+    return this.normalizePlannerOutput({ steps }, task, context, options, 'current agent', Date.now(), true);
+  }
+
+  private normalizePlannerOutput(parsed: any, task: string, context: string, options: TaskPlanningOptions, modelName: string, startTime: number, authored = false): PlannerPlan {
     const maxSteps = this.maxSteps(options);
     const warnings: string[] = [];
     const rawSteps = Array.isArray(parsed?.steps) ? parsed.steps : [];
@@ -602,17 +608,21 @@ export class TaskPlannerClient {
     }
 
     const sourceStepPositions = new Map<string, number>();
+    const stepIds = new Set<string>();
     rawSteps.forEach((raw: any, index: number) => {
       const key = String(raw?.step ?? raw?.id ?? index + 1);
       if (sourceStepPositions.has(key)) throw new Error(`Duplicate planning step identifier: ${key}.`);
       sourceStepPositions.set(key, index + 1);
+      const id = String(raw?.id || `step_${index + 1}`).trim();
+      if (!id || stepIds.has(id)) throw new Error(`Each plan step needs a unique identity. Repeated or empty id at step ${index + 1}.`);
+      stepIds.add(id);
     });
     let steps: PlannerStep[] = rawSteps.slice(0, MAX_ALLOWED_STEPS).map((raw: any, index: number) => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`Step ${index + 1} must be an object.`);
       const inferredType = inferStepType(raw, index, rawSteps.length, task, context);
       const stepType = sanitizeStepType(raw?.step_type || raw?.type || raw?.kind, inferredType);
-      const repairedName = isGenericName(raw?.name);
-      const repairedDescription = isGenericDescription(raw?.description);
+      const repairedName = !authored && isGenericName(raw?.name);
+      const repairedDescription = !authored && isGenericDescription(raw?.description);
       if (repairedName) warnings.push(`Repaired vague step name at position ${index + 1}.`);
       if (repairedDescription) warnings.push(`Repaired vague step description at position ${index + 1}.`);
 
@@ -624,24 +634,25 @@ export class TaskPlannerClient {
         }
         return position;
       }) : [];
-      const expectedOutput = compactSentence(
+      const expectedOutput = authored ? String(raw.expected_output || raw.done_when).trim() : compactSentence(
         raw?.expected_output || raw?.output || raw?.deliverable || '',
         makeExpectedOutput(stepType, task, context),
       );
       return {
+        id: String(raw.id || `step_${stepNumber}`).trim(),
         step: stepNumber,
-        name: compactSentence(
+        name: authored ? String(raw.name).trim() : compactSentence(
           repairedName ? '' : raw?.name,
           makeStepName(stepType, task, context, index, rawSteps.length),
           80,
         ),
-        description: compactSentence(
+        description: authored ? String(raw.description || '').trim() : compactSentence(
           repairedDescription ? '' : raw?.description,
           makeDescription(stepType, task, context),
         ),
-        tools: normalizeToolList(raw?.tools, stepType, task, context),
-        done_when: compactSentence(
-          isGenericDescription(raw?.done_when || raw?.verification) ? '' : raw?.done_when || raw?.verification,
+        tools: normalizeToolList(raw?.tools ?? (authored ? [] : undefined), stepType, task, context),
+        done_when: authored ? String(raw.done_when).trim() : compactSentence(
+          raw?.done_when || raw?.verification,
           makeDoneWhen(stepType, task, context),
         ),
         depends_on: sanitizeDependsOn(dependencies, stepNumber),
@@ -740,6 +751,16 @@ export class TaskPlannerClient {
           messages: [{ role: 'user', content: prompt }],
         }), MODEL_REQUEST_TIMEOUT_MS);
         rawText = (response.content || []).filter((part: any) => part?.type === 'text').map((part: any) => part.text || '').join('');
+      } else if (provider === 'codex') {
+        const client = createCodexSubscriptionClient();
+        const stream = createProviderChatStream(client, provider, {
+          model: modelName,
+          messages: [
+            { role: 'system', content: PLANNER_SYSTEM_PROMPT },
+            { role: 'user', content: prompt },
+          ],
+        });
+        for await (const chunk of stream) rawText += String(chunk.choices?.[0]?.delta?.content || '');
       } else {
         const baseURL = getProviderBaseURL(provider);
         if (!baseURL) throw new Error(`${provider} planning requires a configured provider endpoint.`);

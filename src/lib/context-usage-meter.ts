@@ -1,5 +1,6 @@
-import { normalizeContextUsageBreakdown, type ContextUsageBreakdown } from './context-usage-breakdown';
-import { contextMeasurementModel, contextMeasurementTime, orderContextMeasurementLogs } from './context-usage-snapshot';
+import { estimateContextValueTokens, normalizeContextUsageBreakdown, type ContextUsageBreakdown } from './context-usage-breakdown';
+import { contextMeasurementModel, contextMeasurementTime, contextPayloadSuperseded, contextRequestTime,
+  isPendingContextCompaction, isTerminalContextCompaction, orderContextMeasurementLogs } from './context-usage-snapshot';
 import { readModelUsage, reconcileModelUsageLogs } from './model-usage';
 
 const providerUsageMetricsFromTrace = (usage: any) => {
@@ -17,7 +18,7 @@ const providerUsageMetricsFromTrace = (usage: any) => {
 };
 
 const estimateLiveTraceTokens = (log: any, component: 'input' | 'output'): number => {
-  if (!log) return 0;
+  if (!log || log.uiOnly || log._queuedFollowUp === true) return 0;
   const type = String(log.type || '');
   if ([
     'context_usage',
@@ -45,26 +46,14 @@ const estimateLiveTraceTokens = (log: any, component: 'input' | 'output'): numbe
     log.toolResult ?? log.result ?? log.output ?? (type === 'tool_result' ? log.text : null),
     log.answeredWith,
   ];
-  let chars = 0;
-  const seen = new Set<string>();
+  let tokens = 0;
+  const seen = new Set<unknown>();
   for (const fragment of fragments) {
-    if (typeof fragment === 'string') {
-      if (!seen.has(fragment)) {
-        seen.add(fragment);
-        chars += fragment.length;
-      }
-    }
-    else if (fragment && typeof fragment === 'object') {
-      try {
-        const serialized = JSON.stringify(fragment);
-        if (!seen.has(serialized)) {
-          seen.add(serialized);
-          chars += serialized.length;
-        }
-      } catch { }
-    }
+    if (fragment == null || fragment === '' || seen.has(fragment)) continue;
+    seen.add(fragment);
+    tokens += estimateContextValueTokens(fragment);
   }
-  return chars > 0 ? Math.ceil(chars / 4) + 4 : 0;
+  return tokens > 0 ? tokens + 4 : 0;
 };
 
 const contextTraceEstimateIdentity = (log: any): string => {
@@ -79,7 +68,8 @@ const contextTraceEstimateIdentity = (log: any): string => {
   ).trim();
   if (!eventId) return '';
   const toolId = String(log?.toolCallId || log?.callId || '').trim();
-  return `${String(log?.runId || log?.turnId || '')}|${toolId ? 'tool' : String(log?.type || '')}|${toolId || eventId}`;
+  return JSON.stringify([log?.runId || '', log?.subAgentTurnId || log?.turnId || '',
+    toolId ? 'tool' : log?.type || '', toolId || eventId]);
 };
 
 const sameContextRequest = (left: any, right: any): boolean => {
@@ -94,8 +84,48 @@ const sameContextRequest = (left: any, right: any): boolean => {
  * payloads; response and draft estimates only extend the latest measurement.
  * This is deliberately not a lifetime high-water mark.
  */
-export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: { provider: string; modelId: string } | null) => {
-  const orderedLogs = orderContextMeasurementLogs(reconcileModelUsageLogs(logs)).filter(log => log?.auxiliaryRuntime !== true);
+const calibratedPayload = (log: any) => log?.providerCalibrationApplied !== undefined
+  ? log.providerCalibrationApplied === true
+  : Number.isFinite(Number(log?.providerInputTokens)) && Number(log?.providerInputTokens) > 0;
+
+export const measureContextHistory = (logs: any[]) => {
+  let latestRequestTime = 0;
+  let latestPayload: any = null;
+  const settledTransactions = new Set<string>();
+  const ordered = orderContextMeasurementLogs(reconcileModelUsageLogs(logs));
+  const admittedRuns = new Map<string, number>();
+  for (const log of ordered) {
+    if (log?.type === 'user_action' && log.runId && !log._queuedFollowUp && !admittedRuns.has(log.runId)) {
+      admittedRuns.set(log.runId, admittedRuns.size);
+    }
+  }
+  let currentRunOrder = -1;
+  const orderedLogs = ordered.filter(log => {
+    if (!log || log.auxiliaryRuntime === true || log.phase === 'chat_title') return false;
+    const runOrder = admittedRuns.get(log.runId);
+    if (runOrder !== undefined) {
+      if (runOrder < currentRunOrder) return false;
+      if (log.type === 'user_action' && !log._queuedFollowUp) currentRunOrder = runOrder;
+    }
+    if (!['context_compaction', 'context_usage', 'model_usage'].includes(log.type)) return true;
+    const issuedAt = contextRequestTime(log);
+    if (issuedAt && issuedAt < latestRequestTime) return false;
+    if (issuedAt) latestRequestTime = issuedAt;
+    if (log.type === 'context_compaction') {
+      if (isPendingContextCompaction(log) && settledTransactions.has(log.compactionId)) return false;
+      if (isTerminalContextCompaction(log)) {
+        if (log.compactionId) settledTransactions.add(log.compactionId);
+        if (log.phase === 'compacted') latestPayload = { ...log, ...log.usage, contextReplaced: true };
+      }
+    } else if (log.type === 'context_usage') {
+      if (contextPayloadSuperseded(latestPayload, log)) return false;
+      latestPayload = log;
+    }
+    return true;
+  });
+  const latestModelLog = orderedLogs.findLast(log =>
+    ['model_selection', 'context_usage', 'model_usage', 'context_compaction'].includes(log?.type)
+    && log.phase !== 'chat_title' && contextMeasurementModel(log));
   const validPayload = (log: any) => log?.type === 'context_usage'
     && log.usedTokens !== undefined && log.usedTokens !== null
     && Number.isFinite(Number(log.usedTokens)) && Number(log.usedTokens) >= 0;
@@ -105,9 +135,6 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
   const terminalPayload = (log: any) => log?.type === 'context_compaction'
     && (log.phase === 'compacted' || log.phase === 'failed')
     && log.usage && validPayload({ ...log.usage, type: 'context_usage' });
-  const calibratedPayload = (log: any) => log?.providerCalibrationApplied !== undefined
-    ? log.providerCalibrationApplied === true
-    : Number.isFinite(Number(log?.providerInputTokens)) && Number(log?.providerInputTokens) > 0;
   let baselineIndex = -1;
   let latestCompactionEvent: any = null;
   for (let index = orderedLogs.length - 1; index >= 0; index -= 1) {
@@ -115,6 +142,19 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     if (!latestCompactionEvent && log?.type === 'context_compaction') latestCompactionEvent = log;
     if (baselineIndex < 0 && (validPayload(log) || committedPayload(log) || terminalPayload(log))) baselineIndex = index;
     if (baselineIndex >= 0 && latestCompactionEvent) break;
+  }
+  // A retained older turn can have a preflight while a newer turn kept only
+  // its provider receipt. The current admission distinguishes that receipt
+  // from a delayed report for an earlier run.
+  const boundary = orderedLogs.findLast(log => log?.type === 'user_action' && !log._queuedFollowUp);
+  const baseline = orderedLogs[baselineIndex];
+  const receipt = orderedLogs.findLastIndex(log => log?.type === 'model_usage' && readModelUsage(log).inputMeasured);
+  if (receipt > baselineIndex) {
+    const received = orderedLogs[receipt];
+    if (!baseline || (boundary?.runId && boundary.runId !== baseline.runId && received.runId === boundary.runId)
+      || (contextRequestTime(baseline) && contextRequestTime(received) > contextRequestTime(baseline))) {
+      baselineIndex = receipt;
+    }
   }
   // A model switch has no provider count until that model answers. Recover
   // the preceding measurement so an uncalibrated preflight estimate cannot
@@ -159,18 +199,6 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
       break;
     }
   }
-  // Older saved feeds can contain provider receipts without any preflight
-  // sample. Start from the latest receipt instead of adding old responses or
-  // pinning the meter to the first identified request in that history.
-  if (baselineIndex < 0) {
-    for (let index = orderedLogs.length - 1; index >= 0; index -= 1) {
-      const log = orderedLogs[index];
-      if (log?.type === 'model_usage' && log.phase !== 'chat_title' && readModelUsage(log).inputMeasured) {
-        baselineIndex = index;
-        break;
-      }
-    }
-  }
   let displayTokens = 0;
   let measuredContextWindow = 0;
   let authoritative: any = null;
@@ -199,7 +227,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
   };
   const resetPayload = (log: any, usedTokens: number, allowPendingModelCount = false) => {
     const window = Number(log.contextWindow || 0);
-    if (Number.isFinite(window) && window > 0) measuredContextWindow = window;
+    measuredContextWindow = Number.isFinite(window) && window > 0 ? window : 0;
     const localTokens = Number(log.localEstimatedTokens || 0);
     if (providerMeasured && sameContextRequest(latestProviderUsage, log)) {
       if (localTokens > 0) updateLiveTokenScale(readModelUsage(latestProviderUsage).promptTokens / localTokens);
@@ -227,7 +255,6 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
   // lifetime billing ledger or old tool-result previews adds no information.
   for (const log of orderedLogs.slice(Math.max(0, baselineIndex))) {
     if (log?.type === 'context_compaction') {
-      latestCompactionEvent = log;
       if (terminalPayload(log)) {
         const payload = { ...log, ...log.usage, type: 'context_usage' };
         resetPayload(payload, Number(payload.usedTokens), log.phase !== 'compacted');
@@ -303,7 +330,9 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
         // Completion usage covers the whole response, not a token allowance
         // against differently tokenized UI text. Its final rendered duplicate
         // must not add the local-estimate/provider-count difference a second time.
-        if (providerMeasured && providerUsageMetricsFromTrace(latestProviderUsage)?.outputTokens !== undefined) {
+        if (providerMeasured && providerUsageMetricsFromTrace(latestProviderUsage)?.outputTokens !== undefined
+          && (!log.runId || !latestProviderUsage.runId || log.runId === latestProviderUsage.runId)
+          && (!log.turnId || !latestProviderUsage.turnId || log.turnId === latestProviderUsage.turnId)) {
           if (identity) providerCoveredEstimateIdentities.add(identity);
           continue;
         }
@@ -315,8 +344,18 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     }
   }
 
+  return { displayTokens, measuredContextWindow, authoritative, latestContextUsage, latestProviderUsage,
+    latestCompactionEvent, latestModelLog, latestBreakdown, providerMeasured, hasEstimatedDelta,
+    liveEstimateTokens, retainedProviderOutputTokens, liveTokenScale, updatedAt, awaitingModelCount };
+};
+
+export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: { provider: string; modelId: string } | null,
+  history = measureContextHistory(logs)) => {
+  const { displayTokens, measuredContextWindow, authoritative, latestContextUsage, latestProviderUsage,
+    latestCompactionEvent, latestModelLog, latestBreakdown, providerMeasured, hasEstimatedDelta,
+    liveEstimateTokens, retainedProviderOutputTokens, liveTokenScale, updatedAt, awaitingModelCount } = history;
   const draftTokens = draft.trim() ? Math.ceil((Math.ceil(draft.length / 4) + 4) * liveTokenScale) : 0;
-  const selectedModelKey = contextMeasurementModel(selectedModel);
+  const selectedModelKey = contextMeasurementModel(selectedModel) || contextMeasurementModel(latestModelLog);
   const measurementModelKey = contextMeasurementModel(authoritative);
   const awaitingSelectedModelMeasurement = awaitingModelCount
     || Boolean(selectedModelKey && authoritative && selectedModelKey !== measurementModelKey);
@@ -337,11 +376,11 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
               : { label: 'Cache pending', detail: 'Waiting for this request’s provider cache usage. Previous requests do not establish a hit for this request.' };
   const usedTokens = Math.max(0, Math.round(displayTokens + draftTokens));
   const measuredBaseTokens = Math.max(0, Math.round(displayTokens - liveEstimateTokens - retainedProviderOutputTokens));
-  const measuredBreakdown = latestBreakdown
+  const measuredBreakdown = latestBreakdown && !awaitingSelectedModelMeasurement
     ? normalizeContextUsageBreakdown(latestBreakdown, measuredBaseTokens) : undefined;
   const breakdown = measuredBreakdown ? {
     ...measuredBreakdown,
-    conversation: measuredBreakdown.conversation + retainedProviderOutputTokens + liveEstimateTokens + draftTokens,
+    conversation: measuredBreakdown.conversation + usedTokens - measuredBaseTokens,
   } : undefined;
   const aggregateSource: 'provider' | 'provider_plus_live_estimate' | 'runtime_estimate' = providerMeasured
     ? (draftTokens > 0 || liveEstimateTokens > 0 || hasEstimatedDelta ? 'provider_plus_live_estimate' : 'provider')
@@ -354,7 +393,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     ? 'Waiting for an input count from the selected model.'
     : providerMeasured
       ? requestEstimate > 0 && Math.abs(requestEstimate - providerInput) >= Math.max(1_000, requestEstimate * 0.02)
-        ? `The provider measured ${formatTokens(providerInput)} input tokens; the request estimate was ${formatTokens(requestEstimate)}. The meter now uses the provider count.`
+        ? `The provider measured ${formatTokens(providerInput)} input tokens. The request estimate was ${formatTokens(requestEstimate)}.`
         : aggregateSource === 'provider_plus_live_estimate'
           ? 'Provider input count plus the response, with an estimate for new content.'
           : 'Provider input count plus the response.'
@@ -365,7 +404,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
           : 'Local estimate. The provider count may differ when the request completes.';
   return {
     usedTokens, breakdown, draftTokens, liveEstimateTokens, providerMeasured, hasEstimatedDelta, updatedAt,
-    authoritative, latestContextUsage, latestProviderUsage, latestCompactionEvent,
+    authoritative, latestContextUsage, latestProviderUsage, latestCompactionEvent, latestModelLog,
     contextWindow: measuredContextWindow,
     modelContextWindow: Number(latestContextUsage?.modelContextWindow || 0) || undefined,
     requestedContextWindow: Number(latestContextUsage?.requestedContextWindow || 0) || undefined,
@@ -373,7 +412,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     awaitingSelectedModelMeasurement,
     aggregateSource,
     measurementNote,
-    breakdownSource: latestBreakdown ? 'serialized_payload' as const : 'unavailable' as const,
+    breakdownSource: breakdown ? 'serialized_payload' as const : 'unavailable' as const,
     providerMetrics: cacheMetrics,
     cacheStatus,
     providerInputTokens: providerMeasured ? readModelUsage(latestProviderUsage).promptTokens : undefined,

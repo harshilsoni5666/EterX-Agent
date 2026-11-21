@@ -58,7 +58,9 @@ import {
 } from '../search/search-runtime';
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { createProviderChatStream } from '../agent/provider-stream-adapter';
+import { createCodexSubscriptionClient } from '../agent/codex-subscription-runtime';
 import { compactContextAtBoundary } from '../agent/resilience/context-compaction';
+import { readModelUsage } from '../model-usage';
 import { openWorkingContextCheckpoint } from '../agent/working-context-checkpoint';
 import { formatUnknownError } from '../agent/error-format';
 import { CONTEXT_CONTINUITY_OPERATING_POLICY } from '../agent/context-operating-policy';
@@ -273,6 +275,7 @@ const compactDirectHistoryAtBoundary = async (
   systemInstruction: string;
   createdCapsule: boolean;
   failed: boolean;
+  saveResponse?: (text: string, inputTokens?: number) => Promise<void>;
 }> => {
   const chatId = String(request.chatId || '').trim();
   if (!chatId) return { history, systemInstruction, createdCapsule: false, failed: false };
@@ -315,6 +318,7 @@ const compactDirectHistoryAtBoundary = async (
   const attachmentTokenEstimate = await estimateDirectAttachmentContextTokens(request.mediaAttachments || []);
   const result = await compactContextAtBoundary({
     chatId,
+    runId: request.runId,
     kind,
     contents,
     systemInstruction: uncapsuledSystemInstruction,
@@ -328,6 +332,8 @@ const compactDirectHistoryAtBoundary = async (
     modelContextWindowOverride: Number((request.contextCompaction as any)?.activeModelContextWindow || 0) || undefined,
     runtimeSettings: request.runtimeSettings,
     abortSignal: signal,
+    providerReportedInputTokens: workingCheckpoint.calibration?.inputTokens,
+    providerReportedLocalEstimatedTokens: workingCheckpoint.calibration?.localTokens,
     continuityManifestFactory: fabric ? () => fabric.buildContinuityManifest() : undefined,
     semanticBoundary: 'safe',
     forceCompaction,
@@ -343,10 +349,13 @@ const compactDirectHistoryAtBoundary = async (
     }
     return '';
   };
-  await workingCheckpoint.save([
+  const checkpoint = workingCheckpoint;
+  checkpoint.setFixedContext(result.usage.fixedContext);
+  const requestContents = [
     ...result.contents,
     kind === 'gemini' ? { role: 'user', parts: [{ text: currentText }] } : { role: 'user', content: currentText },
-  ], model, provider);
+  ];
+  await checkpoint.save(requestContents, model, provider, checkpoint.calibration);
   let capsuleInstruction = '';
   let removeCapsuleAcknowledgement = false;
   const compactedHistory = result.contents.flatMap((turn: any) => {
@@ -382,6 +391,13 @@ const compactDirectHistoryAtBoundary = async (
       : uncapsuledSystemInstruction,
     createdCapsule: Boolean(result.capsule),
     failed: result.failed === true,
+    saveResponse: (text, inputTokens) => {
+      const localTokens = result.usage.localEstimatedTokens || 0;
+      const calibration = inputTokens && inputTokens > 0 && localTokens > 0
+        ? { inputTokens, localTokens } : checkpoint.calibration;
+      const reply = kind === 'gemini' ? { role: 'model', parts: [{ text }] } : { role: 'assistant', content: text };
+      return checkpoint.save([...requestContents, reply], model, provider, calibration);
+    },
   };
 };
 
@@ -506,6 +522,7 @@ const appendGeminiMediaParts = (parts: any[], attachments: PreparedAttachment[])
 };
 
 const getProviderKey = (provider: MainAgentProvider, runtimeSettings?: ScopedRuntimeSettings | null) => {
+  if (provider === 'codex') return '';
   const keys = getScopedRuntimeApiKeyValues(runtimeSettings, provider as RuntimeApiKeyProvider);
   const key = keys[0] || '';
   if (key) return key;
@@ -517,6 +534,7 @@ const getProviderKey = (provider: MainAgentProvider, runtimeSettings?: ScopedRun
 };
 
 const getProviderKeyRound = (provider: MainAgentProvider, runtimeSettings?: ScopedRuntimeSettings | null, conversationScope?: string): string[] => {
+  if (provider === 'codex') return [];
   const configured = getScopedRuntimeApiKeyValues(runtimeSettings, provider as RuntimeApiKeyProvider);
   if (configured.length > 0) {
     const start = conversationScope ? providerCacheKeyIndex(provider, conversationScope, configured) : 0;
@@ -533,6 +551,7 @@ const runWithProviderKeyRounds = async <T>(
   onRetry?: (attempt: number, totalAttempts: number, error: unknown) => void,
   conversationScope?: string,
 ): Promise<T> => {
+  if (provider === 'codex') return operation('');
   const keys = getProviderKeyRound(provider, runtimeSettings, conversationScope);
   return withApiKeyRounds(keys, runtimeSettings, operation, signal, onRetry);
 };
@@ -653,7 +672,7 @@ async function runOpenAiCompatibleDirect(
 ) {
   const baseURL = getProviderBaseURL(provider);
   if (!baseURL) throw new Error(`${provider} requires a configured API base URL.`);
-  const client = new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS,
+  const client = provider === 'codex' ? createCodexSubscriptionClient() : new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS,
     apiKey: key,
     baseURL,
     maxRetries: 0,
@@ -761,7 +780,7 @@ export async function runDirectChat(request: DirectChatRequest): Promise<{
     String(request.prompt || '').trim() || 'Please review the attached file or media and help me with it.',
     continuity.context, await buildChatMediaContext(request.chatId),
   );
-  const compactedContext = await compactDirectHistoryAtBoundary(
+  let compactedContext = await compactDirectHistoryAtBoundary(
     request,
     provider,
     model,
@@ -812,12 +831,14 @@ export async function runDirectChat(request: DirectChatRequest): Promise<{
         true,
       );
       if (emergency.failed || !emergency.createdCapsule) throw error;
+      compactedContext = emergency;
       history = emergency.history;
       systemInstruction = emergency.systemInstruction;
       contextOverflowRecoveryAttempts += 1;
     }
   }
   const finalText = text || 'I could not generate a response for that request.';
+  await compactedContext.saveResponse?.(finalText);
   if (continuity.fabric) {
     continuity.fabric.recordAssistantResponse(finalText, 'completed', request.runId || '');
     await continuity.fabric.flush().catch(() => undefined);
@@ -1032,7 +1053,7 @@ const streamOpenAiCompatibleDirect = async (
 ): Promise<DirectProviderStreamResult> => {
   const baseURL = getProviderBaseURL(provider);
   if (!baseURL) throw new Error(`${provider} requires a configured API base URL.`);
-  const client = new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS,
+  const client = provider === 'codex' ? createCodexSubscriptionClient() : new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS,
     apiKey: key,
     baseURL,
     maxRetries: 0,
@@ -1210,9 +1231,15 @@ export async function streamDirectChat(
   );
   let traceIndex = 0;
   let activeContextRequestId = '';
+  let requestLocalTokens: number | undefined;
+  let requestEstimatedTokens: number | undefined;
   const lifecycleOrigins = new Map<string, number>();
   const emit = (trace: Record<string, unknown>) => {
-    if (trace.type === 'context_usage') activeContextRequestId = String(trace.contextRequestId || '');
+    if (trace.type === 'context_usage') {
+      activeContextRequestId = String(trace.contextRequestId || '');
+      requestLocalTokens = Number(trace.localEstimatedTokens) || undefined;
+      requestEstimatedTokens = Number(trace.usedTokens) || undefined;
+    }
     const timestamp = Number(trace.timestamp || Date.now());
     const deliveryIndex = Number.isFinite(Number(trace._traceIdx))
       ? Number(trace._traceIdx)
@@ -1236,7 +1263,8 @@ export async function streamDirectChat(
     if (lifecycleKey && priorOrigin === undefined) lifecycleOrigins.set(lifecycleKey, originIndex);
     onTrace({
       ...trace,
-      ...(trace.type === 'model_usage' ? { contextRequestId: activeContextRequestId } : {}),
+      ...(trace.type === 'model_usage' ? { contextRequestId: activeContextRequestId,
+        contextLocalEstimatedTokens: requestLocalTokens, contextEstimatedTokens: requestEstimatedTokens } : {}),
       ...(['context_usage', 'context_compaction', 'model_usage'].includes(type)
         ? { _contextMeasurementIdx: deliveryIndex } : {}),
       ...(request.runId ? { runId: request.runId, turnId: request.runId } : {}),
@@ -1356,7 +1384,7 @@ export async function streamDirectChat(
     }
   }
 
-  const compactedContext = await compactDirectHistoryAtBoundary(
+  let compactedContext = await compactDirectHistoryAtBoundary(
     request,
     provider,
     model,
@@ -1529,6 +1557,7 @@ export async function streamDirectChat(
           true,
         );
         if (emergency.failed || !emergency.createdCapsule) throw error;
+        compactedContext = emergency;
         history = emergency.history;
         systemInstruction = emergency.systemInstruction;
         contextOverflowRecoveryAttempts += 1;
@@ -1570,6 +1599,7 @@ export async function streamDirectChat(
   });
   const usageTrace = createDirectUsageTrace(provider, model, providerResult.usage, request, thinking, providerResult.cacheDiagnostics);
   if (usageTrace) emit(usageTrace);
+  await compactedContext.saveResponse?.(finalText, usageTrace ? readModelUsage(usageTrace).promptTokens : undefined);
   if (continuity.fabric) {
     continuity.fabric.recordAssistantResponse(finalText, 'completed', request.runId || '');
     await continuity.fabric.flush().catch(() => undefined);

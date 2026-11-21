@@ -1,4 +1,4 @@
-import { claimManualCompaction } from '../manual-compaction';
+import { claimManualCompaction, type ManualCompactionResult } from '../manual-compaction';
 import { MODEL_REQUEST_TIMEOUT_MS } from '../model-request-policy';
 import { unwrapCurrentUserRequest } from '../../chat-user-payload';
 import path from 'path';
@@ -27,6 +27,7 @@ import { estimateTokens } from './auto-context';
 import { normalizeContextWindow } from '../../context-window-policy';
 import { refreshLiveContextBudget } from '../live-context-budget';
 import { createProviderChatStream } from '../provider-stream-adapter';
+import { createCodexSubscriptionClient } from '../codex-subscription-runtime';
 import { applyAnthropicPromptCachePolicy, applyOpenAIPromptCachePolicy } from '../provider-prompt-cache';
 import { assertSuccessfulCompatibleFinish, createCompatibleTaggedReasoningSplitter, splitCompatibleDeltaContent } from '../provider-capabilities';
 import {
@@ -37,6 +38,7 @@ import {
   serializeContextValue,
   type ContextUsageBreakdown,
   type ContextUsageBreakdownSources,
+  type FixedContextSections,
 } from '../../context-usage-breakdown';
 
 export type ContextCompactionModel = {
@@ -56,6 +58,7 @@ export type ContextCompactionSettings = {
 export type ContextCompactionUsage = {
   contextBudgetRevision?: number;
   contextRequestId?: string;
+  compactionId?: string;
   provider?: MainAgentProvider;
   model?: string;
   breakdownVersion: 3;
@@ -68,6 +71,7 @@ export type ContextCompactionUsage = {
   systemTokens: number;
   conversationTokens: number;
   toolTokens: number;
+  fixedContext?: FixedContextSections;
   localEstimatedTokens?: number;
   providerInputTokens?: number;
   providerCalibrationApplied?: boolean;
@@ -76,9 +80,13 @@ export type ContextCompactionUsage = {
   breakdown?: ContextUsageBreakdown;
 };
 
+export type ContextUsageTrace = ContextCompactionUsage & { type: 'context_usage'; chatId: string; runId?: string; timestamp: number };
+
 export type ContextCompactionEvent = {
   contextBudgetRevision?: number;
   contextRequestId?: string;
+  provider?: MainAgentProvider;
+  model?: string;
   /** Atomic terminal payload snapshot; consumers need not await another event. */
   usage?: ContextCompactionUsage;
   type: 'context_compaction';
@@ -134,6 +142,8 @@ type ContextCompactionJournal = {
   generations: ContextCapsule[];
   failureState?: {
     budgetRevision?: number;
+    activeModelKey?: string;
+    nextContextWindow?: number;
     failureTier: number;
     nextAttemptTokens: number;
     lastFailureAt: number;
@@ -173,6 +183,9 @@ type JournalFileStamp = {
 const journalFileStamps = new Map<string, JournalFileStamp>();
 const JOURNAL_FRESHNESS_TTL_MS = 1_500;
 const retryState = new Map<string, {
+  activeModelKey: string;
+  budgetRevision: number;
+  nextContextWindow: number;
   compactionId: string;
   nextAttemptTokens: number;
   attempts: number;
@@ -698,6 +711,7 @@ export const measureRuntimeContext = (input: {
   additionalConversationTokenEstimate?: number;
   systemInstruction?: unknown;
   tools?: unknown;
+  savedFixedContext?: FixedContextSections;
   contextWindow: number;
   providerReportedInputTokens?: number;
   /** Local estimate of the exact request that produced that provider count. */
@@ -718,8 +732,8 @@ export const measureRuntimeContext = (input: {
     typeof message?.content === 'string'
       ? message.content
       : serializeContextValue(message?.content ?? message)
-  ).filter(Boolean).join('\n\n');
-  const combinedSystemText = [standaloneSystemText, embeddedSystemText].filter(Boolean).join('\n\n');
+  ).filter(Boolean);
+  const combinedSystemText = [standaloneSystemText, ...embeddedSystemText].filter(Boolean).join('\n\n');
   const additionalEstimatedTokens = Number.isFinite(Number(input.additionalConversationTokenEstimate))
     ? Math.max(0, Math.floor(Number(input.additionalConversationTokenEstimate)))
     : 0;
@@ -734,6 +748,23 @@ export const measureRuntimeContext = (input: {
     systemInstruction: combinedSystemText,
     tools: input.tools,
   });
+  // Checkpoints keep the capsule, but omit the regenerated prompt and tool
+  // schemas. Save only their component counts so an idle compact measures
+  // the same envelope without storing instructions or counting a capsule twice.
+  const baseMessages = embeddedSystemText.filter(text => !text.startsWith('[SYSTEM - COMPACTED CONTEXT CAPSULE '));
+  const fixedContext: FixedContextSections = input.savedFixedContext || {
+    system: baseMessages.length === embeddedSystemText.length ? measuredSections.system
+      : measureContextUsageSections({ systemInstruction: [standaloneSystemText, ...baseMessages].filter(Boolean).join('\n\n') }).system,
+    tools: measuredSections.tools,
+  };
+  if (input.savedFixedContext) {
+    const retained = measuredSections.system, fixed = input.savedFixedContext.system;
+    measuredSections.system = {
+      systemPrompt: retained.systemPrompt + fixed.systemPrompt, skills: retained.skills + fixed.skills,
+      rules: retained.rules + fixed.rules, subagentDefinitions: retained.subagentDefinitions + fixed.subagentDefinitions,
+    };
+    measuredSections.tools = input.savedFixedContext.tools;
+  }
   const systemTokens = Object.values(measuredSections.system).reduce((sum, value) => sum + value, 0);
   const conversationTokens = Object.values(measuredSections.conversation).reduce((sum, value) => sum + value, 0)
     + additionalEstimatedTokens;
@@ -771,10 +802,11 @@ export const measureRuntimeContext = (input: {
     systemTokens,
     conversationTokens,
     toolTokens,
+    fixedContext,
     localEstimatedTokens,
     providerInputTokens,
     providerCalibrationApplied: hasCalibration,
-    breakdown,
+    breakdown: fixedContext.totalsOnly ? undefined : breakdown,
   };
 };
 
@@ -1339,7 +1371,7 @@ const generateCapsulePartWithKey = async (
     }
     return response.content.map((block: any) => block?.type === 'text' ? block.text : '').join('\n').trim();
   }
-  const client = new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS,
+  const client = model.provider === 'codex' ? createCodexSubscriptionClient() : new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS,
     apiKey,
     baseURL: getProviderBaseURL(model.provider),
     maxRetries: 0,
@@ -1387,7 +1419,7 @@ const generateCapsulePart = async (
   onRetry?: (attempt: number, totalAttempts: number) => void,
 ): Promise<string> => {
   const configuredKeys = Array.from(new Set(getScopedRuntimeApiKeyValues(runtimeSettings, model.provider).filter(Boolean)));
-  const apiKeys = configuredKeys.length > 0 ? configuredKeys
+  const apiKeys = model.provider === 'codex' ? [''] : configuredKeys.length > 0 ? configuredKeys
     : isLocalModelProvider(model.provider) ? ['local-no-key-required'] : [];
   if (apiKeys.length === 0) {
     throw new Error(`No ${model.provider} API key is available for context compaction.`);
@@ -1408,7 +1440,7 @@ const generateCapsulePart = async (
   // every configured key could turn a requested three-attempt recovery into
   // dozens of compaction calls. Rotate through the pool across the bounded
   // attempts so a bad/rate-limited credential still cannot pin the chat.
-  const totalAttempts = Math.max(1, Math.min(3, Math.floor(retryRounds)));
+  const totalAttempts = model.provider === 'codex' ? 1 : Math.max(1, Math.min(3, Math.floor(retryRounds)));
   const isRetryableCompactionAttemptError = (error: unknown) => {
     if (isProviderFailoverError(error)) return true;
     const message = String((error as any)?.message || error || '').toLowerCase();
@@ -1763,6 +1795,8 @@ const readJournal = async (chatId: string, refresh = false): Promise<ContextComp
           lastFailureAt: Math.max(0, Math.floor(Number(rawFailure.lastFailureAt || 0))),
           lastError: String(rawFailure.lastError || '').slice(0, 1_000),
           nextCompactionId: rawFailure.nextCompactionId.slice(0, 220),
+          activeModelKey: typeof rawFailure.activeModelKey === 'string' ? rawFailure.activeModelKey : undefined,
+          nextContextWindow: normalizeContextWindow(rawFailure.nextContextWindow) || undefined,
           budgetRevision: Math.max(0, Number(rawFailure.budgetRevision || 0)),
         }
       : undefined;
@@ -2159,10 +2193,12 @@ const injectProviderCapsule = (
 
 type CompactInput = {
   chatId: string;
+  runId?: string;
   kind: 'gemini' | 'provider';
   contents: any[];
   systemInstruction?: unknown;
   tools?: unknown;
+  savedFixedContext?: FixedContextSections;
   activeModel: ContextCompactionModel;
   rawSettings?: unknown;
   runtimeSettings?: ScopedRuntimeSettings | null;
@@ -2184,7 +2220,7 @@ type CompactInput = {
   forceCompaction?: boolean;
   /** Manual actions report progress outside the conversation feed. */
   manualCompaction?: boolean;
-  onEvent?: (event: ContextCompactionEvent | ({ type: 'context_usage' } & ContextCompactionUsage & { chatId: string; timestamp: number })) => void;
+  onEvent?: (event: ContextCompactionEvent | ContextUsageTrace) => void;
 };
 
 export const shouldDeferContextCompaction = (input: {
@@ -2207,6 +2243,15 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
   trustedCapsuleMarker?: string;
 }> => {
   const exactCallerContents = input.contents;
+  const measurePayload = (contents: any[], contextWindow: number, calibration: 'provider' | 'local' = 'provider') =>
+    measureRuntimeContext({
+      contents, contextWindow, systemInstruction: input.systemInstruction, tools: input.tools,
+      additionalConversationContent: input.additionalConversationContent,
+      additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
+      savedFixedContext: input.savedFixedContext, breakdownSources: input.breakdownSources,
+      providerReportedInputTokens: calibration === 'provider' ? input.providerReportedInputTokens : undefined,
+      providerReportedLocalEstimatedTokens: calibration === 'provider' ? input.providerReportedLocalEstimatedTokens : undefined,
+    });
   const admittedPolicy = input.rawSettings && typeof input.rawSettings === 'object' ? input.rawSettings as any : null;
   if (admittedPolicy?.activeContextModelProvider && admittedPolicy?.activeContextModelId
     && (admittedPolicy.activeContextModelProvider !== input.activeModel.provider
@@ -2242,11 +2287,12 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
   const budgetWasLowered = previousWindow > 0 && Number((input.rawSettings as any)?.activeContextWindow) < previousWindow;
   const contextRequestId = `context-request-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
   const settings = normalizeContextCompactionSettings(input.rawSettings, input.activeModel);
-  const emit = (event: ContextCompactionEvent | ({ type: 'context_usage' } & ContextCompactionUsage & { chatId: string; timestamp: number })) => {
+  const emit = (event: ContextCompactionEvent | ContextUsageTrace) => {
     try {
       input.onEvent?.(event.type === 'context_usage' ? {
         ...event,
         ...runtimeContextLimits,
+        runId: input.runId,
         contextRequestId,
         // The compactor model can differ from the active agent. A usage sample
         // always describes the active agent's payload, not the summary model.
@@ -2255,6 +2301,8 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       } : {
         ...event,
         beforeTokensEstimated: true,
+        provider: input.activeModel.provider,
+        model: input.activeModel.modelId,
         contextBudgetRevision: Number((input.rawSettings as any)?.contextBudgetRevision || 0),
         contextRequestId,
         ...(event.usage ? { usage: {
@@ -2269,9 +2317,10 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       // Rendering/transport observers are never part of the compaction commit.
     }
   };
-  const requestedContextWindow = Number(input.contextWindowOverride || 0);
+  const requestedContextWindow = Number(input.contextWindowOverride || (input.rawSettings as any)?.activeContextWindow || 0);
   const requestedModelMaximum = Number(
     input.modelContextWindowOverride
+    || (input.rawSettings as any)?.activeModelContextWindow
     || input.activeModel.contextWindow
     || 0
   );
@@ -2291,8 +2340,13 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
     configuredContextWindow,
     requestedContextWindow: rawPolicy.activeContextWindowUsesModelMaximum === true
       ? undefined
-      : normalizeContextWindow(rawPolicy.requestedContextWindow || input.contextWindowOverride) || undefined,
+      : normalizeContextWindow(rawPolicy.requestedContextWindow || requestedContextWindow) || undefined,
   };
+  const sameRetryPolicy = (failure?: { activeModelKey?: string; budgetRevision?: number }) => Boolean(failure
+    && (!failure.activeModelKey || failure.activeModelKey === activeModelKey)
+    && Number(failure.budgetRevision || 0) >= runtimeContextLimits.contextBudgetRevision);
+  const cachedRetry = retryState.get(input.chatId);
+  if (cachedRetry && !sameRetryPolicy(cachedRetry)) retryState.delete(input.chatId);
   let continuityJournal: ContextCompactionJournal;
   try {
     // Provider/tool loops may cross this boundary repeatedly in one turn.
@@ -2307,20 +2361,10 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
     const journalRetryWindow = pendingJournalRetry
       ? Math.min(
           activeModelMaximum,
-          Math.max(configuredContextWindow, Math.ceil(pendingJournalRetry.nextAttemptTokens / 0.96)),
+          Math.max(configuredContextWindow, pendingJournalRetry.nextContextWindow),
         )
       : configuredContextWindow;
-    const usage = measureRuntimeContext({
-      contents: exactCallerContents,
-      additionalConversationContent: input.additionalConversationContent,
-      additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
-      systemInstruction: input.systemInstruction,
-      tools: input.tools,
-      contextWindow: journalRetryWindow,
-      providerReportedInputTokens: input.providerReportedInputTokens,
-      providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
-      breakdownSources: input.breakdownSources,
-    });
+    const usage = measurePayload(exactCallerContents, journalRetryWindow);
     emit({ type: 'context_usage', chatId: input.chatId, timestamp: Date.now(), ...usage });
     // A prior failed boundary already owns the visible lifecycle. Continue
     // measuring with its raised per-chat budget, but do not turn every provider
@@ -2379,15 +2423,20 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
     });
     const nextCompactionId = `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     retryState.set(input.chatId, {
+      activeModelKey, budgetRevision: runtimeContextLimits.contextBudgetRevision,
+      nextContextWindow: escalation.nextContextWindow,
       compactionId: nextCompactionId,
       attempts: escalation.failureTier,
       lastAttemptAt: Date.now(),
       nextAttemptTokens: escalation.nextAttemptTokens,
     });
+    usage.contextWindow = escalation.nextContextWindow;
+    usage.utilizationPct = usage.usedTokens / usage.contextWindow * 100;
     emit({
       type: 'context_compaction',
       phase: 'failed',
       compactionId: `ctx_journal_${Date.now()}`,
+      usage,
       chatId: input.chatId,
       beforeTokens: usage.usedTokens,
       contextWindow: journalRetryWindow,
@@ -2399,10 +2448,10 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       summary: `Full context preserved. ${String(error?.message || error || 'The continuity journal is unavailable.')}`.slice(0, 1_200),
       timestamp: Date.now(),
     });
+    emit({ type: 'context_usage', chatId: input.chatId, timestamp: Date.now(), ...usage });
     return { contents: exactCallerContents, compacted: false, failed: true, usage };
   }
-  const rawPersistedFailure = Number(rawPolicy.contextBudgetRevision || 0) > Number(continuityJournal.failureState?.budgetRevision || 0)
-    ? undefined : continuityJournal.failureState;
+  const rawPersistedFailure = sameRetryPolicy(continuityJournal.failureState) ? continuityJournal.failureState : undefined;
   const retryCeilingForActiveModel = Math.max(
     MIN_SOURCE_TOKENS,
     Math.floor(activeModelMaximum * 0.96),
@@ -2422,10 +2471,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         activeModelMaximum,
         Math.max(
           configuredContextWindow,
-          Math.ceil(
-            persistedFailure.nextAttemptTokens
-            / Math.min(0.96, HARD_BLOCK_RATIO + (persistedFailure.failureTier * 0.02)),
-          ),
+          persistedFailure.nextContextWindow || Math.ceil(persistedFailure.nextAttemptTokens / HARD_BLOCK_RATIO),
         ),
       )
     : configuredContextWindow;
@@ -2438,6 +2484,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
   // after another process has already compacted successfully.
   if (persistedFailure) {
     retryState.set(input.chatId, {
+      activeModelKey, budgetRevision: runtimeContextLimits.contextBudgetRevision, nextContextWindow: contextWindow,
       compactionId: persistedFailure.nextCompactionId,
       nextAttemptTokens: persistedFailure.nextAttemptTokens,
       attempts: persistedFailure.failureTier,
@@ -2526,15 +2573,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       const uncoveredConversation = coveredEnd >= 0
         ? currentConversation.slice(coveredEnd + 1)
         : currentConversation;
-      const restoreFixedUsage = measureRuntimeContext({
-        contents: providerSystemMessages,
-        additionalConversationContent: input.additionalConversationContent,
-        additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
-        systemInstruction: input.systemInstruction,
-        tools: input.tools,
-        contextWindow,
-        breakdownSources: input.breakdownSources,
-      });
+      const restoreFixedUsage = measurePayload(providerSystemMessages, contextWindow, 'local');
       const restoreTargetTokens = Math.min(
         Math.floor(contextWindow * 0.65),
         Math.max(
@@ -2571,17 +2610,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       restoredPriorCapsule = true;
     }
   }
-  const usage = measureRuntimeContext({
-    contents: input.contents,
-    additionalConversationContent: input.additionalConversationContent,
-    additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
-    systemInstruction: input.systemInstruction,
-    tools: input.tools,
-    contextWindow,
-    providerReportedInputTokens: input.providerReportedInputTokens,
-    providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
-    breakdownSources: input.breakdownSources,
-  });
+  const usage = measurePayload(input.contents, contextWindow);
   if (restoredPriorCapsule) usage.contextReplaced = true;
   emit({ type: 'context_usage', chatId: input.chatId, timestamp: Date.now(), ...usage });
   const priorGrowth = contextGrowthState.get(input.chatId);
@@ -2666,7 +2695,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       // must still be evaluated unless its own run has been cancelled.
     }
     if (input.abortSignal?.aborted) throw new Error('CANCELLED_BY_USER');
-    return compactContextAtBoundary({ ...input, contents: exactCallerContents });
+    return compactContextAtBoundaryImpl({ ...input, contents: exactCallerContents });
   }
 
   const transaction = (async () => {
@@ -2872,15 +2901,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       const additionalEstimatedTokens = Number.isFinite(Number(input.additionalConversationTokenEstimate))
         ? Math.max(0, Math.floor(Number(input.additionalConversationTokenEstimate)))
         : 0;
-      const capsuleStrippedUsage = measureRuntimeContext({
-        contents: compactionContents,
-        additionalConversationContent: input.additionalConversationContent,
-        additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
-        systemInstruction: input.systemInstruction,
-        tools: input.tools,
-        breakdownSources: input.breakdownSources,
-        contextWindow,
-      });
+      const capsuleStrippedUsage = measurePayload(compactionContents, contextWindow, 'local');
       const fixedTokens = capsuleStrippedUsage.systemTokens
         + capsuleStrippedUsage.toolTokens
         + additionalConversationTokens
@@ -2895,17 +2916,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       const nextContents = input.kind === 'gemini'
         ? injectGeminiCapsule(compactionContents, summary, compactionId, tailTokenBudget)
         : injectProviderCapsule(compactionContents, summary, compactionId, tailTokenBudget, input.activeModel.provider);
-      const nextUsage = measureRuntimeContext({
-        contents: nextContents,
-        additionalConversationContent: input.additionalConversationContent,
-        additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
-        systemInstruction: input.systemInstruction,
-        tools: input.tools,
-        breakdownSources: input.breakdownSources,
-        contextWindow,
-        providerReportedInputTokens: input.providerReportedInputTokens,
-        providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
-      });
+      const nextUsage = measurePayload(nextContents, contextWindow);
       // If the selected tail is still too large, retry assembly with the same
       // validated model capsule and a smaller protocol-safe tail. Never replace
       // real history with a synthetic/deterministic summary.
@@ -2923,17 +2934,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         nextContents.splice(0, nextContents.length, ...reducedTailContents);
         retainedTailTokenBudget = minimumTailBudget;
       }
-      const finalUsage = measureRuntimeContext({
-        contents: nextContents,
-        additionalConversationContent: input.additionalConversationContent,
-        additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
-        systemInstruction: input.systemInstruction,
-        tools: input.tools,
-        breakdownSources: input.breakdownSources,
-        contextWindow,
-        providerReportedInputTokens: input.providerReportedInputTokens,
-        providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
-      });
+      const finalUsage = measurePayload(nextContents, contextWindow);
       if (
         finalUsage.usedTokens >= usage.usedTokens ||
         (isHardBlocked && finalUsage.usedTokens >= hardBlockTokens)
@@ -3005,6 +3006,9 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         averageGrowthTokens: 0,
       });
       finalUsage.contextReplaced = true;
+      finalUsage.compactionId = compactionId;
+      finalUsage.contextWindow = configuredContextWindow;
+      finalUsage.utilizationPct = finalUsage.usedTokens / configuredContextWindow * 100;
       emit({
         type: 'context_compaction',
         phase: 'compacted',
@@ -3030,15 +3034,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       };
     } catch (error: any) {
       if (input.abortSignal?.aborted || String(error?.message || error) === 'CANCELLED_BY_USER') {
-        const preservedUsage = measureRuntimeContext({
-          contents: exactCallerContents,
-          additionalConversationContent: input.additionalConversationContent,
-          additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
-          systemInstruction: input.systemInstruction, tools: input.tools, contextWindow,
-          providerReportedInputTokens: input.providerReportedInputTokens,
-          providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
-          breakdownSources: input.breakdownSources,
-        });
+        const preservedUsage = measurePayload(exactCallerContents, contextWindow);
         emit({
           type: 'context_compaction', phase: 'failed', compactionId, chatId: input.chatId,
           usage: preservedUsage, beforeTokens: preservedUsage.usedTokens, contextWindow,
@@ -3054,8 +3050,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       const previousJournalFailure = transactionJournal?.failureState || continuityJournal.failureState;
       const previousFailureTier = Math.max(
         Number(retryState.get(input.chatId)?.attempts || 0),
-        Number(rawPolicy.contextBudgetRevision || 0) > Number(previousJournalFailure?.budgetRevision || 0)
-          ? 0 : Number(previousJournalFailure?.failureTier || 0),
+        sameRetryPolicy(previousJournalFailure) ? Number(previousJournalFailure?.failureTier || 0) : 0,
       );
       const escalation = deriveCompactionFailureEscalation({
         usedTokens: usage.usedTokens,
@@ -3071,6 +3066,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         .trim()
         .slice(0, 1_000);
       retryState.set(input.chatId, {
+        activeModelKey, budgetRevision: runtimeContextLimits.contextBudgetRevision, nextContextWindow,
         compactionId: nextCompactionId,
         attempts: failureTier,
         lastAttemptAt: Date.now(),
@@ -3087,6 +3083,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
           ...transactionJournal,
           updatedAt: Date.now(),
           failureState: {
+            activeModelKey, nextContextWindow,
             budgetRevision: Number(rawPolicy.contextBudgetRevision || 0),
             failureTier,
             nextAttemptTokens,
@@ -3106,17 +3103,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         }
       }
 
-      const preservedUsage = measureRuntimeContext({
-        contents: exactCallerContents,
-        additionalConversationContent: input.additionalConversationContent,
-        additionalConversationTokenEstimate: input.additionalConversationTokenEstimate,
-        systemInstruction: input.systemInstruction,
-        tools: input.tools,
-        contextWindow: nextContextWindow,
-        providerReportedInputTokens: input.providerReportedInputTokens,
-        providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
-        breakdownSources: input.breakdownSources,
-      });
+      const preservedUsage = measurePayload(exactCallerContents, nextContextWindow);
       emit({
         type: 'context_compaction',
         phase: 'failed',
@@ -3151,15 +3138,27 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
 
 /** Manual requests share the same transaction and continuity checks as automatic compaction. */
 export const compactContextAtBoundary = async (input: CompactInput) => {
-  const request = input.semanticBoundary === 'unsafe' ? null : claimManualCompaction(input.chatId);
+  const claimRequest = () => input.semanticBoundary === 'unsafe' || input.manualCompaction ? null
+    : claimManualCompaction(input.chatId, input.runId, input.abortSignal);
+  let request = claimRequest();
   const manual = Boolean(request || input.manualCompaction);
   const onEvent = input.onEvent;
+  let measured: ContextUsageTrace | undefined;
   try {
     const result = await compactContextAtBoundaryImpl({
       ...input,
       ...(request ? { forceCompaction: true, rawSettings: request.rawSettings ?? input.rawSettings } : {}),
       manualCompaction: manual,
       onEvent: event => {
+        if (event.type === 'context_usage') measured = event;
+        if (event.type === 'context_compaction' && (event.phase === 'compacted' || event.phase === 'failed')) {
+          // A manual request may have arrived while an automatic transfer was
+          // already generating its capsule. A single transfer satisfies both.
+          if (!manual && !request) request = claimRequest();
+        }
+        if (event.type === 'context_compaction' && event.usage) {
+          measured = { ...event.usage, type: 'context_usage', chatId: event.chatId, runId: input.runId, timestamp: event.timestamp };
+        }
         if (!manual || event.type !== 'context_compaction') onEvent?.(event);
       },
     });
@@ -3170,7 +3169,7 @@ export const compactContextAtBoundary = async (input: CompactInput) => {
       || normalizeContextWindow(input.activeModel.contextWindow)
       || normalizeContextWindow(input.modelContextWindowOverride)
       || rebaseContextCompactionWindow(policy, input.activeModel.provider, input.activeModel.modelId).activeModelContextWindow;
-    if (result.failed && result.usage.usedTokens >= maximum) {
+    if (!input.manualCompaction && result.failed && result.usage.usedTokens >= maximum) {
       // A raised retry threshold is not a larger provider window. Preserve
       // the transcript, but never submit the same multi-million-token payload
       // after recovery failed and start another provider/compaction retry loop.
@@ -3178,10 +3177,15 @@ export const compactContextAtBoundary = async (input: CompactInput) => {
       Object.assign(error, { code: 'CONTEXT_CAPACITY_BLOCKED' });
       throw error;
     }
-    request?.finish(result.failed ? new Error('Context compaction failed. The original context was preserved.') : undefined);
-    return result;
+    const manualResult: ManualCompactionResult = result.failed
+      ? { status: 'failed', usage: measured, error: 'Context compaction failed. The original context was preserved.' }
+      : { status: result.compacted ? 'compacted' : 'unchanged', usage: measured };
+    request?.finish(manualResult);
+    return { ...result, manualResult };
   } catch (error) {
-    request?.finish(error instanceof Error ? error : new Error(String(error)));
+    const message = error instanceof Error ? error.message : String(error);
+    request?.finish({ status: input.abortSignal?.aborted || message === 'CANCELLED_BY_USER' ? 'cancelled' : 'failed',
+      usage: measured, error: message });
     throw error;
   }
 };

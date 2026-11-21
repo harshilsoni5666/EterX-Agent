@@ -9,7 +9,7 @@ import { filterUserVisibleTraces } from './agent/trace-visibility';
 import { buildTemporaryTitle, mergeChatTitleMetadata } from './chat/title-generation';
 import { visibleUserRequest } from './chat-user-payload';
 import { normalizeImportedTraces } from './imports/presentation';
-import { importedWorkspaceMetadata } from './imports/workspace';
+import { mergeChatWorkspaceSelection } from './imports/workspace';
 import {
   mergeFeedTraceHistories,
   isConclusiveSettledAnswerTrace,
@@ -693,8 +693,6 @@ function mergeChatForAction(durable: any, incoming: unknown) {
   const candidate = normalizePersistedChat(incoming);
   if (!candidate || candidate.id !== durable.id) throw new Error('Invalid conversation snapshot.');
   const newest = Number(candidate.updatedAt || 0) >= Number(durable.updatedAt || 0) ? candidate : durable;
-  const workspace = Number(candidate.workspaceSelectionUpdatedAt || 0) >= Number(durable.workspaceSelectionUpdatedAt || 0)
-    ? candidate : durable;
   return {
     ...durable,
     ...newest,
@@ -702,9 +700,8 @@ function mergeChatForAction(durable: any, incoming: unknown) {
       importOrigin: durable.importOrigin, importFolder: durable.importFolder,
       importPresentationVersion: durable.importPresentationVersion,
     } : {}),
-    workspacePath: workspace.workspacePath ?? null,
-    workspaceSelectionUpdatedAt: workspace.workspaceSelectionUpdatedAt,
-    ...importedWorkspaceMetadata(durable, candidate),
+    workspacePath: candidate.workspacePath ?? null,
+    ...mergeChatWorkspaceSelection(durable, candidate),
     ...mergeChatTitleMetadata(durable, candidate),
     updatedAt: Math.max(Number(durable.updatedAt || 0), Number(candidate.updatedAt || 0)),
     traceLogs: mergeFeedTraceHistories(durable.traceLogs || [], candidate.traceLogs || []),
@@ -782,7 +779,7 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
         ...durable,
         ...chat,
         ...(durable.importOrigin ? { importOrigin: durable.importOrigin, importFolder: durable.importFolder, importPresentationVersion: durable.importPresentationVersion } : {}),
-        ...importedWorkspaceMetadata(durable, chat),
+        ...mergeChatWorkspaceSelection(durable, chat),
         ...mergeChatTitleMetadata(durable, chat),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
@@ -835,7 +832,7 @@ export async function patchChatSnapshot(
         ...durable,
         ...chat,
         ...(durable.importOrigin ? { importOrigin: durable.importOrigin, importFolder: durable.importFolder, importPresentationVersion: durable.importPresentationVersion } : {}),
-        ...importedWorkspaceMetadata(durable, chat),
+        ...mergeChatWorkspaceSelection(durable, chat),
         ...mergeChatTitleMetadata(durable, chat),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],

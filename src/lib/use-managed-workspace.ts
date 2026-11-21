@@ -4,14 +4,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from './client-storage';
 import { normalizeScratchRetention, requestWorkspace, type ManagedWorkspace, type RunLocation } from './managed-workspaces';
 
-export function useManagedWorkspace(ownerId: string, path: string | null, commit: (location: RunLocation, path: string | null) => void) {
+export function useManagedWorkspace(ownerId: string, path: string | null, commit: (location: RunLocation, path: string | null, sourcePath: string | null) => boolean) {
+  const chatId = ownerId.replace(/^terminal-draft-/, '');
   const [workspace, setWorkspace] = useState<ManagedWorkspace | null>(null);
   const [retentionDays, setRetentionDays] = useState(7);
-  const [busyOwner, setBusyOwner] = useState<string | null>(null);
+  const [busyOwners, setBusyOwners] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState('');
+  const mounted = useRef(false);
   const current = useRef({ ownerId, path, commit });
   current.current = { ownerId, path, commit };
   const pending = useRef(new Set<string>());
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   useEffect(() => {
     const read = () => { try { setRetentionDays(normalizeScratchRetention(JSON.parse(appStorage.getItem('eterx_settings') || '{}').scratchRetentionDays)); } catch {} };
     void appStorageReady.then(read);
@@ -40,47 +46,61 @@ export function useManagedWorkspace(ownerId: string, path: string | null, commit
   }, [ownerId, path]);
 
   const choose = useCallback(async (location: RunLocation) => {
-    if (pending.current.has(ownerId)) return;
+    if (pending.current.has(ownerId)) return false;
+    const { commit: commitSelection } = current.current;
     pending.current.add(ownerId);
-    setBusyOwner(ownerId);
+    setBusyOwners(new Set(pending.current));
     setError('');
+    const isCurrent = () => mounted.current && current.current.ownerId === ownerId && current.current.path === path;
     try {
       const previous = path ? await requestWorkspace({ action: 'inspect', chatId: ownerId, path }) : null;
+      if (!isCurrent()) return false;
       let sourcePath = previous ? previous.sourcePath : path;
       if (location === 'worktree' && !sourcePath) {
         const selectFolder = (window as any).electronAPI?.selectFolder;
         if (selectFolder) {
           sourcePath = await selectFolder();
-          if (!sourcePath) return;
+          if (!sourcePath || !isCurrent()) return false;
         }
       }
       const next = location === 'local' ? null : await requestWorkspace({ action: 'create', chatId: ownerId, kind: location, sourcePath, days: retentionDays });
-      // Navigation during preparation must never switch the new chat's folder.
-      if (current.current.ownerId !== ownerId || current.current.path !== path) return;
-      current.current.commit(location, next?.path || sourcePath || null);
+      if (location !== 'local' && !next) throw new Error('Could not prepare this workspace.');
+      if (!isCurrent() || !commitSelection(location, next?.path || sourcePath || null, next ? next.sourcePath : sourcePath)) return false;
       setWorkspace(next);
+      return true;
     } catch (reason) {
-      if (current.current.ownerId === ownerId) setError(reason instanceof Error ? reason.message : 'Could not prepare this workspace.');
-    } finally { pending.current.delete(ownerId); setBusyOwner(value => value === ownerId ? null : value); }
+      if (isCurrent()) setError(reason instanceof Error ? reason.message : 'Could not prepare this workspace.');
+      return false;
+    } finally {
+      pending.current.delete(ownerId);
+      if (mounted.current) setBusyOwners(new Set(pending.current));
+    }
   }, [ownerId, path, retentionDays]);
 
   const update = useCallback(async (action: 'keep' | 'extend' | 'remove') => {
-    if (!workspace || pending.current.has(ownerId)) return;
+    if (!workspace || workspace.path !== path || workspace.chatId !== chatId || pending.current.has(ownerId)) return;
+    const { commit: commitSelection } = current.current;
     pending.current.add(ownerId);
-    setBusyOwner(ownerId);
+    setBusyOwners(new Set(pending.current));
     setError('');
     try {
       const next = await requestWorkspace({ action, chatId: ownerId, id: workspace.id, days: retentionDays });
-      if (current.current.ownerId === ownerId && current.current.path === path) {
+      if (mounted.current && current.current.ownerId === ownerId && current.current.path === path) {
         if (action === 'remove') {
-          current.current.commit('local', workspace.sourcePath);
+          commitSelection('local', workspace.sourcePath, workspace.sourcePath);
           setWorkspace(null);
         } else setWorkspace(next);
       }
     } catch (reason) {
-      if (current.current.ownerId === ownerId) setError(reason instanceof Error ? reason.message : 'Could not update the expiry.');
-    } finally { pending.current.delete(ownerId); setBusyOwner(value => value === ownerId ? null : value); }
-  }, [workspace, ownerId, path, retentionDays]);
+      if (mounted.current && current.current.ownerId === ownerId && current.current.path === path) setError(reason instanceof Error ? reason.message : 'Could not update the expiry.');
+    } finally {
+      pending.current.delete(ownerId);
+      if (mounted.current) setBusyOwners(new Set(pending.current));
+    }
+  }, [workspace, ownerId, chatId, path, retentionDays]);
 
-  return { workspace: workspace?.path === path ? workspace : null, retentionDays, busy: busyOwner === ownerId, error, choose, update };
+  return {
+    workspace: workspace && workspace.path === path && workspace.chatId === chatId ? workspace : null,
+    retentionDays, busy: busyOwners.has(ownerId), error, choose, update,
+  };
 }

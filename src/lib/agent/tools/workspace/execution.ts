@@ -21,6 +21,7 @@ import { formatTerminalProgram } from '../../terminal-invocation';
 import { executeParallelToolCalls } from '../../parallel-tool-calls';
 import { boundTerminalBatchEntries } from '../../terminal-batch-output';
 import { isSourceReadShellCommand } from '../../shell-command-shape';
+import { inspectWorkspace, workspaceInspectionSchema, type WorkspaceInspection } from './inspection';
 import {
   MIN_TERMINAL_OUTPUT_CHARS, MAX_TERMINAL_OUTPUT_CHARS, explicitOutputChars,
   resolveTerminalOutputKind, terminalOutputPageChars, type TerminalOutputKind,
@@ -89,7 +90,8 @@ type TerminalCommandResult = {
 };
 
 type WorkspaceTerminalInput = Omit<TerminalCommandRequest, 'command'> & {
-  mode?: 'run' | 'check' | 'wait' | 'background' | 'list' | 'kill';
+  mode?: 'run' | 'inspect' | 'check' | 'wait' | 'background' | 'list' | 'kill';
+  inspection?: WorkspaceInspection;
   command?: string;
   commands?: TerminalCommandRequest[];
   taskId?: string;
@@ -447,7 +449,8 @@ export const workspaceRunCommandTool: ToolDefinition = {
   description: 'Cross-platform workspace terminal for inspection, search, execution, package commands, managed processes, and verification. mode=run executes command or a commands batch. background=true returns a managed task immediately. mode=check/list/kill reads or controls managed tasks. File/code/content is retained exactly and delivered in bounded verbatim pages; use taskId and outputEnd to read remaining pages. Author source and text with workspace_edit_file; run generators, converters, builds and package tools here when the task requires them.',
   category: 'workspace',
   inputSchema: z.object({
-    mode: z.enum(['run', 'check', 'wait', 'background', 'list', 'kill']).optional().describe('Defaults to run. check/wait accept taskId or tasks. background/kill use one taskId. wait returns on any watched output or completion.'),
+    mode: z.enum(['run', 'inspect', 'check', 'wait', 'background', 'list', 'kill']).optional().describe('Defaults to run. inspect reads through the filesystem using inspection. check/wait accept taskId or tasks. background/kill use one taskId.'),
+    inspection: workspaceInspectionSchema.optional(),
     command: z.string().min(1).optional().describe('One command. For multiple independent reads/searches, prefer commands instead. Read complete small files or relevant function/type ranges in large files; do not repeatedly request tiny slices.'),
     program: z.string().min(1).optional().describe('Native executable name or absolute path. python/python3 select this chat’s runtime; explicit paths are honored. Use program + args to bypass shell quoting. Provide exactly one of command, program, or commands.'),
     args: z.array(z.string()).optional().describe('Arguments passed unchanged to program. Do not shell-quote individual arguments.'),
@@ -487,6 +490,8 @@ export const workspaceRunCommandTool: ToolDefinition = {
     droppedOutputChars: z.number().optional(),
     outputStart: z.number().optional(),
     outputEnd: z.number().optional(),
+    nextStart: z.number().int().positive().optional().describe('Continue a filesystem inspection from this line or directory entry.'),
+    path: z.string().optional(),
     hasMoreOutput: z.boolean().optional(),
     nextOutputOffset: z.number().optional(),
     outputLimited: z.boolean().optional(),
@@ -518,6 +523,13 @@ export const workspaceRunCommandTool: ToolDefinition = {
   }),
   execute: async (input: WorkspaceTerminalInput, context: any) => {
     const mode = input.mode || 'run';
+    if (mode === 'inspect') {
+      try {
+        return await inspectWorkspace(workspaceInspectionSchema.parse(input.inspection), context);
+      } catch (error) {
+        return { success: false, mode, stdout: '', stderr: error instanceof Error ? error.message : String(error), exitCode: 1 };
+      }
+    }
     if (!['run', 'check', 'wait', 'background', 'list', 'kill'].includes(mode)) {
       return { success: false, stdout: '', stderr: `Unsupported terminal mode: ${mode}. Host paths and shell details are already supplied in runtime context. Use run for a real command or list/check/wait/background/kill for managed processes.`, exitCode: 1, mode };
     }

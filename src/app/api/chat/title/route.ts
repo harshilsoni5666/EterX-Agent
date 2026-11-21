@@ -5,6 +5,7 @@ import OpenAI from 'openai';
 import { isOpenAIReasoningModel, getModelThinkingOptions, getGeminiThinkingConfig, type MainAgentProvider } from '../../../../lib/agent/model-routing';
 import { readStoredModelMetadata } from '../../../../lib/agent/stored-model-metadata';
 import { createProviderChatStream } from '../../../../lib/agent/provider-stream-adapter';
+import { createCodexSubscriptionClient } from '../../../../lib/agent/codex-subscription-runtime';
 import { applyCompatibleThinkingParameters, assertSuccessfulCompatibleFinish, createCompatibleTaggedReasoningSplitter, splitCompatibleDeltaContent } from '../../../../lib/agent/provider-capabilities';
 import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
 import { normalizeProviderCacheUsage } from '../../../../lib/agent/provider-prompt-cache';
@@ -102,7 +103,7 @@ async function generateTitleWithProviderOnce(
   }
 
   // Use the same endpoint and reasoning contract as normal chat requests.
-  const client = new OpenAI({
+  const client = provider === 'codex' ? createCodexSubscriptionClient(TITLE_REQUEST_TIMEOUT_MS) : new OpenAI({
     apiKey,
     baseURL: getProviderBaseURL(provider),
     maxRetries: 0,
@@ -149,6 +150,10 @@ async function generateTitleWithProvider(
   runtimeSettings: ScopedRuntimeSettings,
   requestSignal: AbortSignal,
 ): Promise<{ title: string; provider: MainAgentProvider; model: string; usage?: Record<string, number> }> {
+  if (provider === 'codex') {
+    return generateTitleWithProviderOnce(provider, modelName, prompt, '',
+      AbortSignal.any([requestSignal, AbortSignal.timeout(TITLE_REQUEST_TIMEOUT_MS)]));
+  }
   const configuredKeys = getScopedRuntimeApiKeyValues(runtimeSettings, provider as RuntimeApiKeyProvider);
   const keys = configuredKeys.length > 0
     ? configuredKeys

@@ -37,7 +37,9 @@ function toResponsesContent(content: any): any {
   });
 }
 
-const toResponsesInput = (messages: any[] = []) => {
+const CODEX_TOOL_NAMESPACE = 'eterx';
+
+const toResponsesInput = (messages: any[] = [], codex = false) => {
   const input: any[] = [];
   for (const message of messages) {
     if (message?.role === 'assistant' && message.responses_output?.length) {
@@ -49,11 +51,12 @@ const toResponsesInput = (messages: any[] = []) => {
         output: typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? null) });
       continue;
     }
-    const role = message?.role || 'user';
+    const role = codex && message?.role === 'system' ? 'developer' : message?.role || 'user';
     if (role === 'assistant' && message.tool_calls?.length) {
       if (message.content) input.push({ role, content: toResponsesContent(message.content) });
       for (const call of message.tool_calls) {
         input.push({ type: 'function_call', call_id: call.id, name: call?.function?.name,
+          ...(codex ? { namespace: CODEX_TOOL_NAMESPACE } : {}),
           arguments: typeof call?.function?.arguments === 'string'
             ? call.function.arguments : JSON.stringify(call?.function?.arguments ?? {}) });
       }
@@ -65,29 +68,38 @@ const toResponsesInput = (messages: any[] = []) => {
 };
 
 function responsesRequest(params: Record<string, any>, provider: MainAgentProvider): Record<string, any> {
-  const body: Record<string, any> = { model: params.model, input: toResponsesInput(params.messages), stream: true };
-  if (params.tools?.length) body.tools = toResponsesTools(params.tools);
+  const codex = provider === 'codex';
+  const body: Record<string, any> = { model: params.model, input: toResponsesInput(params.messages, codex), stream: true };
+  if (params.tools?.length) {
+    const tools = toResponsesTools(params.tools);
+    body.tools = codex
+      ? [{ type: 'namespace', name: CODEX_TOOL_NAMESPACE, description: 'Tools available in the EterX workspace.', tools }]
+      : tools;
+  }
   if (params.tool_choice !== undefined) {
     body.tool_choice = params.tool_choice?.type === 'function'
-      ? { type: 'function', name: params.tool_choice.function?.name ?? params.tool_choice.name } : params.tool_choice;
+      ? { type: 'function', name: params.tool_choice.function?.name ?? params.tool_choice.name,
+        ...(codex ? { namespace: CODEX_TOOL_NAMESPACE } : {}) } : params.tool_choice;
   }
   const reasoning = { ...params.reasoning };
   if (params.reasoning_effort !== undefined) reasoning.effort = params.reasoning_effort;
   delete reasoning.exclude;
-  const nativeOpenAI = provider === 'openai' || (provider === 'opencode' && /^gpt-/i.test(params.model));
+  const nativeOpenAI = codex || provider === 'openai' || (provider === 'opencode' && /^gpt-/i.test(params.model));
   const modelId = String(params.model || '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
   const supportsSummary = (getDocumentedThinkingCapabilities('openai', modelId)?.levels.length
     && !/^(?:o1|o3-mini)(?:-|$)/i.test(modelId))
     || ['o3-pro', 'o3-deep-research', 'o4-mini-deep-research', 'codex-mini-latest', 'computer-use-preview'].includes(modelId);
-  if (nativeOpenAI && supportsSummary && reasoning.effort !== 'none') {
+  if (nativeOpenAI && (supportsSummary || (codex && reasoning.effort)) && reasoning.effort !== 'none') {
     // Thinking effort alone does not return readable reasoning. Opt in to
     // summaries on the models whose documented contract supports them.
     reasoning.summary ??= 'auto';
   }
   if (Object.keys(reasoning).length) body.reasoning = reasoning;
   const maxTokens = params.max_output_tokens ?? params.max_completion_tokens ?? params.max_tokens;
-  if (maxTokens !== undefined) body.max_output_tokens = maxTokens;
-  for (const field of ['parallel_tool_calls', 'temperature', 'top_p', 'service_tier', 'user', 'metadata', 'prompt_cache_key', 'prompt_cache_retention']) {
+  if (!codex && maxTokens !== undefined) body.max_output_tokens = maxTokens;
+  const optionalFields = codex ? ['parallel_tool_calls', 'prompt_cache_key']
+    : ['parallel_tool_calls', 'temperature', 'top_p', 'service_tier', 'user', 'metadata', 'prompt_cache_key', 'prompt_cache_retention'];
+  for (const field of optionalFields) {
     if (params[field] !== undefined) body[field] = params[field];
   }
   if (nativeOpenAI) {
@@ -99,13 +111,44 @@ function responsesRequest(params: Record<string, any>, provider: MainAgentProvid
   return body;
 }
 
+function codexResponsesError(error: unknown): unknown {
+  const failure = error as { code?: string; status?: number; requestID?: string; request_id?: string; cause?: { code?: string } } | null;
+  const code = failure?.code || failure?.cause?.code;
+  let message: string;
+  if (code === 'subscription_sharing_usage_limit_exceeded' || failure?.status === 429) {
+    message = 'ChatGPT limited this request. Check Manage usage in Settings → Subscription (https://chatgpt.com/settings/usage).';
+  } else if (code === 'subscription_sharing_user_not_eligible') {
+    message = 'ChatGPT plan usage is unavailable for this account or workspace.';
+  } else if (code === 'subscription_sharing_usage_unavailable' || code === 'subscription_sharing_user_unavailable') {
+    message = 'ChatGPT could not check plan usage. Try again in a moment.';
+  } else if (code === 'subscription_sharing_invalid_user' || (failure?.status === 401 && code !== 'chatgpt_sign_in_required')) {
+    message = 'ChatGPT could not authorize this account. Reconnect in Settings → Subscription.';
+  } else {
+    return error;
+  }
+  const requestId = failure?.requestID || failure?.request_id;
+  return Object.assign(new Error(requestId ? `${message} Request ID: ${requestId}` : message, { cause: error }), {
+    code, status: failure?.status, request_id: requestId,
+  });
+}
+
+async function* streamCodexResponses(client: OpenAI, params: Record<string, any>, signal?: AbortSignal) {
+  try {
+    yield* streamProviderResponses(client, 'codex', params, signal);
+  } catch (error) {
+    throw codexResponsesError(error);
+  }
+}
+
 async function* streamProviderResponses(
   client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal,
 ): AsyncGenerator<any> {
   const body = responsesRequest(params, provider);
   if (provider === 'openai') applyOpenAIResponsesCachePolicy(body, params.messages || []);
   const send = (request: Record<string, any>) => (client.responses.create as any)(request, signal ? { signal } : undefined);
-  const events: any = await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
+  const codexResponse = provider === 'codex' ? await send(body).withResponse() : null;
+  const events: any = codexResponse ? codexResponse.data
+    : await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
   type Call = { index: number; id: string; name: string; arguments: string; emitted: boolean };
   const calls: Call[] = [];
   const callKeys = new Map<string, Call>();
@@ -133,7 +176,7 @@ async function* streamProviderResponses(
       calls.push(call);
     }
     if (item.call_id) call.id = item.call_id;
-    if (item.name) call.name = item.name;
+    if (item.name) call.name = provider === 'codex' ? String(item.name).replace(/^eterx\./, '') : item.name;
     for (const key of keys) callKeys.set(key, call);
     return call;
   };
@@ -246,9 +289,11 @@ async function* streamProviderResponses(
         usage: event.response?.usage, responses_output: output };
       return;
     } else if (type === 'response.incomplete' || type === 'response.failed' || type === 'error') {
-      const detail = event?.response?.incomplete_details?.reason || event?.response?.error?.message || event?.error?.message || event?.message || type;
+      const failure = event?.response?.error || event?.error;
+      const detail = event?.response?.incomplete_details?.reason || failure?.message || event?.message || type;
       throw Object.assign(new Error(`MODEL_STREAM_INCOMPLETE: ${provider} Responses API returned ${detail}.`), {
-        cause: event?.response?.error || event?.error,
+        cause: failure,
+        ...(codexResponse ? { code: failure?.code || event?.code, request_id: codexResponse.request_id } : {}),
       });
     }
   }
@@ -311,6 +356,7 @@ export function createProviderChatStream(
   client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal, capabilities: string[] = [],
   conversationScope?: string,
 ): AsyncIterable<any> {
+  if (provider === 'codex') return streamCodexResponses(client, params, signal);
   const protocol = getProviderProtocol(provider, String(params.model || ''), capabilities);
   let stream: AsyncIterable<any>;
   switch (protocol) {

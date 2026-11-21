@@ -4,6 +4,7 @@ import { Key } from 'lucide-react';
 const PROVIDER_ICON_PATH: Record<string, string> = {
   gemini: '/icons/providers/gemini.svg',
   openai: '/icons/providers/openai.svg',
+  codex: '/icons/providers/openai.svg',
   anthropic: '/icons/providers/anthropic.svg',
   grok: '/icons/providers/grok.svg',
   deepseek: '/icons/providers/deepseek.ico',
@@ -51,6 +52,7 @@ const NEUTRAL_ICON_COLOR = 'var(--provider-icon-neutral, #D4D4D8)';
 
 const PROVIDER_ICON_COLOR: Record<string, string> = {
   openai: '#10A37F',
+  codex: '#10A37F',
   anthropic: '#D97757',
   grok: NEUTRAL_ICON_COLOR,
   deepseek: '#5786FE',

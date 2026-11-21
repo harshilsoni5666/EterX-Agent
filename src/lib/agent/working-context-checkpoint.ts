@@ -8,6 +8,10 @@ import { visibleUserRequest, unwrapCurrentUserRequest, neutralizeCurrentUserRequ
 import { stableScopeSegment } from './context-scope';
 import { getEterxWorkspaceDir } from './storage-paths';
 import type { ContextFabric } from './context-fabric';
+import { isFixedContextSections, measureContextUsageSections, type FixedContextSections } from '../context-usage-breakdown';
+import { contextMeasurementModel, orderContextMeasurementLogs } from '../context-usage-snapshot';
+import { selectMainContextLogs } from '../chat-usage-scope';
+import { readModelUsage } from '../model-usage';
 import { sanitizeGeminiHistory } from './context-hot-path';
 import {
   extendWorkingDialogue,
@@ -26,6 +30,7 @@ type Checkpoint = {
   provider: string;
   model: string;
   kind: WireKind;
+  referenceOnly?: boolean;
   /** Canonical admission identity and legacy working-record recovery completed. */
   lineageVersion?: 2 | 3;
   runId?: string;
@@ -36,6 +41,7 @@ type Checkpoint = {
   requestIdentity?: WorkingDialogueEntry;
   contents: any[];
   calibration?: { inputTokens: number; localTokens: number };
+  fixedContext?: FixedContextSections;
   fabricRevision?: number;
 };
 const zip = promisify(gzip);
@@ -116,6 +122,9 @@ const readCheckpoint = async (sourcePath: string, scope: string): Promise<Checkp
     || envelope.hash !== hash(JSON.stringify(checkpoint))) {
     throw new Error('Saved working context failed its integrity check. It has not been replaced.');
   }
+  if (checkpoint.fixedContext && !isFixedContextSections(checkpoint.fixedContext)) delete checkpoint.fixedContext;
+  if (checkpoint.calibration && ![checkpoint.calibration.inputTokens, checkpoint.calibration.localTokens]
+    .every(count => Number.isSafeInteger(count) && count > 0)) delete checkpoint.calibration;
   return checkpoint;
 };
 
@@ -387,7 +396,33 @@ export function rebaseWorkingTranscriptForModel(contents: any[], kind: WireKind)
 /** Transform the exact idle transcript while preserving its admission lineage. */
 export type ManualCompactionFallback = { provider: string; model: string; history: any[] };
 
-export async function compactSavedWorkingContext(chatId: string, transform: (checkpoint: Checkpoint) => Promise<any[]>, fallback?: ManualCompactionFallback, fabric?: ContextFabric) {
+/** Restore old checkpoints from measurements of this chat, run and model only. */
+export function recoverCheckpointMeasurement(checkpoint: Checkpoint, logs: any[], runId?: string) {
+  const model = contextMeasurementModel(checkpoint);
+  const samples = orderContextMeasurementLogs(selectMainContextLogs(logs, checkpoint.scope).filter(log =>
+    ['context_usage', 'context_compaction', 'model_usage'].includes(log?.type) && log.phase !== 'chat_title'
+    && (!runId || !log.runId || runId === log.runId) && contextMeasurementModel(log) === model));
+  const latest = samples.findLast(log => log.type === 'context_usage' || (log.type === 'context_compaction' && log.usage));
+  const sample = latest?.type === 'context_compaction' ? latest.usage : latest;
+  if (!sample) return;
+  if (!checkpoint.fixedContext && Number.isFinite(sample.systemTokens) && Number.isFinite(sample.toolTokens)) {
+    const retainedSystem = checkpoint.contents.filter(message => message?.role === 'system').map(textOf).join('\n\n');
+    const retained = measureContextUsageSections({ systemInstruction: retainedSystem }).system;
+    const storedSystemTokens = Object.values(retained).reduce((sum, count) => sum + count, 0);
+    checkpoint.fixedContext = isFixedContextSections(sample.fixedContext) ? sample.fixedContext : {
+      totalsOnly: true,
+      system: { systemPrompt: Math.max(0, sample.systemTokens - storedSystemTokens), rules: 0, skills: 0, subagentDefinitions: 0 },
+      tools: { toolDefinitions: Math.max(0, sample.toolTokens), skills: 0, subagents: 0, mcpDynamicTools: 0 },
+    };
+  }
+  if (!checkpoint.calibration && sample.contextRequestId && Number(sample.localEstimatedTokens) > 0) {
+    const receipt = samples.findLast(log => log.type === 'model_usage' && log.contextRequestId === sample.contextRequestId);
+    const inputTokens = receipt ? readModelUsage(receipt).promptTokens : 0;
+    if (inputTokens > 0) checkpoint.calibration = { inputTokens, localTokens: sample.localEstimatedTokens };
+  }
+}
+
+export async function compactSavedWorkingContext(chatId: string, transform: (checkpoint: Checkpoint) => Promise<any[] | null>, fallback?: ManualCompactionFallback, fabric?: ContextFabric) {
   const directory = getEterxWorkspaceDir('.context', 'working', stableScopeSegment(chatId));
   const names = await fs.readdir(directory).catch((error: any) => {
     if (error?.code === 'ENOENT') return [] as string[];
@@ -397,6 +432,20 @@ export async function compactSavedWorkingContext(chatId: string, transform: (che
   let checkpoint: Checkpoint;
   if (latest) {
     checkpoint = await readCheckpoint(path.join(directory, latest), chatId);
+    // Older direct chats sealed the user request before streaming and never
+    // saved its final reply. Only append a single missing, matching suffix.
+    const history = fallback?.history;
+    const reply = history?.at(-1);
+    const request = history?.at(-2);
+    if ((checkpoint.referenceOnly || !checkpoint.runId) && history && request?.role === 'user' && reply?.role === 'model' && checkpoint.requestIdentity
+      && checkpoint.contents.at(-1)?.role === 'user' && sameWorkingDialogueEntry(checkpoint.requestIdentity, workingDialogueEntry(request))) {
+      const lineage = extendWorkingDialogue(checkpoint.lineage || checkpoint.dialogue.map(identity => ({ identity })), checkpoint.contents);
+      const reconciled = reconcileWorkingDialogue(lineage, history);
+      if (reconciled.remainingHistory.length === 1 && reconciled.remainingHistory[0] === reply) {
+        checkpoint.contents.push(checkpoint.kind === 'gemini' ? withoutWorkingDialogueMetadata(reply) : { role: 'assistant', content: textOf(reply) });
+        checkpoint.lineage = reconciled.lineage;
+      }
+    }
   } else {
     if (!fallback?.history.length) throw new Error('This chat has no saved context to compact yet.');
     const kind: WireKind = fallback.provider === 'gemini' ? 'gemini' : fallback.provider === 'anthropic' ? 'anthropic' : 'compatible';
@@ -413,6 +462,7 @@ export async function compactSavedWorkingContext(chatId: string, transform: (che
     };
   }
   const contents = await transform(checkpoint);
+  if (!contents) return;
   // Compaction changes the payload, not the model's observed token density.
   // Keep the paired sample as an estimate until the next provider receipt.
   const next = { ...checkpoint, contents };
@@ -464,6 +514,7 @@ export async function openWorkingContextCheckpoint(input: {
   let remainingHistory = reconciledHistory.remainingHistory;
   let restored: any[] = [];
   let calibration: Checkpoint['calibration'];
+  let fixedContext: FixedContextSections | undefined;
   let currentRequestIncluded = false;
   if (input.enabled) {
     let names: string[] = [];
@@ -504,7 +555,9 @@ export async function openWorkingContextCheckpoint(input: {
       workingLineage = reconciledHistory.lineage;
       remainingHistory = reconciledHistory.remainingHistory;
       currentRequestIncluded = resumesSameRun;
-      const sameProviderWire = !input.referenceOnly && checkpoint.kind === input.kind && checkpoint.provider === input.provider;
+      const sameProviderWire = Boolean(input.referenceOnly) === Boolean(checkpoint.referenceOnly)
+        && checkpoint.kind === input.kind && checkpoint.provider === input.provider;
+      if (sameProviderWire && checkpoint.model === input.model) fixedContext = checkpoint.fixedContext;
       restored = sameProviderWire
         ? checkpoint.model === input.model ? [...checkpoint.contents] : rebaseWorkingTranscriptForModel(checkpoint.contents, input.kind)
         : translateCheckpoint(checkpoint, input.kind);
@@ -561,6 +614,7 @@ export async function openWorkingContextCheckpoint(input: {
     remainingHistory: remainingHistory.map(withoutWorkingDialogueMetadata),
     calibration,
     currentRequestIncluded,
+    setFixedContext(sections: FixedContextSections | undefined) { fixedContext = sections; },
     async save(contents: any[], model = input.model, provider = input.provider, measured?: Checkpoint['calibration']): Promise<void> {
       if (!input.enabled) return;
       // Runtime prompts/tools are rebuilt from current settings. The only
@@ -568,8 +622,8 @@ export async function openWorkingContextCheckpoint(input: {
       const conversational = contents.filter(message => message?.role !== 'system' || capsuleOf(message))
         .map(withoutWorkingDialogueMetadata);
       const checkpoint: Checkpoint = { version: 1, scope: input.chatId, provider, model,
-        kind: input.kind, lineageVersion: 3, runId: input.runId, dialogue, requestIdentity,
-        lineage: extendWorkingDialogue(workingLineage, conversational), contents: conversational, calibration: measured,
+        kind: input.kind, referenceOnly: input.referenceOnly, lineageVersion: 3, runId: input.runId, dialogue, requestIdentity,
+        lineage: extendWorkingDialogue(workingLineage, conversational), contents: conversational, calibration: measured, fixedContext,
         fabricRevision: input.fabric?.scopeId === input.chatId ? input.fabric.getRevision() : undefined };
       const temporary = `${destination}.${randomUUID()}.tmp`;
       // Capture before the first await, then serialize commits in call order.

@@ -12,7 +12,7 @@ const options = [
 
 export function WorkspaceLocationMenu({ location, workspace, retentionDays, busy, error, locked, choose, update }: {
   location: RunLocation; workspace: ManagedWorkspace | null; retentionDays: number; busy: boolean; error: string; locked: boolean;
-  choose: (location: RunLocation) => Promise<void>; update: (action: 'keep' | 'extend' | 'remove') => Promise<void>;
+  choose: (location: RunLocation) => Promise<boolean>; update: (action: 'keep' | 'extend' | 'remove') => Promise<void>;
 }) {
   const [details, setDetails] = useState<RunLocation | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);

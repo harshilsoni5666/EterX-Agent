@@ -22,7 +22,7 @@ export { getDocumentedThinkingCapabilities } from './model-thinking-contracts';
 export { getDocumentedThinkingCapabilities as inferModelThinkingCapabilities } from './model-thinking-contracts';
 
 export type MainAgentProvider =
-  | 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq'
+  | 'gemini' | 'mistral' | 'openai' | 'codex' | 'openrouter' | 'anthropic' | 'groq'
   | 'deepseek' | 'grok' | 'cerebras' | 'together' | 'fireworks' | 'sambanova'
   | 'perplexity' | 'deepinfra' | 'huggingface' | 'nvidia' | 'cloudflare'
   | 'ollama' | 'lmstudio' | 'vllm' | 'llamacpp' | 'novita' | 'qwen'
@@ -195,6 +195,14 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
     label: 'OpenAI',
     compactLabel: 'OpenAI',
     get modelName() { return resolveModelName('openai'); },
+    selectable: true,
+  },
+  codex: {
+    id: 'codex',
+    provider: 'codex',
+    label: 'Codex · ChatGPT plan',
+    compactLabel: 'Codex',
+    get modelName() { return resolveModelName('codex'); },
     selectable: true,
   },
   openrouter: {

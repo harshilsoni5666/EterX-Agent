@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { getEterxWorkspaceDir } from './storage-paths';
 import { stableScopeSegment } from './context-scope';
+import type { PlanState } from './plan-execution-engine';
 
 const TASKS_DIR = getEterxWorkspaceDir('.tasks');
 
@@ -58,15 +59,38 @@ export type TaskTrackerStep = {
 export type TaskTrackerData = {
   /** Stable identity shared by generation, checkpoint, and auto-progress traces. */
   planId?: string;
+  title?: string;
+  document?: string;
+  context?: string;
+  revision?: number;
   goal: string;
   chatId?: string;
   createdAt: number;
   updatedAt?: number;
   complexity: string;
   estimatedMinutes: number;
-  status: 'generating' | 'in_progress' | 'completed' | 'failed' | 'stopped';
+  status: 'generating' | 'proposed' | 'in_progress' | 'completed' | 'failed' | 'stopped';
   steps: TaskTrackerStep[];
 };
+
+export function trackerFromPlan(chatId: string, plan: PlanState): TaskTrackerData {
+  // Recover metadata for execution plans saved before planId lived in the engine.
+  let legacy: TaskTrackerData | undefined;
+  if (!plan.planId) {
+    try { legacy = readTaskTracker(chatId)?.data; } catch { /* use session data */ }
+  }
+  return {
+    planId: plan.planId || legacy?.planId || `task-plan-${chatId}-${plan.createdAt}`,
+    title: plan.title, document: plan.document, context: plan.context, revision: plan.revision,
+    chatId, goal: plan.goal, createdAt: plan.createdAt, updatedAt: plan.updatedAt,
+    complexity: plan.complexity || legacy?.complexity || 'moderate',
+    estimatedMinutes: plan.estimatedMinutes ?? legacy?.estimatedMinutes ?? 0,
+    status: plan.status === 'executing' ? 'in_progress' : plan.status,
+    steps: plan.steps.map(({ trace: _trace, status, ...step }) => ({
+      ...step, status: status === 'active' ? 'in_progress' : status === 'ready' ? 'pending' : status,
+    })),
+  };
+}
 
 export type TaskTrackerPaths = {
   dir: string;
@@ -91,16 +115,17 @@ export function getTaskTrackerPaths(chatId?: string | null): TaskTrackerPaths {
 export async function writeTaskTracker(chatId: string | undefined | null, data: TaskTrackerData, markdown: string): Promise<TaskTrackerPaths> {
   const paths = getTaskTrackerPaths(chatId);
   await fs.ensureDir(paths.dir);
-  await Promise.all([
+  const writes = await Promise.allSettled([
     writeJsonAtomic(paths.jsonPath, data),
     writeFileAtomic(paths.mdPath, markdown),
   ]);
+  for (const write of writes) if (write.status === 'rejected') throw write.reason;
   return paths;
 }
 
 export function renderTaskTrackerMarkdown(data: TaskTrackerData): string {
   const lines = [
-    '# TASK TRACKER',
+    '# ' + (data.title || 'Task tracker'),
     '',
     `**Goal:** ${data.goal}`,
     `**Created:** ${new Date(data.createdAt).toISOString()}`,
@@ -112,6 +137,8 @@ export function renderTaskTrackerMarkdown(data: TaskTrackerData): string {
     '---',
     '',
   ];
+  if (data.context) lines.push(data.context, '');
+  if (data.document) lines.push(data.document, '', '## Steps', '');
 
   for (const step of data.steps || []) {
     const marker = step.status === 'done' ? '[x]'
@@ -139,8 +166,16 @@ export function renderTaskTrackerMarkdown(data: TaskTrackerData): string {
   return lines.join('\n');
 }
 
+const pendingTrackerWrites = new Map<string, Promise<TaskTrackerPaths>>();
+
 export async function writeTaskTrackerState(chatId: string | undefined | null, data: TaskTrackerData): Promise<TaskTrackerPaths> {
-  return writeTaskTracker(chatId, data, renderTaskTrackerMarkdown(data));
+  const key = safeTaskChatId(chatId);
+  const prior = pendingTrackerWrites.get(key);
+  const write = (prior ? prior.catch(() => undefined) : Promise.resolve())
+    .then(() => writeTaskTracker(chatId, data, renderTaskTrackerMarkdown(data)));
+  pendingTrackerWrites.set(key, write);
+  try { return await write; }
+  finally { if (pendingTrackerWrites.get(key) === write) pendingTrackerWrites.delete(key); }
 }
 
 export function readTaskTracker(chatId?: string | null): { data: TaskTrackerData; mtime: number; paths: TaskTrackerPaths } | null {
@@ -169,15 +204,18 @@ export function trackerToTrace(data: TaskTrackerData, phase: 'generating' | 'gen
   const failedSteps = steps.filter(step => step.status === 'failed').length;
   const completedSteps = doneSteps + skippedSteps;
   const totalSteps = steps.length;
-  const activeStep = steps.find(step => step.status === 'in_progress') || steps.find(step => step.status === 'pending') || null;
+  const activeStep = data.status === 'in_progress' ? steps.find(step => step.status === 'in_progress') : undefined;
 
   return {
     type: 'task_plan',
+    iconCategory: 'plan',
+    title: data.title, document: data.document, context: data.context, revision: data.revision,
+    createdAt: data.createdAt,
     ...(data.planId ? { planId: data.planId } : {}),
     text: phase === 'generating'
       ? 'Generating task plan'
       : phase === 'generated'
-        ? 'Task plan generated'
+        ? (data.status === 'proposed' ? 'Proposed plan' : 'Task plan created')
         : phase === 'complete'
           ? 'Task plan complete'
           : phase === 'failed'
@@ -211,6 +249,9 @@ export function trackerToTrace(data: TaskTrackerData, phase: 'generating' | 'gen
       artifacts: step.artifacts,
       status: step.status,
       completedAt: step.completedAt,
+      completionReason: step.completionReason,
+      completionEvidence: step.completionEvidence,
+      failureReason: step.failureReason,
     })),
   };
 }

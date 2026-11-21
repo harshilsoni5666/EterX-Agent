@@ -24,6 +24,7 @@ import './activity-feed.css';
 import '../../electron/splash.css';
 import './scrollbars.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
+import { ChatGptSubscriptionBridge } from '../components/layout/chatgpt-subscription-bridge';
 import { ClipboardPasteBridge } from '../components/ui/clipboard-paste-bridge';
 import { NativeTooltipSuppressor } from '../components/ui/native-tooltip-suppressor';
 import { readInitialThemePreference, resolveInitialTheme } from '../lib/initial-theme';
@@ -90,6 +91,7 @@ export default function RootLayout({
       </head>
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <ThemeBridge />
+        <ChatGptSubscriptionBridge />
         <ClipboardPasteBridge />
         <NativeTooltipSuppressor />
         {children}
