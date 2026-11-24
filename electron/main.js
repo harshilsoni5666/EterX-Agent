@@ -4751,6 +4751,10 @@ app.on('ready', async () => {
       canEncrypt: async () => await secureStorageAvailable()
         && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
       openBrowser: url => shell.openExternal(url),
+      callbackAssets: {
+        chatGptLogoPath: path.join(app.getAppPath(), app.isPackaged ? 'runtime/public' : 'public', 'icons/providers/openai.svg'),
+        eterxLogoPath: APP_ICON_PNG,
+      },
       // Use the desktop network stack for system proxy settings.
       fetchRemote: (url, options) => electronNet.fetch(url, {
         ...options, credentials: 'omit', cache: 'no-store', bypassCustomProtocolHandlers: true,

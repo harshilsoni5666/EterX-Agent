@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { createChatGptCallbackPage } = require('./chatgpt-subscription-page');
 
 // Sign in with ChatGPT for open-source local applications. The OAuth grant and
 // model catalog follow the same direct token sharing flow used by T3 Code.
@@ -14,8 +15,6 @@ const PLAN_SCOPE = 'chatgpt.tokens.use.direct';
 const SCOPES = `openid profile email offline_access resource.invoke ${PLAN_SCOPE}`;
 const USAGE_URL = 'https://chatgpt.com/settings/usage';
 const CALLBACK_PATH = '/auth/callback';
-const CALLBACK_CLEANUP = "history.replaceState(null, '', '/auth/complete');";
-const CALLBACK_CLEANUP_HASH = crypto.createHash('sha256').update(CALLBACK_CLEANUP).digest('base64');
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
 const MAX_BRIDGE_BODY = 100 * 1024 * 1024;
 const UNUSABLE_REFRESH_CODES = new Set([
@@ -158,9 +157,10 @@ function sendBridgeError(response, error) {
 }
 
 function createChatGptSubscription({
-  directory, safeStorage, canEncrypt, openBrowser, onChange, fetchRemote = fetch, log = () => {},
+  directory, safeStorage, canEncrypt, openBrowser, onChange, fetchRemote = fetch, log = () => {}, callbackAssets,
 }) {
   const store = path.join(directory, 'chatgpt-subscription.enc');
+  const callbackPage = createChatGptCallbackPage(callbackAssets);
   let record = null;
   let available = false;
   let bridgeReady = false;
@@ -297,18 +297,6 @@ function createChatGptSubscription({
     }
   }
 
-  function callbackPage(response, message) {
-    if (!response || response.destroyed || response.writableEnded) return;
-    const text = message.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-    response.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store',
-      'Connection': 'close',
-      'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': `default-src 'none'; script-src 'sha256-${CALLBACK_CLEANUP_HASH}'; frame-ancestors 'none'; base-uri 'none'`,
-    }).end(`<!doctype html><html lang="en"><meta charset="utf-8"><title>ChatGPT sign-in · EterX</title><p>${text}</p><script>${CALLBACK_CLEANUP}</script></html>`);
-  }
-
   function signInFailureMessage(error) {
     return error?.status ? error.message : 'Could not complete ChatGPT sign-in. Try again in EterX.';
   }
@@ -320,9 +308,10 @@ function createChatGptSubscription({
       throw subscriptionError('ChatGPT returned an unexpected sign-in provider. Start again.');
     }
     if (params.has('error')) {
-      throw subscriptionError(params.get('error') === 'access_denied'
-        ? 'ChatGPT sign-in was declined. Sign in again when you are ready.'
-        : 'OpenAI could not authorize ChatGPT sign-in. Start again in EterX.');
+      if (params.get('error') === 'access_denied') {
+        throw subscriptionError('ChatGPT sign-in was declined. Sign in again when you are ready.', 'access_denied');
+      }
+      throw subscriptionError('OpenAI could not authorize ChatGPT sign-in. Start again in EterX.');
     }
     const returnedId = params.get('client_id');
     const clientId = flow.clientId ?? returnedId;
@@ -375,9 +364,7 @@ function createChatGptSubscription({
       signInError = '';
     });
     signal.throwIfAborted();
-    return tokens.scopes.includes(PLAN_SCOPE)
-      ? 'ChatGPT is connected. You can close this tab and return to EterX.'
-      : 'Sign-in is complete. Return to EterX to enable ChatGPT plan usage.';
+    return tokens.scopes.includes(PLAN_SCOPE);
   }
 
   async function authorize(flow, endpoints, allowRetry) {
@@ -397,9 +384,17 @@ function createChatGptSubscription({
         || url.origin !== redirect.origin || url.pathname !== CALLBACK_PATH) {
         response.writeHead(404).end();
       } else if (url.searchParams.getAll('state').length !== 1 || !equalSecret(url.searchParams.get('state'), expectedState)) {
-        response.writeHead(400).end('This response belongs to another sign-in.');
+        callbackPage(response, {
+          status: 400,
+          heading: 'This tab belongs to another sign-in',
+          detail: 'Continue in the browser tab opened by EterX.',
+        });
       } else if (received || signal.aborted) {
-        response.writeHead(410).end('This sign-in is no longer active.');
+        callbackPage(response, {
+          status: 410,
+          heading: 'This sign-in is no longer active',
+          detail: 'Return to EterX to see your connection status.',
+        });
       } else {
         received = true;
         callback.resolve({ params: url.searchParams, response });
@@ -432,15 +427,35 @@ function createChatGptSubscription({
       }).catch(() => callback.reject(subscriptionError('Could not open ChatGPT sign-in. Try again.')));
       const { params, response } = await callback.promise;
       browserResponse = response;
-      const message = await exchangeCallback(flow, endpoints, { params, redirectUri: redirect.href, verifier, nonce });
-      callbackPage(browserResponse, message);
+      const connected = await exchangeCallback(flow, endpoints, { params, redirectUri: redirect.href, verifier, nonce });
+      callbackPage(browserResponse, connected
+        ? { heading: 'Successfully connected to EterX', connected: true }
+        : { heading: 'Enable ChatGPT plan usage', detail: 'Return to Settings → Subscription in EterX to use your ChatGPT plan.' });
       return true;
     } catch (error) {
       if (allowRetry && !signal.aborted && error?.code === 'invalid_grant') {
-        callbackPage(browserResponse, 'This sign-in code could not be used. Continue in the new ChatGPT browser tab.');
+        callbackPage(browserResponse, {
+          heading: 'Continue signing in',
+          detail: 'Use the new ChatGPT tab to finish connecting to EterX.',
+        });
         return false;
       }
-      callbackPage(browserResponse, signInFailureMessage(signal.aborted ? signal.reason : error));
+      if (signal.aborted) {
+        callbackPage(browserResponse, {
+          heading: 'ChatGPT sign-in ended',
+          detail: signInFailureMessage(signal.reason),
+        });
+      } else if (error?.code === 'access_denied') {
+        callbackPage(browserResponse, {
+          heading: 'ChatGPT access wasn’t approved',
+          detail: 'Return to EterX to start a new sign-in whenever you’re ready.',
+        });
+      } else {
+        callbackPage(browserResponse, {
+          heading: 'Couldn’t connect to ChatGPT',
+          detail: 'Return to Settings → Subscription in EterX for details and to try again.',
+        });
+      }
       throw error;
     } finally {
       signal.removeEventListener('abort', abortCallback);
