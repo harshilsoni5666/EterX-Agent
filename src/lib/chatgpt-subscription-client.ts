@@ -10,35 +10,62 @@ type ChatGptModel = {
   efforts: string[];
   defaultEffort: string | null;
   imageInput: boolean | null;
+  fast: boolean;
 };
+
+type ConnectionStatus = 'disconnected' | 'consent-required' | 'connected';
+
+export type ChatGptAccount = {
+  id: string;
+  label: string;
+  email: string | null;
+  status: ConnectionStatus | 'pending';
+};
+
+export type ChatGptObservedUsage = {
+  status: 'completed' | 'plan-limit' | 'rate-limited' | 'unavailable' | 'ineligible';
+  observedAt: number;
+};
+export type ChatGptSwitchMode = 'idle' | 'stop' | 'resume';
 
 type ChatGptSubscriptionState = {
   available: boolean;
-  status: 'disconnected' | 'authorizing' | 'consent-required' | 'connected';
+  status: ConnectionStatus;
+  accounts: ChatGptAccount[];
+  activeAccountId: string | null;
+  authorizing: boolean;
+  authorizingAccountId: string | null;
   canCancel: boolean;
-  disconnecting: boolean;
-  email: string | null;
-  hasRegistration: boolean;
+  accountAction: 'switching' | 'disconnecting' | 'removing' | null;
   models: ChatGptModel[];
+  catalogReady: boolean;
+  catalogRevision: number;
   refreshing: boolean;
+  catalogError: string | null;
+  usage: ChatGptObservedUsage | null;
+  planWelcomePending: boolean;
   error: string | null;
 };
 
 type DesktopSubscription = {
   getState: () => Promise<ChatGptSubscriptionState | null>;
-  signIn: (differentAccount?: boolean) => Promise<ChatGptSubscriptionState | null>;
+  signIn: (profileId?: string) => Promise<ChatGptSubscriptionState | null>;
   cancel: () => Promise<ChatGptSubscriptionState | null>;
   refreshModels: () => Promise<ChatGptSubscriptionState | null>;
-  disconnect: () => Promise<ChatGptSubscriptionState | null>;
-  openUsage: () => Promise<void>;
+  switchAccount: (profileId: string, mode?: ChatGptSwitchMode) => Promise<{ state: ChatGptSubscriptionState; activeWork: number } | null>;
+  removeAccount: (profileId: string) => Promise<ChatGptSubscriptionState | null>;
+  disconnect: (profileId: string) => Promise<ChatGptSubscriptionState | null>;
+  disconnectAll: () => Promise<ChatGptSubscriptionState | null>;
+  dismissPlanWelcome: () => Promise<ChatGptSubscriptionState | null>;
   onChange: (listener: (value: ChatGptSubscriptionState) => void) => () => void;
 };
 
 const listeners = new Set<() => void>();
 let snapshot: ChatGptSubscriptionState | null = null;
 const unavailable: ChatGptSubscriptionState = {
-  available: false, status: 'disconnected', canCancel: false, disconnecting: false, email: null, hasRegistration: false,
-  models: [], refreshing: false, error: null,
+  available: false, status: 'disconnected', accounts: [], activeAccountId: null, authorizing: false,
+  authorizingAccountId: null, canCancel: false, accountAction: null, models: [], catalogReady: false,
+  catalogRevision: 0, refreshing: false, catalogError: null, usage: null, planWelcomePending: false, error: null,
 };
 
 export function getDesktopSubscription(): DesktopSubscription | undefined {
@@ -62,9 +89,15 @@ export function watchChatGptSubscription() {
   let heardUpdate = false;
   const update = (state: ChatGptSubscriptionState | null) => {
     if (!active) return;
+    const previous = snapshot;
     snapshot = state || unavailable;
     for (const listener of listeners) listener();
-    window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail: { type: 'chatgpt-subscription-updated' } }));
+    if (!previous || previous.available !== snapshot.available || previous.status !== snapshot.status
+      || previous.activeAccountId !== snapshot.activeAccountId || previous.catalogRevision !== snapshot.catalogRevision
+      || previous.authorizing !== snapshot.authorizing || previous.refreshing !== snapshot.refreshing
+      || previous.catalogError !== snapshot.catalogError) {
+      window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail: { type: 'chatgpt-subscription-updated' } }));
+    }
   };
   const unsubscribe = api.onChange(state => {
     heardUpdate = true;
@@ -91,13 +124,19 @@ export function codexModelIsAvailable(modelId: string): boolean {
 }
 
 export function codexCatalogPending(): boolean {
-  return Boolean(getDesktopSubscription() && (snapshot === null || snapshot.status === 'authorizing' || (
-    snapshot.available && snapshot.status === 'connected' && !snapshot.models.length && (snapshot.refreshing || snapshot.error)
-  )));
+  if (!getDesktopSubscription()) return false;
+  if (!snapshot) return true;
+  if (!snapshot.available) return false;
+  if (snapshot.status !== 'connected') return snapshot.authorizing;
+  return !snapshot.models.length && (!snapshot.catalogReady || snapshot.refreshing || Boolean(snapshot.catalogError));
 }
 
 export function codexModelLabel(modelId: string): string | undefined {
   return currentModels().find(model => model.id === modelId)?.label;
+}
+
+export function codexModelFastAccount(modelId: string): string | null {
+  return currentModels().some(model => model.id === modelId && model.fast) ? snapshot?.activeAccountId ?? null : null;
 }
 
 const EFFORTS: Partial<Record<string, MainAgentThinkingLevel>> = {

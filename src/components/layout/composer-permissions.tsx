@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Check, Hand, Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { readChatPermissionPreference, subscribeChatPermissionPreference, writeChatPermissionMode } from '../../lib/chat-permission-preferences';
 import { isChatPermissionMode, type ChatPermissionMode, type PendingToolApproval, type ToolApprovalDecision } from '../../lib/chat-permissions';
 import { requestJson } from '../../lib/request-json';
 import styles from './composer-permissions.module.css';
+import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 
 const MODES = {
   ask: { label: 'Ask for approval', description: 'Ask before running commands, editing files, or searching the web.', Icon: Hand },
@@ -16,10 +17,15 @@ const MODES = {
 
 const MODE_ORDER: ChatPermissionMode[] = ['ask', 'review', 'full'];
 
-export function ComposerPermissionSelector({ chatId, onOpenSettingsTab }: {
+export function ComposerPermissionSelector({ chatId }: {
   chatId?: string | null;
-  onOpenSettingsTab?: (tab: 'api' | 'models' | 'general') => void;
 }) {
+  const workspaceVisible = useWorkspacePaneVisible();
+  const [open, setOpen] = useState(false);
+  useLayoutEffect(() => {
+    if (!workspaceVisible) setOpen(false);
+  }, [workspaceVisible]);
+
   const mode = useSyncExternalStore(subscribeChatPermissionPreference, () => readChatPermissionPreference(chatId), () => 'full' as const);
   const savingRef = useRef(false);
   const [saving, setSaving] = useState(false);
@@ -52,17 +58,16 @@ export function ComposerPermissionSelector({ chatId, onOpenSettingsTab }: {
   };
 
   return (
-    <DropdownMenu.Root modal={false}>
+    <DropdownMenu.Root modal={false} open={workspaceVisible && open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger asChild>
         <button type="button" aria-label={`Permissions, ${label}${saveFailed ? ', update failed' : ''}`} aria-busy={saving} title={saveFailed ? 'Permission update failed. Reopen to try again.' : `${label} · Applies to subsequent tool actions`} className={styles.trigger} data-mode={mode}>
           <Icon size={14} strokeWidth={1.8} aria-hidden="true" />
         </button>
       </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
+      {workspaceVisible && <DropdownMenu.Portal>
         <DropdownMenu.Content aria-label="EterX permissions" side="top" align="start" sideOffset={10} collisionPadding={12} className={styles.menu}>
           <div className={styles.menuHeading}>
             <DropdownMenu.Label className={styles.menuTitle}>Select Permission for this agent</DropdownMenu.Label>
-            {onOpenSettingsTab && <button type="button" className={styles.learnMore} onClick={() => onOpenSettingsTab('general')}>Learn more</button>}
           </div>
           <DropdownMenu.RadioGroup value={mode} onValueChange={value => {
             if (isChatPermissionMode(value)) void selectMode(value);
@@ -84,7 +89,7 @@ export function ComposerPermissionSelector({ chatId, onOpenSettingsTab }: {
             })}
           </DropdownMenu.RadioGroup>
         </DropdownMenu.Content>
-      </DropdownMenu.Portal>
+      </DropdownMenu.Portal>}
     </DropdownMenu.Root>
   );
 }

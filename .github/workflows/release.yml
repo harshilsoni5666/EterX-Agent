@@ -19,35 +19,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
-    name: Verify release tests
-    runs-on: windows-latest
-    steps:
-      - name: Check out release source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: ${{ inputs.tag || github.ref }}
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install locked dependencies
-        run: npm ci --legacy-peer-deps --no-audit --fund=false
-
-      - name: Validate release configuration
-        run: npm run check:release-config
-
-      - name: Run release checks
-        run: npm run test:ci
-
   prepare-release:
     name: Prepare draft release
-    needs: verify
     runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -66,10 +42,11 @@ jobs:
             exit 1
           fi
 
-      - name: Check out release notes
+      - name: Check out release source
+        id: source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           persist-credentials: false
 
       - name: Set up Node.js for release notes
@@ -78,35 +55,70 @@ jobs:
           node-version: 24
 
       - name: Prepare customer release notes
-        run: node scripts/prepare-release-notes.mjs "$RUNNER_TEMP/eterx-release-notes.md"
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          const expected = process.env.RELEASE_TAG.replace(/^v/, '');
+          const { version } = require('./package.json');
+          const lockfile = require('./package-lock.json');
+          if (version !== expected || lockfile.version !== expected || lockfile.packages?.['']?.version !== expected) {
+            throw new Error(`The package and lockfile versions must match ${process.env.RELEASE_TAG}.`);
+          }
+          NODE
+          node scripts/prepare-release-notes.mjs "$RUNNER_TEMP/eterx-release-notes.md"
 
       - name: Create or reset draft release
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            is_draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+          if draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets 2>/dev/null)"; then
+            is_draft="$(jq -r '.isDraft' <<< "$draft")"
             if [ "$is_draft" != "true" ]; then
               echo "Release $RELEASE_TAG already exists and is published; published releases are immutable." >&2
               exit 1
             fi
             while IFS= read -r asset; do
               [ -z "$asset" ] || gh release delete-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --yes
-            done < <(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            done < <(jq -r '.assets[].name' <<< "$draft")
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --notes-file "$RUNNER_TEMP/eterx-release-notes.md"
           else
             gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --draft \
               --title "EterX $RELEASE_TAG" \
-              --notes "Verified native EterX installers are being built."
+              --notes-file "$RUNNER_TEMP/eterx-release-notes.md"
           fi
-          gh release edit "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --notes-file "$RUNNER_TEMP/eterx-release-notes.md"
           gh release upload "$RELEASE_TAG" release-notes.json \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
+
+  verify:
+    name: Verify release tests
+    needs: prepare-release
+    runs-on: windows-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare-release.outputs.commit }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --legacy-peer-deps --no-audit --fund=false
+
+      - name: Validate release configuration
+        run: npm run check:release-config
+
+      - name: Run release checks
+        run: npm run test:ci
 
   build:
     name: Build ${{ matrix.platform }}
@@ -142,7 +154,7 @@ jobs:
       - name: Check out release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.prepare-release.outputs.commit }}
           persist-credentials: false
 
       - name: Set up Node.js
@@ -150,21 +162,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-
-      - name: Enforce release version
-        shell: bash
-        run: |
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          LOCK_VERSION="$(node -p "require('./package-lock.json').version")"
-          TAG_VERSION="${RELEASE_TAG#v}"
-          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
-            echo "package.json version $PACKAGE_VERSION does not match tag $RELEASE_TAG" >&2
-            exit 1
-          fi
-          if [ "$LOCK_VERSION" != "$TAG_VERSION" ]; then
-            echo "package-lock.json version $LOCK_VERSION does not match tag $RELEASE_TAG" >&2
-            exit 1
-          fi
 
       - name: Install locked dependencies
         run: npm ci --legacy-peer-deps --no-audit --fund=false
@@ -182,6 +179,8 @@ jobs:
         run: npm run build
 
       - name: Prepare self-contained desktop runtime
+        env:
+          ETERX_TELEMETRY_URL: ${{ vars.ETERX_TELEMETRY_URL }}
         run: npm run desktop:prepare-runtime
 
       - name: Package Windows
@@ -347,23 +346,48 @@ jobs:
 
   publish:
     name: Publish verified release
-    needs: build
+    needs: [verify, build]
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
-      - name: Download packaged release assets
-        run: gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release
-
       - name: Generate SHA-256 manifest
-        working-directory: release
+        shell: bash
         run: |
-          find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 \
-            | sort -z \
-            | xargs -0 sha256sum \
-            | sed 's#  \./#  #' > SHA256SUMS.txt
+          set -euo pipefail
+          mkdir -p release
+          release_id="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json databaseId,isDraft --jq 'select(.isDraft) | .databaseId')"
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "Expected a draft release for $RELEASE_TAG." >&2
+            exit 1
+          fi
+
+          assets="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+            | jq -cs 'add | map(select(.name != "SHA256SUMS.txt"))')"
+          if ! jq -e 'length > 0 and all(.[]; .state == "uploaded" and .size > 0)' <<< "$assets" >/dev/null; then
+            echo "The draft release has missing or incomplete assets." >&2
+            exit 1
+          fi
+
+          # GitHub hashes the uploaded bytes. Reuse those digests instead of
+          # downloading the installers again, with a fallback if unavailable.
+          if jq -er '
+            select(all(.[]; (.digest // "") | test("^sha256:[a-f0-9]{64}$")))
+            | sort_by(.name)[] | "\(.digest[7:])  \(.name)"
+          ' <<< "$assets" > "$RUNNER_TEMP/eterx-checksums.txt"; then
+            mv "$RUNNER_TEMP/eterx-checksums.txt" release/SHA256SUMS.txt
+          else
+            echo "Asset digests unavailable; downloading assets to calculate checksums."
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release
+            cd release
+            find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum \
+              | sed 's#  \./#  #' > SHA256SUMS.txt
+          fi
 
       - name: Upload checksum and publish release
         run: |

@@ -27,6 +27,7 @@ function bridgeFetch(bridge: NonNullable<Bridge>): typeof fetch {
       throw new Error('ChatGPT plan usage supports the Responses endpoint.');
     }
     const body = Buffer.from(await request.arrayBuffer());
+    const fastProfile = request.headers.get('x-eterx-codex-fast-profile');
     return new Promise<Response>((resolve, reject) => {
       const local = http.request({
         socketPath: bridge.address,
@@ -38,11 +39,13 @@ function bridgeFetch(bridge: NonNullable<Bridge>): typeof fetch {
           'Content-Length': body.length,
           'x-eterx-codex-bridge': bridge.key,
           ...(connection ? { 'x-eterx-codex-connection': connection } : {}),
+          ...(fastProfile ? { 'x-eterx-codex-fast-profile': fastProfile } : {}),
         },
       }, response => {
         const status = response.statusCode || 503;
         const current = response.headers['x-eterx-codex-connection'];
-        if (typeof current === 'string') connection ??= current;
+        // The private bridge only returns a new ID after an approved handoff.
+        if (typeof current === 'string') connection = current;
         const headers = new Headers();
         for (const name of ['content-type', 'retry-after', 'retry-after-ms', 'x-request-id']) {
           const value = response.headers[name];

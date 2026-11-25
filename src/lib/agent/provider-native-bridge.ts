@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { GoogleGenAI } from '@google/genai';
 import { Anthropic } from './model-clients';
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
-import { applyAnthropicPromptCachePolicy, normalizeProviderCacheUsage } from './provider-prompt-cache';
+import { applyAnthropicPromptCachePolicy, mergeProviderUsageSnapshots, normalizeProviderCacheUsage } from './provider-prompt-cache';
 import { applyAnthropicThinkingDisplay, createAnthropicContentStreamReader } from './provider-capabilities';
 import { getAnthropicThinkingBudget } from './model-routing';
 import { beginPromptCacheDiagnostics } from './prompt-cache-diagnostics';
@@ -93,6 +93,8 @@ export async function* streamMessagesBridge(client: OpenAI, params: Record<strin
   const stream = native.messages.stream(body, signal ? { signal } : undefined);
   const readContent = createAnthropicContentStreamReader();
   for await (const event of stream) {
+    const usage = event.type === 'message_start' ? event.message?.usage : event.type === 'message_delta' ? event.usage : undefined;
+    if (usage) yield { choices: [], usage };
     const content = readContent(event);
     if (content.reasoning) yield { choices: [{ delta: { reasoning: content.reasoning } }] };
     if (content.reasoningBoundary) yield { choices: [{ delta: { reasoning_boundary: true } }] };
@@ -103,6 +105,7 @@ export async function* streamMessagesBridge(client: OpenAI, params: Record<strin
     yield { choices: [{ delta: { reasoning } }] };
     yield { choices: [{ delta: { reasoning_boundary: true } }] };
   }
+  if (message.usage) yield { choices: [], model: message.model, usage: message.usage };
   if (!['end_turn', 'tool_use', 'stop_sequence'].includes(String(message.stop_reason))) throw new Error(`MODEL_STREAM_INCOMPLETE: Messages endpoint ended with ${message.stop_reason}.`);
   cacheObservation?.complete(message.usage);
   const calls = message.content.filter((part: any) => part.type === 'tool_use').map((part: any, index: number) => ({ index, id: part.id, type: 'function', function: { name: part.name, arguments: JSON.stringify(part.input) } }));
@@ -158,7 +161,10 @@ export async function* streamGenerateContentBridge(client: OpenAI, params: Recor
   for await (const chunk of stream) {
     const candidate = chunk.candidates?.[0];
     if (candidate?.finishReason) finishReason = candidate.finishReason;
-    if (chunk.usageMetadata) usage = normalizeProviderCacheUsage('gemini', chunk.usageMetadata);
+    if (chunk.usageMetadata) {
+      usage = mergeProviderUsageSnapshots(usage, chunk.usageMetadata);
+      yield { choices: [], model: chunk.modelVersion, usage: chunk.usageMetadata };
+    }
     for (const part of candidate?.content?.parts || []) {
       // Retain signatures and every native block for tool continuation.
       parts.push(part);
@@ -172,5 +178,5 @@ export async function* streamGenerateContentBridge(client: OpenAI, params: Recor
   }
   if (finishReason !== 'STOP') throw new Error(`MODEL_STREAM_INCOMPLETE: GenerateContent endpoint ended with ${finishReason || 'no finish reason'}.`);
   if (usage) cacheObservation?.complete(usage);
-  yield { choices: [{ delta: { tool_calls: calls }, finish_reason: calls.length ? 'tool_calls' : 'stop' }], usage, prompt_cache_diagnostics: cacheObservation?.report, provider_message: { gemini_content: parts } };
+  yield { choices: [{ delta: { tool_calls: calls }, finish_reason: calls.length ? 'tool_calls' : 'stop' }], usage: usage && normalizeProviderCacheUsage('gemini', usage), prompt_cache_diagnostics: cacheObservation?.report, provider_message: { gemini_content: parts } };
 }

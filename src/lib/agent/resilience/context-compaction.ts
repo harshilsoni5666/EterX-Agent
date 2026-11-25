@@ -27,6 +27,8 @@ import { estimateTokens } from './auto-context';
 import { normalizeContextWindow } from '../../context-window-policy';
 import { refreshLiveContextBudget } from '../live-context-budget';
 import { createProviderChatStream } from '../provider-stream-adapter';
+import { meterModelResponse } from '../../usage/ledger';
+import { withTelemetryScope } from '../../telemetry/runtime';
 import { createCodexSubscriptionClient } from '../codex-subscription-runtime';
 import { applyAnthropicPromptCachePolicy, applyOpenAIPromptCachePolicy } from '../provider-prompt-cache';
 import { assertSuccessfulCompatibleFinish, createCompatibleTaggedReasoningSplitter, splitCompatibleDeltaContent } from '../provider-capabilities';
@@ -1333,7 +1335,7 @@ const generateCapsulePartWithKey = async (
       apiKey,
       httpOptions: { timeout: MODEL_REQUEST_TIMEOUT_MS, retryOptions: { attempts: 1 } },
     });
-    const response = await client.models.generateContent({
+    const { response } = await meterModelResponse('gemini', model.modelId, () => client.models.generateContent({
       model: model.modelId,
       contents: [{ role: 'user', parts: promptParts.map(text => ({ text })) }],
       config: {
@@ -1342,7 +1344,7 @@ const generateCapsulePartWithKey = async (
         maxOutputTokens,
         abortSignal,
       } as any,
-    });
+    }), result => ({ usage: result.usageMetadata, responseModel: result.modelVersion }), abortSignal);
     const finishReason = String(response.candidates?.[0]?.finishReason || '').toUpperCase();
     if (finishReason !== 'STOP') {
       throw new Error(`Context compaction model did not finish a complete capsule (${finishReason}).`);
@@ -1365,7 +1367,9 @@ const generateCapsulePartWithKey = async (
     applyAnthropicPromptCachePolicy(params);
     const cacheControl = params.messages[0].content.at(-1)?.cache_control;
     if (promptParts.length > 1 && cacheControl) params.messages[0].content[0].cache_control = { ...cacheControl };
-    const response = await client.messages.create(params, abortSignal ? { signal: abortSignal } as any : undefined);
+    const { response } = await meterModelResponse('anthropic', model.modelId,
+      () => client.messages.create(params, abortSignal ? { signal: abortSignal } : undefined),
+      result => ({ usage: result.usage, responseModel: result.model }), abortSignal);
     if (response.stop_reason !== 'end_turn') {
       throw new Error(`Context compaction model did not finish a complete capsule (${response.stop_reason}).`);
     }
@@ -1470,7 +1474,8 @@ const generateCapsulePart = async (
       const attemptPrompt = offset > 0 && needsShapeRepair
         ? `${prompt}\n\n[COMPACTOR RETRY REQUIREMENT]\nThe previous attempt did not produce a complete valid state transfer. Produce all nine required sections with non-empty bodies. Shorten repeated prose and use existing exact references for bulky evidence so the final section finishes within the output budget. Keep active constraints, pending work and the next safe action intact. Do not repeat the incomplete output or explain this retry.\n[END COMPACTOR RETRY REQUIREMENT]`
         : prompt;
-      const result = await generateCapsulePartWithKey(attemptPrompt, model, apiKey, attemptController.signal, `${chatId}:compaction`);
+      const result = await withTelemetryScope({ feature: 'compaction' }, () =>
+        generateCapsulePartWithKey(attemptPrompt, model, apiKey, attemptController.signal, `${chatId}:compaction`));
       if (abortSignal?.aborted) throw new Error('CANCELLED_BY_USER');
       if (!result) throw new Error('The context compaction model returned an empty capsule.');
       validateCapsuleShape(result);

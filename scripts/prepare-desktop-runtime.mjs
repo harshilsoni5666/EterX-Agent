@@ -3,16 +3,37 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { createPackageWithOptions } from '@electron/asar';
+import { telemetryEndpoint } from '../src/lib/telemetry/protocol.ts';
 
-const require = createRequire(import.meta.url);
-const { createPackageWithOptions } = require('@electron/asar');
+const preparationStarted = performance.now();
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const standaloneRoot = path.join(repositoryRoot, '.next', 'standalone');
 const runtimeRoot = path.join(repositoryRoot, 'desktop-runtime');
+const telemetryUrl = String(process.env.ETERX_TELEMETRY_URL || '').trim();
+if (telemetryUrl && !telemetryEndpoint(telemetryUrl, false)) {
+  throw new Error('The packaged ETERX_TELEMETRY_URL must be an HTTPS URL ending in /v1/events.');
+}
 const npmExecPath = String(process.env.npm_execpath || '').trim();
 const npmCommand = npmExecPath ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+
+function logTiming(label, started) {
+  console.log(`[EterX build] ${label} in ${((performance.now() - started) / 1000).toFixed(1)}s`);
+}
+
+function moveOrCopy(source, destination, copyOptions = {}) {
+  try {
+    fs.renameSync(source, destination);
+  } catch (error) {
+    // The workspace can be on another drive. Windows can also temporarily
+    // prevent directory moves while a newly created file is being scanned.
+    if (error.code !== 'EXDEV' && !(process.platform === 'win32' && ['EACCES', 'EBUSY', 'EPERM'].includes(error.code))) {
+      throw error;
+    }
+    fs.cpSync(source, destination, { recursive: true, ...copyOptions });
+  }
+}
 
 function installProductionDependencies(targetRoot, manifest, label, targetOs = '', targetCpu = '') {
   fs.mkdirSync(targetRoot, { recursive: true });
@@ -76,6 +97,7 @@ if (!applicationRoot) {
 // intentionally scan the project tree, so an interrupted in-repo staging copy
 // can otherwise be mistaken for application source during the next build.
 const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'eterx-desktop-runtime-'));
+const appFilesStarted = performance.now();
 function runtimeFileFilter(source) {
   const name = path.basename(source);
   return !name.endsWith('.map') && !name.startsWith('.env')
@@ -115,6 +137,7 @@ fs.writeFileSync(
     + `const fs = require('fs');\n`
     + `const path = require('path');\n`
     + `const Module = require('module');\n`
+    + `process.env.ETERX_TELEMETRY_URL ??= ${JSON.stringify(telemetryUrl)};\n`
     + `// Next joins cwd with a relative application path. Across Windows drives,\n`
     + `// path.relative returns an absolute path, which path.join corrupts. Use\n`
     + `// the physical archive parent on that drive; data stays in ETERX_DATA_DIR.\n`
@@ -164,6 +187,7 @@ const publicSource = path.join(repositoryRoot, 'public');
 if (fs.existsSync(publicSource)) {
   fs.cpSync(publicSource, path.join(stagingRoot, 'public'), { recursive: true, force: true, filter: runtimeFileFilter });
 }
+logTiming('Staged Next.js output and public files', appFilesStarted);
 
 const repositoryPackage = JSON.parse(
   fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
@@ -190,10 +214,8 @@ const productionDependencies = Object.fromEntries(
 );
 const stagedModules = path.join(stagingRoot, 'node_modules');
 const stagedPtyRoot = path.join(stagingRoot, 'terminal', 'node-pty');
-fs.rmSync(stagedModules, { recursive: true, force: true });
 const dependencyCopyOptions = {
-  recursive: true,
-  force: true,
+  force: false,
   // npm creates executable shims in nested .bin directories. Some optional
   // packages leave a dangling shim (notably next/node_modules/.bin/nanoid)
   // when npm is resolving a cross-platform production tree; copying that
@@ -205,39 +227,60 @@ const dependencyCopyOptions = {
   filter: (source) => path.basename(source) !== '.bin' && !/\/node_modules\/node-pty(?:\/|$)/.test(source.replace(/\\/g, '/')),
   verbatimSymlinks: true,
 };
+
+function mergeMissingDependencies(source, destination) {
+  const entries = { withFileTypes: true };
+  const key = name => process.platform === 'win32' ? name.toLowerCase() : name;
+  const staged = new Map(fs.readdirSync(destination, entries).map(entry => [key(entry.name), entry]));
+  for (const entry of fs.readdirSync(source, entries)) {
+    if (entry.name === '.bin' || (entry.name === 'node-pty' && path.basename(source) === 'node_modules')) continue;
+
+    const existing = staged.get(key(entry.name));
+    if (!existing) {
+      moveOrCopy(path.join(source, entry.name), path.join(destination, entry.name), dependencyCopyOptions);
+    } else if (entry.isDirectory() && existing.isDirectory()) {
+      mergeMissingDependencies(path.join(source, entry.name), path.join(destination, existing.name));
+    } else if (entry.isDirectory() !== existing.isDirectory()) {
+      throw new Error(`Incompatible dependency entries at ${path.join(destination, existing.name)}.`);
+    }
+  }
+}
+
 const targetSpec = String(process.env.ETERX_RUNTIME_TARGETS || '').trim();
 const targetSpecs = targetSpec
   ? targetSpec.split(',').map((entry) => entry.trim()).filter(Boolean)
   : [''];
 if (targetSpecs.length === 0) targetSpecs.push('');
 
-// Build one dependency tree per packaged OS/CPU and merge their optional
-// platform packages into the shared archive. This keeps electron-builder's
-// single multi-arch release metadata intact while ensuring each artifact can
-// resolve its native Next/SWC and other optional modules at runtime.
+// Both installs use the same lockfile and disable install scripts. Move the
+// first tree into place, then add missing optional files from the other
+// targets without copying the shared dependencies again.
 for (const [index, spec] of targetSpecs.entries()) {
   const [targetOs = '', targetCpu = '', ...extra] = spec.split(':').map((part) => part.trim());
   if (extra.length || (targetOs && !/^[a-z0-9_-]+$/i.test(targetOs)) || (targetCpu && !/^[a-z0-9_-]+$/i.test(targetCpu))) {
     throw new Error(`Invalid ETERX_RUNTIME_TARGETS entry: ${spec}`);
   }
   const dependencyInstallRoot = path.join(stagingRoot, `.eterx-production-install-${index}`);
-  fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
   fs.mkdirSync(dependencyInstallRoot, { recursive: true });
   fs.writeFileSync(
     path.join(dependencyInstallRoot, 'package-lock.json'),
     `${JSON.stringify(lockfile, null, 2)}\n`,
     'utf8',
   );
+  const ptyOs = targetOs || process.env.ETERX_RUNTIME_OS || process.platform;
+  const ptyCpu = targetCpu || process.env.ETERX_RUNTIME_CPU || process.arch;
+  const targetLabel = `${ptyOs}/${ptyCpu}`;
+  const installStarted = performance.now();
   installProductionDependencies(
     dependencyInstallRoot,
     { ...repositoryPackage, scripts: {} },
-    spec ? `the complete EterX production runtime (${targetOs}/${targetCpu})` : 'the complete EterX production runtime',
+    `the complete EterX production runtime (${targetLabel})`,
     targetOs,
     targetCpu,
   );
+  logTiming(`Installed production dependencies for ${targetLabel}`, installStarted);
   const installedModules = path.join(dependencyInstallRoot, 'node_modules');
-  const ptyOs = targetOs || process.env.ETERX_RUNTIME_OS || process.platform;
-  const ptyCpu = targetCpu || process.env.ETERX_RUNTIME_CPU || process.arch;
+  const nativeStarted = performance.now();
   const ptyRoot = path.join(installedModules, 'node-pty');
   const ptyPrebuild = path.join(ptyRoot, 'prebuilds', `${ptyOs}-${ptyCpu}`);
   const ptyNative = path.join(ptyPrebuild, ptyOs === 'win32' ? 'conpty.node' : 'pty.node');
@@ -286,7 +329,15 @@ for (const [index, spec] of targetSpecs.entries()) {
     }
   }
   fs.cpSync(ptyPrebuild, path.join(stagedPtyRoot, 'prebuilds', `${ptyOs}-${ptyCpu}`), { recursive: true });
-  fs.cpSync(installedModules, stagedModules, dependencyCopyOptions);
+  logTiming(`Prepared the terminal runtime for ${targetLabel}`, nativeStarted);
+
+  const mergeStarted = performance.now();
+  if (index === 0) {
+    moveOrCopy(installedModules, stagedModules, dependencyCopyOptions);
+  } else {
+    mergeMissingDependencies(installedModules, stagedModules);
+  }
+  logTiming(`Staged dependencies for ${targetLabel}`, mergeStarted);
   // Include runtime parsers as well as startup dependencies. The import route
   // uses TypeScript's AST parser, so omitting it breaks every import provider
   // before the route can return a JSON error.
@@ -300,10 +351,12 @@ for (const [index, spec] of targetSpecs.entries()) {
   if (!fs.existsSync(fractionRuntimeEntry)) {
     throw new Error('Required packaged dependency entry is missing: fraction.js/dist/fraction.js');
   }
-  fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
+  const cleanupStarted = performance.now();
+  fs.rmSync(dependencyInstallRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+  logTiming(`Cleaned the install directory for ${targetLabel}`, cleanupStarted);
 }
-fs.rmSync(path.join(stagingRoot, 'node_modules', '.bin'), { recursive: true, force: true });
 
+const assetsStarted = performance.now();
 const assetsRoot = path.join(stagingRoot, 'assets');
 fs.cpSync(
   path.join(repositoryRoot, 'src', 'lib', 'agent', 'gateways'),
@@ -369,6 +422,7 @@ if (process.platform === 'win32') {
     }
   }
 }
+logTiming('Staged native and bundled assets', assetsStarted);
 
 // Preserve npm's exact nested dependency hierarchy in its own ASAR. Electron
 // Builder otherwise filters directories named node_modules at any depth,
@@ -376,14 +430,23 @@ if (process.platform === 'win32') {
 // the companion .unpacked directory for Electron's process.dlopen/spawn APIs.
 // The terminal package stays entirely outside this archive so package.json,
 // worker threads, and spawn-helper always resolve against the same real tree.
-const sourceModules = path.join(stagingRoot, 'node_modules');
 const dependencyArchive = path.join(stagingRoot, 'dependencies.asar');
+const archiveStarted = performance.now();
 await createPackageWithOptions(stagingRoot, dependencyArchive, {
   dot: true,
   pattern: '/node_modules/**/*',
   unpack: '**/*.{node,dll,exe,so,dylib}',
+  // Match exclusions against the staging directory, which is outside the
+  // checkout. The moved tree retains npm's install index and shims.
+  globOptions: {
+    cwd: stagingRoot,
+    ignore: ['node_modules/.package-lock.json', '**/.bin{,/**}', '**/node_modules/node-pty{,/**}'],
+  },
 });
-fs.rmSync(sourceModules, { recursive: true, force: true });
+logTiming('Created dependencies.asar', archiveStarted);
+const cleanupStarted = performance.now();
+fs.rmSync(stagedModules, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+logTiming('Cleaned the merged dependency tree', cleanupStarted);
 
 const required = [
   'server.js',
@@ -411,8 +474,9 @@ fs.writeFileSync(
   'utf8',
 );
 
+const publishStarted = performance.now();
 fs.rmSync(runtimeRoot, { recursive: true, force: true });
-fs.cpSync(stagingRoot, runtimeRoot, { recursive: true, force: true });
+moveOrCopy(stagingRoot, runtimeRoot);
 try {
   // Windows antivirus/indexer processes can briefly hold a freshly-created
   // staging child after the copy completes. Cleanup is non-functional: the
@@ -422,4 +486,6 @@ try {
 } catch (error) {
   console.warn(`[EterX build] Temporary staging cleanup deferred: ${error.message || error}`);
 }
+logTiming('Placed the prepared runtime', publishStarted);
+logTiming('Completed desktop runtime preparation', preparationStarted);
 console.log(`[EterX build] Desktop runtime prepared at ${runtimeRoot}`);

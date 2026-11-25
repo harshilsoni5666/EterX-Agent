@@ -12,6 +12,7 @@ import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-impro
 import { delegationTelemetryFromTrace } from '../delegation-evidence';
 import { CONVERSATION_INTENT_POLICY } from '../conversation-intent-policy';
 import { rebaseContextCompactionWindow } from '../model-context-window';
+import { withTelemetryScope } from '../../telemetry/runtime';
 
 export type ProxyManagerChatMessage = {
   id: string;
@@ -446,7 +447,8 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
       input.onProgress?.({ type: 'status', text, phase: 'error', timestamp: Date.now() });
     }
   };
-  let response = await client.executeMessageLoop(context, prompt, priorConversation, reportProgress, input.mediaAttachments || []);
+  let response = await withTelemetryScope({ role: 'auxiliary', origin: 'proxy' }, () =>
+    client.executeMessageLoop(context, prompt, priorConversation, reportProgress, input.mediaAttachments || []));
   signal.throwIfAborted();
   let decision = extractDecision(response.text);
   let freshMainContext = agentRegistry.getProxyManagerContext(input.chatId);
@@ -457,9 +459,9 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
     // a correction for one run into an instruction for an unrelated successor.
     const replanningBoundary = executionBoundary(freshMainContext);
     input.onProgress?.({ type: 'status', text: 'Main changed state; updating the handoff', phase: 'reviewing', timestamp: Date.now() });
-    const revised = await client.executeMessageLoop(context,
+    const revised = await withTelemetryScope({ role: 'auxiliary', origin: 'proxy' }, () => client.executeMessageLoop(context,
       `${prompt}\n\nLATEST EXECUTION SNAPSHOT — this replaces the earlier live snapshot:\n${JSON.stringify(freshMainContext, null, 2)}\nYour earlier proposed operation was ${decision.operation}. No operation has been delivered. Reconsider timing and task ownership using the latest state, keep the original user intent, and return the same JSON contract. Do not attach an old correction to unrelated new work.`,
-      priorConversation, reportProgress, input.mediaAttachments || []);
+      priorConversation, reportProgress, input.mediaAttachments || []));
     signal.throwIfAborted();
     response = { ...revised, trace: [...(response.trace || []), ...(revised.trace || [])] };
     decision = extractDecision(revised.text);

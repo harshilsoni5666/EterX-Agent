@@ -28,14 +28,19 @@ new patch version instead of replacing an existing version.
 
 1. Set the intended SemVer value in `package.json` and `package-lock.json`.
    Run `npm ci --legacy-peer-deps`, `npm run test:ci`, and `npm run build`
-   locally, fixing any failures before tagging. The release workflow also runs
-   the complete CI suite before creating its draft or building native packages.
+   locally, fixing any failures before tagging.
 2. Create and push the matching `v<version>` tag, or run **Native release**
    manually against an existing tag.
-3. Wait for the test gate, all three native build jobs, and the publish job to complete.
+3. The workflow validates the tag, package versions, and release notes before
+   preparing a draft. The complete CI suite and the three native builds run
+   in parallel from the same commit. Publishing waits for all of them to pass.
+   A failure leaves the draft unpublished for a retry.
 4. Confirm the release contains `SHA256SUMS.txt`, all native packages, and the
    complete updater metadata set before announcing it: `latest.yml`,
    `latest-mac.yml`, `latest-linux.yml`, and `latest-linux-arm64.yml`.
+
+The publish job uses GitHub's uploaded asset digests for `SHA256SUMS.txt` and
+downloads the assets to calculate checksums if digests are unavailable.
 
 The public installation commands always resolve the latest non-draft,
 non-prerelease GitHub release.

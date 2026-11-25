@@ -298,6 +298,7 @@ type WorkPanelProps = {
   retryMedia: () => void;
   pins: Array<{ id: string; path: string; name: string; type?: 'file' | 'folder' }>;
   plan?: WorkPanelPlan | null;
+  planRunning: boolean;
   agents: WorkPanelAgent[];
   activeAgentId: string | null;
   revealAgents: boolean;
@@ -311,7 +312,7 @@ type WorkPanelProps = {
 export function WorkPanel({
   cardRef, chatRef, triggerRef, widthPreference, attached, panelId, owner, workspacePath, workspaceName, workspaceLocked,
   traceLogs, media, mediaError, retryMedia, pins,
-  plan, agents, activeAgentId, revealAgents, assetIndexes, context, onSelectWorkspace, onSelectAgent, onClose,
+  plan, planRunning, agents, activeAgentId, revealAgents, assetIndexes, context, onSelectWorkspace, onSelectAgent, onClose,
 }: WorkPanelProps) {
   const bounds = usePanelBounds(cardRef, chatRef, triggerRef, attached);
   usePanelLayout(cardRef, chatRef, attached);
@@ -593,23 +594,23 @@ export function WorkPanel({
             </p>}
           </section>}
 
-          {steps.length > 0 && <section className="eterx-work-panel-section" aria-label="Task Plan">
+          {plan && (steps.length > 0 || plan.document?.trim()) && <section className="eterx-work-panel-section" aria-label="Task Plan">
             <button type="button" className="eterx-work-panel-row" title={plan?.goal} aria-expanded={planOpen} aria-controls={plansId} onClick={() => setPlanOpen(value => !value)}>
               <Lightbulb size={16} /><span className="eterx-work-panel-label">{plan?.status === 'proposed' ? 'Proposed plan' : 'Task plan'}</span>
-              <span className="eterx-work-panel-meta">{plan?.status === 'proposed' ? `${steps.length} steps` : `${completeSteps}/${steps.length} done`}</span><ChevronDown size={14} data-open={planOpen} />
+              {steps.length > 0 && <span className="eterx-work-panel-meta">{plan.status === 'proposed' ? `${steps.length} steps` : `${completeSteps}/${steps.length} done`}</span>}<ChevronDown size={14} data-open={planOpen} />
             </button>
             <ul id={plansId} hidden={!planOpen} className="eterx-work-panel-plan">
               {steps.map(step => {
-                const active = plan?.status === 'in_progress' && step.status === 'in_progress';
+                const active = planRunning && step.status === 'in_progress';
                 const Icon = step.status === 'done' ? Check : step.status === 'skipped' ? CircleSlash
                   : step.status === 'failed' ? CircleAlert : step.status === 'blocked' ? CircleDashed : active ? Loader2 : Circle;
                 return <li key={step.id || step.step} className="eterx-work-panel-row" data-status={step.status}
                   aria-current={active ? 'step' : undefined} aria-label={step.name + ', ' + step.status.replaceAll('_', ' ')} title={step.name}>
-                  <Icon size={13} className={active ? 'animate-spin' : undefined} /><span className="eterx-work-panel-label">{step.name}</span>
+                  <Icon size={13} className={active ? 'motion-safe:animate-spin' : undefined} /><span className="eterx-work-panel-label">{step.name}</span>
                 </li>;
               })}
             </ul>
-            {plan && planOpen && <button type="button" className="eterx-work-panel-row" onClick={() => { addWorkspaceTab(owner, 'plan', { plan, planChatId: owner }); onClose(); }}>
+            {planOpen && <button type="button" className="eterx-work-panel-row" onClick={() => { addWorkspaceTab(owner, 'plan', { plan, planChatId: owner }); onClose(); }}>
               <span className="eterx-work-panel-label">Open full plan</span><ArrowUpRight size={15} />
             </button>}
           </section>}

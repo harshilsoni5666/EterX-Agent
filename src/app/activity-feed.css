@@ -213,6 +213,12 @@
 .eterx-activity-disclosure[hidden] { display: none; }
 .eterx-activity-body, .eterx-activity-scroll-frame { position: relative; min-width: 0; }
 
+.eterx-control-activity-details {
+  margin-inline-start: 9px;
+  padding-inline-start: 12px;
+  border-inline-start: 1px solid var(--activity-border);
+}
+
 /* Match the subtle disclosure motion without animating row size or scrolling. */
 :is(.eterx-activity-panel, .eterx-thinking-process-stack, .eterx-thought-block) :is(.eterx-thought-chevron, .eterx-sequence-caret svg, [aria-expanded] > svg:last-child) {
   transition-property: transform, color;
@@ -417,7 +423,6 @@
   scroll-behavior: auto !important;
 }
 
-.eterx-activity-note { margin-block: 4px; }
 
 /* The invocation stays outside the output viewport, including when expanded. */
 .eterx-terminal-console.eterx-activity-child-panel {

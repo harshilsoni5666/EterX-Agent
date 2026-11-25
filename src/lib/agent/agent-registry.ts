@@ -34,6 +34,7 @@ import { getCodingMode } from '../code/coding-modes';
 import { sameUserAdmission, normalizeAdmissionId } from '../steering-delivery';
 import { normalizeChatPermissionMode, type ChatPermissionMode } from '../chat-permissions';
 import { runWithToolApprovals } from './tool-approval-runtime';
+import { beginTelemetryTurn } from '../telemetry/runtime';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -1728,6 +1729,12 @@ class AgentRegistry {
     const proxyOrigin = pinnedContext?.autonomy?.origin === 'proxy_manager';
     const triggerSource = String(pinnedContext?.triggerSource || '').trim();
     const triggerDelegatedBy = String(pinnedContext?.triggerDelegatedBy || '').trim();
+    const telemetry = beginTelemetryTurn(JSON.stringify(['agent', chatId, execution.runId]), {
+      mode: 'agent', provider: modelConfig.provider, model: execution.effectiveModel,
+      effort: pinnedContext?.thinkingLevel, permissions: normalizeChatPermissionMode(pinnedContext?.permissionMode),
+      origin: proxyOrigin ? 'proxy' : pinnedContext?.scheduledTaskId || triggerSource === 'scheduled_task' ? 'scheduled'
+        : triggerSource === 'gateway' ? 'gateway' : !triggerSource || triggerSource === 'human' ? 'interactive' : 'background',
+    });
     // Every Main run begins with the same canonical user boundary. Human runs
     // may already have an optimistic local bubble; the client upserts this
     // server-owned trace by run ID. Proxy-started work therefore follows the
@@ -1771,7 +1778,7 @@ class AgentRegistry {
     onTrace(runUserEvent);
 
     // Fire-and-forget execution
-    execution.promise = (async () => {
+    execution.promise = telemetry.run(async () => {
       let terminalStatus: AgentExecution['status'] = 'failed';
       const persistTerminalContext = async () => {
         try {
@@ -2205,6 +2212,8 @@ class AgentRegistry {
         await persistTerminalContext();
 
       } finally {
+        const outcome = execution.status === 'running' ? terminalStatus : execution.status;
+        telemetry.finish(outcome === 'completed' ? 'succeeded' : outcome === 'stopped' ? 'cancelled' : 'failed');
         if (execution.orchestratorProjectId) {
           try { stopUserProxyRuntime(execution.orchestratorProjectId); } catch { }
         }
@@ -2252,7 +2261,7 @@ class AgentRegistry {
         // successor and must start as soon as cleanup releases this execution.
         queueMicrotask(() => void this.startNextQueuedWork(chatId));
       }
-    })();
+    });
 
     const poolStatus = isExternalProvider ? null : apiKeyPool.getPoolStatus();
     console.log(`[AgentRegistry] Agent started for chat ${ chatId.substring(0, 8) }... | Model: ${ modelConfig.modelName }${ lease ? ` | Key: #${ lease.keyIndex } | Pool: ${ poolStatus?.healthySummary }` : '' }`);
@@ -3469,6 +3478,20 @@ class AgentRegistry {
         steeringQueueLength: e.steeringQueue.length,
         completedAt: e.completedAt,
       }));
+  }
+
+  public getRunningCodexModels(): string[] {
+    const models = new Set<string>();
+    for (const execution of this.executions.values()) {
+      if (execution.status !== 'running') continue;
+      const context = execution.launchSpec.pinnedContext;
+      if (context?.selectedModelProvider === 'codex' || execution.keyLeaseId === 'codex') {
+        if (execution.effectiveModel) models.add(execution.effectiveModel);
+      }
+      const proxyModel = parseModelEntryKey(String(context?.autonomy?.proxyModelSelection || ''));
+      if (context?.autonomy?.enabled && !context.autonomy.paused && proxyModel?.provider === 'codex') models.add(proxyModel.modelId);
+    }
+    return [...models];
   }
 
   /**

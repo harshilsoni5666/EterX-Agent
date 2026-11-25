@@ -210,7 +210,14 @@ button.eterx-work-panel-row:disabled { cursor: default; opacity: .65; }
 .eterx-work-panel-plan { margin: 0; padding: 0; list-style: none; }
 .eterx-work-panel-plan > li { min-block-size: 28px; padding-inline-start: 11px; font-size: 12px; }
 .eterx-work-panel-plan > li:is([data-status="done"], [data-status="skipped"]) { color: var(--muted-foreground); }
-.eterx-work-panel-plan > li[data-status="done"] > svg { color: var(--work-panel-added); }
+.eterx-work-panel-plan > li[data-status="done"] > svg {
+  box-sizing: border-box;
+  padding: 2px;
+  border-radius: 50%;
+  background-color: #a9a9a9;
+  color: #1f1f1f;
+  stroke-width: 3.2;
+}
 .eterx-work-panel-plan > li[data-status="failed"] > svg { color: var(--work-panel-removed); }
 
 .eterx-work-panel-agent-heading { font-weight: 600; }

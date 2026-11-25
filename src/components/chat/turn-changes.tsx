@@ -13,6 +13,7 @@ import { FileCodeCorner, SquareSplitHorizontal } from './workspace-icons';
 import { WorkspaceFileIcon } from './workspace-file-icon';
 import type { FilePanelProps } from './file-panel';
 import { LocalFileWorkspaceContext } from './local-file-link';
+import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 
 function ChangeFileIcon({ path }: { path: string }) {
   return <span className="eterx-change-file-icon" aria-hidden="true"><WorkspaceFileIcon path={path} size={17} /></span>;
@@ -65,6 +66,7 @@ function FileLabel({ file, inline = false }: { file: FilePanelProps; inline?: bo
 export function TurnChangesCard({ logs, turnId }: { logs: any[]; turnId: string }) {
   const owner = useFilePanelOwner();
   const workspacePath = React.useContext(LocalFileWorkspaceContext);
+  const workspaceVisible = useWorkspacePaneVisible();
   const files = useMemo(() => collectTurnChanges(logs, workspacePath), [logs, workspacePath]);
   const [expanded, setExpanded] = useState(false);
   const [hover, setHover] = useState<{ file: TurnFileChange; anchor: HTMLElement } | null>(null);
@@ -115,7 +117,17 @@ export function TurnChangesCard({ logs, turnId }: { logs: any[]; turnId: string 
     return () => { cancelOpen(); keep(); window.removeEventListener('scroll', onScroll, true); };
   }, []);
   useLayoutEffect(() => {
-    if (!hover) return;
+    if (workspaceVisible) return;
+    clearTimeout(openTimer.current);
+    clearTimeout(closeTimer.current);
+    candidate.current = null;
+    blockedAnchor.current = null;
+    focusPreview.current = false;
+    setHover(null);
+  }, [workspaceVisible]);
+
+  useLayoutEffect(() => {
+    if (!workspaceVisible || !hover) return;
     const feed = hover.anchor.closest<HTMLElement>('.eterx-chat-feed-scroll');
     const card = hover.anchor.closest<HTMLElement>('.eterx-turn-changes-card');
     const topbar = document.querySelector<HTMLElement>('.eterx-global-topbar');
@@ -165,7 +177,7 @@ export function TurnChangesCard({ logs, turnId }: { logs: any[]; turnId: string 
     window.visualViewport?.addEventListener('scroll', place); window.addEventListener('blur', blur);
     document.addEventListener('keydown', key); document.addEventListener('pointerdown', outside);
     return () => { resize.disconnect(); window.removeEventListener('resize', place); window.visualViewport?.removeEventListener('resize', place); window.visualViewport?.removeEventListener('scroll', place); window.removeEventListener('blur', blur); document.removeEventListener('keydown', key); document.removeEventListener('pointerdown', outside); };
-  }, [hover]);
+  }, [hover, workspaceVisible]);
   if (!files.length) return null;
   const open = (selected?: string) => {
     if (!owner) return;
@@ -211,7 +223,7 @@ export function TurnChangesCard({ logs, turnId }: { logs: any[]; turnId: string 
         <ChangeFileIcon path={file.filepath} /><FileLabel file={file} inline /><ChangeCounts files={[file]} />
       </button>)}
     </div>
-    {hover && typeof document !== 'undefined' && createPortal(<div ref={popup} id={popupId} role="region" aria-label={'Recorded changes to ' + hover.file.filename} tabIndex={0} className="eterx-turn-changes-popup" style={{ left: position?.left ?? 0, top: position?.top ?? 0, width: position?.width ?? 360, maxHeight: position?.maxHeight ?? 320, visibility: position ? 'visible' : 'hidden' }} onPointerEnter={() => { cancelOpen(); keep(); }} onPointerLeave={leave} onFocus={keep} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) leave(); }}>
+    {workspaceVisible && hover && typeof document !== 'undefined' && createPortal(<div ref={popup} id={popupId} role="region" aria-label={'Recorded changes to ' + hover.file.filename} tabIndex={0} className="eterx-turn-changes-popup" style={{ left: position?.left ?? 0, top: position?.top ?? 0, width: position?.width ?? 360, maxHeight: position?.maxHeight ?? 320, visibility: position ? 'visible' : 'hidden' }} onPointerEnter={() => { cancelOpen(); keep(); }} onPointerLeave={leave} onFocus={keep} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) leave(); }}>
       <div className="eterx-turn-diff-heading"><ChangeFileIcon path={hover.file.filepath} /><FileLabel file={hover.file} /><ChangeCounts files={[hover.file]} /><button aria-label="Close changes preview" onClick={dismiss}><X size={15} /></button></div>
       <div className="eterx-turn-diff-scroll eterx-scrollbar"><FileChanges key={hover.file.filepath} file={hover.file} compact /></div>
       <button className="eterx-turn-change-more" onClick={() => open(hover.file.filepath)}>Open changes<SquareSplitHorizontal size={14} strokeWidth={1.65} /></button>

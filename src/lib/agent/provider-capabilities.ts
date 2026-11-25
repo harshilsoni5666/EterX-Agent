@@ -14,7 +14,7 @@ const STREAM_USAGE_PROVIDERS = new Set<MainAgentProvider>([
   'openai', 'mistral', 'groq', 'deepseek', 'grok', 'cerebras', 'together',
   'fireworks', 'sambanova', 'deepinfra', 'huggingface', 'nvidia', 'qwen',
   'mimo', 'tokenhub', 'zai', 'kimi', 'minimax', 'ollamacloud', 'arcee',
-  'gmi', 'upstage',
+  'gmi', 'upstage', 'ollama', 'vllm', 'llamacpp',
 ]);
 
 const PARALLEL_TOOL_PROVIDERS = new Set<MainAgentProvider>([

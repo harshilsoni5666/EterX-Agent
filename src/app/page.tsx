@@ -1,6 +1,8 @@
 "use client";
 
 import { codexCatalogPending, codexModelThinking, codexModelWireCapabilities, withCodexSubscriptionModels } from '../lib/chatgpt-subscription-client';
+import { readModelFastRequest } from '../lib/model-fast-preferences';
+import { withFastRequestTags } from '../lib/agent/model-fast-mode';
 
 import { selectChannelProfile, canDispatchChannel } from '../lib/agent/gateways/routing.cjs';
 import { readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, summarizeChatUsage } from '../lib/chat-command-state';
@@ -52,6 +54,8 @@ import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehyp
 import { LocalFileLinkChip, decodeLocalFileHref, localAwareUrlTransform } from '../components/chat/local-file-link';
 import { Maximize2, Minimize2, AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic, Power, LifeBuoy, Bug, Mail, Paperclip, Camera } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
+import { WorkspacePaneVisibleContext } from '../components/ui/workspace-pane-visibility';
+import { UsageLoadingFallback } from '../components/usage/usage-loading';
 import { safeCopyTextToClipboard } from '../components/ui/copy-button';
 import { getNativeFilePath, normalizePathForComparison } from '../lib/path-utils';
 import { getActionPreviewCandidates, previewBelongsToAction, getDiffStats } from '../components/chat/thought-sequence';
@@ -144,6 +148,7 @@ import { getFeedTraceWorkerScope } from '../lib/chat-feed-lifecycle';
 import {
   computeNextScheduledRun,
   normalizeScheduledTask,
+  scheduledTaskSection,
   SCHEDULED_TASKS_STORAGE_KEY,
   SCHEDULED_TASKS_UPDATED_EVENT,
   type ScheduledTaskRecord,
@@ -157,10 +162,16 @@ import {
 } from '../lib/agent/sub-agent-settings';
 import { PollingConcurrencyGate } from '../lib/agent/polling-coordinator';
 import { LiveChatLedger, projectChatMetadata } from '../lib/live-chat-ledger';
+import { mergeChatFocusDisposition, type ChatFocusDisposition, type FocusGroup } from '../lib/chat-focus';
 import { yieldToMainThread } from '../lib/yield-to-main';
 import { useEventCallback } from '../lib/use-event-callback';
 import { preloadAppPanel } from '../lib/preload-app-panel';
 import { fetchBatchedAgentPoll, reconnectAgentPollStreams } from '../lib/agent/poll-transport';
+
+const UsageDashboard = dynamic(
+  () => import('../components/usage/usage-dashboard').then(mod => mod.UsageDashboard),
+  { ssr: false, loading: UsageLoadingFallback },
+);
 
 const SettingsPanel = dynamic(
   () => import('../components/layout/settings-panel').then(mod => mod.SettingsPanel),
@@ -542,7 +553,7 @@ const buildAgentHistory = (logs: any[]) => {
   return newestFirst.reverse();
 };
 
-interface ChatSession extends ChatTitleMetadata {
+interface ChatSession extends ChatTitleMetadata, ChatFocusDisposition {
   id: string;
   title: string;
   updatedAt: number;
@@ -899,15 +910,17 @@ const readRuntimeModelWireCapabilities = (selection = readRuntimeChatModelSelect
   if (typeof window === 'undefined') return [];
   const entry = parseModelEntryKey(selection);
   if (!entry) return [];
-  if (entry.provider === 'codex') return codexModelWireCapabilities(entry.modelId);
+  const fast = readModelFastRequest(selection);
+  const requestOptions = fast ? [fast] : [];
+  if (entry.provider === 'codex') return withFastRequestTags(codexModelWireCapabilities(entry.modelId), requestOptions).slice(0, 100);
   try {
     const raw = JSON.parse(appStorage.getItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY) || '{}');
     const values = raw?.[modelEntryKey(entry.provider, entry.modelId)];
     return Array.isArray(values)
-      ? Array.from(new Set(values.map((value: unknown) => String(value || '').trim()).filter(Boolean))).slice(0, 100)
-      : [];
+      ? withFastRequestTags(values.map((value: unknown) => String(value || '').trim()).filter(Boolean), requestOptions).slice(0, 100)
+      : requestOptions;
   } catch {
-    return [];
+    return requestOptions;
   }
 };
 
@@ -1214,6 +1227,7 @@ const mergeCachedChatIntoDurable = (durable: ChatSession, cached: ChatSession): 
     ...durable,
     ...cached,
     ...mergeChatWorkspaceSelection(durable, cached),
+    ...mergeChatFocusDisposition(durable, cached),
     traceLogs: mergeFeedTraceHistories(
       durable.traceLogs || [],
       cached.traceLogs || [],
@@ -1233,6 +1247,7 @@ const mergeConcurrentChatRevisions = (durable: ChatSession, current: ChatSession
     ...(durable.importOrigin ? { importOrigin: durable.importOrigin, importFolder: durable.importFolder, importPresentationVersion: durable.importPresentationVersion } : {}),
     ...mergeChatWorkspaceSelection(durable, current),
     ...mergeChatTitleMetadata(durable, current),
+    ...mergeChatFocusDisposition(durable, current),
     // Metadata follows the newest revision; admitted feed events are a
     // monotonic union and can never be erased by a delayed restore.
     traceLogs: mergedHistory.traceLogs,
@@ -1781,6 +1796,7 @@ function DeepWorkUI() {
     };
   }, []);
   const [selectedProjectSection, setSelectedProjectSection] = useState('new-tasks');
+  const [focusTaskRequest, setFocusTaskRequest] = useState<{ id: string } | null>(null);
   const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string, chatId: string, runId: string }[]>([]);
   const [queuedFollowUps, setQueuedFollowUpsState] = useState<QueuedFollowUp[]>([]);
   const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([]);
@@ -2019,6 +2035,9 @@ function DeepWorkUI() {
         isFavorite: chat.isFavorite,
         workspacePath: chat.workspacePath,
         workspaceSelectionUpdatedAt: chat.workspaceSelectionUpdatedAt,
+        modelSelection: chat.modelSelection,
+        focusSettled: chat.focusSettled,
+        focusUpdatedAt: chat.focusUpdatedAt,
         runLocation: chat.runLocation,
         importOrigin: chat.importOrigin,
         importFolder: chat.importFolder,
@@ -2032,6 +2051,9 @@ function DeepWorkUI() {
         && prior.isFavorite === chat.isFavorite
         && prior.workspacePath === chat.workspacePath
         && prior.workspaceSelectionUpdatedAt === chat.workspaceSelectionUpdatedAt
+        && prior.modelSelection === chat.modelSelection
+        && prior.focusSettled === chat.focusSettled
+        && prior.focusUpdatedAt === chat.focusUpdatedAt
         && prior.importOrigin === chat.importOrigin
         && prior.importFolder === chat.importFolder
         && prior.runLocation === chat.runLocation;
@@ -2084,6 +2106,7 @@ function DeepWorkUI() {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarFocusGroup, setSidebarFocusGroup] = useState<FocusGroup | null>(null);
   const [desktopPlatform, setDesktopPlatform] = useState<'windows' | 'macos' | 'linux' | 'web'>('web');
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -2311,6 +2334,7 @@ function DeepWorkUI() {
   const [newBranchName, setNewBranchName] = useState('');
   const [gitError, setGitError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isUsageOpen, setIsUsageOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<string>('general');
   const { updateState: desktopUpdate, updateActionError, runUpdateAction, markUpdateViewed } = useDesktopUpdates();
   const [dismissedUpdateNotice, setDismissedUpdateNotice] = useState<string | null>(null);
@@ -2488,6 +2512,7 @@ function DeepWorkUI() {
   }, []);
 
   const setActiveView = useCallback((view: ActiveView) => {
+    setIsUsageOpen(false);
     if (view === 'agents' || view === 'channels' || view === 'projects') {
       preloadAppPanel(view);
       setBuildingAgentId(null);
@@ -2501,6 +2526,12 @@ function DeepWorkUI() {
     }
     setActiveViewState(view);
   }, []);
+  const openFocusTask = useCallback((task: ScheduledTaskRecord) => {
+    setSelectedProjectSection(scheduledTaskSection(task.status));
+    setFocusTaskRequest({ id: task.id });
+    setActiveView('projects');
+  }, [setActiveView]);
+
   const handleThemeChange = useCallback((newTheme: 'light' | 'dark') => {
     const saved = appStorage.getItem(SETTINGS_STORAGE_KEY);
     const settings = saved ? JSON.parse(saved) : {};
@@ -2512,6 +2543,7 @@ function DeepWorkUI() {
     broadcastEterxSettingsUpdate(settings);
   }, []);
   const openSettingsWindow = useCallback((tab?: any) => {
+    setIsUsageOpen(false);
     preloadAppPanel('settings');
     if (tab && typeof tab === 'string') {
       setSettingsInitialTab(tab);
@@ -7636,6 +7668,7 @@ function DeepWorkUI() {
   };
 
   const loadChat = useEventCallback((id: string) => {
+    setIsUsageOpen(false);
     // Read through the live ref so a sidebar callback from an earlier render
     // cannot hydrate the chat with an older in-memory stream snapshot.
     let chat = chatsRef.current.find(c => c.id === id);
@@ -8007,6 +8040,7 @@ function DeepWorkUI() {
   }, [handleAgentChange, showFreshWorkspace, updateInputValue]);
 
   const createNewChat = useCallback(() => {
+    setIsUsageOpen(false);
     setNewChatEntryId(previous => previous + 1);
     const scope = sidebarChatScopeRef.current;
     draftImportFolderRef.current = scope.kind === 'folder' ? scope.name : undefined;
@@ -8212,13 +8246,26 @@ function DeepWorkUI() {
     });
   }, []);
 
+  const setChatSettled = useCallback((id: string, settled: boolean) => {
+    const previous = chatsRef.current;
+    const target = previous.find(chat => chat.id === id);
+    if (!target) return;
+    const next = previous.map(chat => chat.id === id ? {
+      ...chat,
+      focusSettled: settled,
+      focusUpdatedAt: Math.max(Date.now(), Number(chat.focusUpdatedAt || 0) + 1),
+    } : chat);
+    setChats(next);
+    void persistChats(next);
+  }, [setChats]);
+
   const fetchGeneratedTitle = async (
     history: any[],
     currentTitle?: string,
     mode: MainAgentMode = agentMode,
     selectedModel?: ModelSelectorEntry,
     signal?: AbortSignal,
-  ): Promise<{ title: string; provider?: string; model?: string; usage?: Record<string, number> } | null> => {
+  ): Promise<{ title: string; provider?: string; model?: string; usageId?: string; usage?: Record<string, number> } | null> => {
     if (!selectedModel) return null;
     const res = await fetch('/api/chat/title', {
       method: 'POST',
@@ -8284,7 +8331,7 @@ function DeepWorkUI() {
             const totalTokens = Number(generated.usage?.totalTokens || 0);
             const usageLog = totalTokens > 0 ? {
               type: 'model_usage',
-              usageId: `usage_title_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+              usageId: generated.usageId || `usage_title_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
               source: 'provider',
               provider: generated.provider,
               model: generated.model,
@@ -12371,6 +12418,7 @@ function DeepWorkUI() {
           requestedModelSelection: requestedModelSelection || undefined,
           requestedModelProvider: requestedModel?.provider,
           requestedModelName: requestedModel?.modelId,
+          requestedModelWireCapabilities: requestedModel ? readRuntimeModelWireCapabilities(requestedModelSelection) : undefined,
           requestedMode,
           requestedThinkingLevel,
         }),
@@ -16155,9 +16203,15 @@ function DeepWorkUI() {
   }, [traceLogs, activeChatId, activeSubAgentTab, autonomousSelected, subAgentDisplayLogs]);
 
   const workPanelPlan = useMemo<TaskTrackerState | null>(() => traceLogs.findLast(log =>
-    log?.type === 'task_plan' && Array.isArray(log.steps) && log.steps.length > 0 &&
+    log?.type === 'task_plan' && ((typeof log.document === 'string' && log.document.trim()) || (Array.isArray(log.steps) && log.steps.length > 0)) &&
     getFeedTraceWorkerScope(log).toLowerCase() === 'main' && (!log.ownerChatId || log.ownerChatId === activeChatId),
   ) || null, [activeChatId, traceLogs]);
+  const activePlanTurn = activeTurnTraceLogs[0];
+  const workPanelPlanRunning = mainTurnWorkActive && !mainAgentPaused && workPanelPlan?.status === 'in_progress' && (
+    (workPanelPlan.turnId && activePlanTurn?.turnId) ? workPanelPlan.turnId === activePlanTurn.turnId
+      : (workPanelPlan.runId && activePlanTurn?.runId) ? workPanelPlan.runId === activePlanTurn.runId
+        : activeTurnTraceLogs.includes(workPanelPlan)
+  );
 
   const chatChangeStats = useMemo(() => {
     const fileStatusMap = new Map<string, { path: string; status: 'MOD' | 'ADD' | 'DEL' }>();
@@ -16584,12 +16638,12 @@ function DeepWorkUI() {
           <div className="eterx-mac-topbar-sidebar-spacer shrink-0 pointer-events-none" />
         )}
 
-        {/* Action buttons — API | Models | Theme | Help | Updates */}
+        {/* Action buttons — API | Models | Theme | Help | Updates | Usage */}
         <div className="eterx-topbar-actions pointer-events-auto flex min-w-0 items-center gap-0 overflow-hidden [-webkit-app-region:no-drag]">
           {/* API */}
           <button type="button"
             data-active={isSettingsOpen && settingsInitialTab === 'api' ? 'true' : undefined}
-            onClick={() => { setSettingsInitialTab('api'); setIsSettingsOpen(true); }}
+            onClick={() => openSettingsWindow('api')}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-hidden bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
             API
@@ -16598,7 +16652,7 @@ function DeepWorkUI() {
           {/* Models */}
           <button type="button"
             data-active={isSettingsOpen && settingsInitialTab === 'models' ? 'true' : undefined}
-            onClick={() => { setSettingsInitialTab('models'); setIsSettingsOpen(true); }}
+            onClick={() => openSettingsWindow('models')}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-hidden bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
             Models
@@ -16763,6 +16817,24 @@ function DeepWorkUI() {
                     : 'Update'
               : 'Updates'}
           </button>
+
+          <button
+            type="button"
+            aria-pressed={isUsageOpen}
+            aria-controls={isUsageOpen ? 'eterx-usage-dashboard' : undefined}
+            data-active={isUsageOpen ? 'true' : undefined}
+            onClick={() => {
+              setIsSettingsOpen(false);
+              setHeaderMenuOpen(false);
+              setActiveTopbarMenu(null);
+              setShowProxyAttachMenu(false);
+              setIsUsageOpen(open => !open);
+            }}
+            className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-hidden bg-transparent border-0 transition-colors duration-150"
+            style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}
+          >
+            Usage
+          </button>
         </div>
         <div className="flex-1 pointer-events-none" />
       </div>
@@ -16801,6 +16873,11 @@ function DeepWorkUI() {
             chatScope={sidebarChatScope}
             onChatScopeChange={handleChatScopeChange}
             chats={nonBuilderChats}
+            liveChatLedger={liveChatLedger}
+            focusGroup={sidebarFocusGroup}
+            onFocusGroupChange={setSidebarFocusGroup}
+            onSetChatSettled={setChatSettled}
+            onOpenFocusTask={openFocusTask}
             isLoadingChats={isChatHistoryLoading}
             historyError={chatHistoryError}
             retryHistory={() => { void requestChatRestoreRef.current?.(true); }}
@@ -16827,10 +16904,14 @@ function DeepWorkUI() {
 
       <SettingsPanel isOpen={isSettingsOpen} initialTab={settingsInitialTab as any} onTabChange={setSettingsInitialTab} onClose={closeSettingsWindow} />
 
-      <div className="eterx-workspace-shell min-w-0 flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
-        {/* Absolute Header (Draggable Region for Electron) */}
-        <>
-          <div ref={workspaceMainPanelRef} data-workspace-open={workspaceControls.open && (activeView === 'chat' || (activeView === 'agents' && Boolean(buildingAgentId)))} className={`eterx-main-panel ${ !sidebarOpen ? 'eterx-main-panel-sidebar-closed' : '' } flex-1 flex flex-col relative overflow-hidden`}>
+      <div data-usage-open={isUsageOpen || undefined} className="eterx-workspace-shell min-w-0 flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
+        {isUsageOpen && (
+          <div data-usage-panel className={`eterx-main-panel ${sidebarOpen ? '' : 'eterx-main-panel-sidebar-closed'} flex min-h-0 min-w-0 flex-col overflow-hidden`}>
+            <UsageDashboard />
+          </div>
+        )}
+        <WorkspacePaneVisibleContext.Provider value={!isUsageOpen}>
+          <div ref={workspaceMainPanelRef} inert={isUsageOpen} aria-hidden={isUsageOpen || undefined} data-usage-covered={isUsageOpen || undefined} data-workspace-open={workspaceControls.open && (activeView === 'chat' || (activeView === 'agents' && Boolean(buildingAgentId)))} className={`eterx-main-panel ${ !sidebarOpen ? 'eterx-main-panel-sidebar-closed' : '' } flex-1 flex flex-col relative overflow-hidden`}>
             <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-3 pr-6 [-webkit-app-region:drag]">
               <div className="flex min-w-0 flex-1 overflow-visible items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
                 <div id="agent-builder-back-portal" className="flex items-center">
@@ -17384,6 +17465,8 @@ function DeepWorkUI() {
                   selectedSection={selectedProjectSection}
                   setSelectedSection={setSelectedProjectSection}
                   onOpenChat={openTaskChat}
+                  focusTaskRequest={focusTaskRequest}
+                  onFocusTaskHandled={setFocusTaskRequest}
                   onOpenSettingsTab={openSettingsWindow}
                 />
               ) : (
@@ -17438,8 +17521,9 @@ function DeepWorkUI() {
                               ref={proxyChatWindowRef}
                               role="dialog"
                               aria-label="Talk with Proxy"
-                              inert={proxyObscuredByWorkPanel}
-                              aria-hidden={proxyObscuredByWorkPanel || undefined}
+                              inert={isUsageOpen || proxyObscuredByWorkPanel}
+                              aria-hidden={isUsageOpen || proxyObscuredByWorkPanel || undefined}
+                              data-usage-covered={isUsageOpen || undefined}
                               data-work-panel-obscured={proxyObscuredByWorkPanel}
                               onKeyDown={event => {
                                 if (event.key !== 'Escape') return;
@@ -17803,6 +17887,7 @@ function DeepWorkUI() {
                       retryMedia={retryChatMedia}
                       pins={pinnedItems}
                       plan={workPanelPlan}
+                      planRunning={workPanelPlanRunning}
                       agents={autonomousSelected ? [] : realSubAgents}
                       activeAgentId={activeSubAgentTab}
                       revealAgents={Boolean(workPanel?.revealAgents)}
@@ -18010,6 +18095,8 @@ function DeepWorkUI() {
                         mainChatId={activeChatId}
                         workspacePath={activeWorkspacePath}
                         traceLogs={traceLogs}
+                        plan={workPanelPlan}
+                        planRunning={workPanelPlanRunning}
                         chats={chats}
                         liveChatLedger={liveChatLedger}
                         runningChats={sidebarRunningChats}
@@ -18063,7 +18150,7 @@ function DeepWorkUI() {
               )}
             </div>
           </div>
-        </>
+        </WorkspacePaneVisibleContext.Provider>
       </div>
 
       <CommandPalette

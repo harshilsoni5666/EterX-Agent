@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises';
+import { recordMediaResponse } from '../usage/ledger';
+import { measureFeature } from '../telemetry/runtime';
 import path from 'node:path';
 import { withApiKeyRounds } from '../agent/api-retry';
 import {
@@ -248,6 +250,7 @@ const executeOpenAICompatible = async (provider: ImageProvider, model: string, p
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body),
   });
+  recordMediaResponse(provider, model, payload, 'image');
   return imageBytes(sourceFromPayload(payload));
 };
 
@@ -257,6 +260,7 @@ const executeDeepInfra = async (model: string, prompt: string, key: string, sett
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ prompt, width, height }),
   });
+  recordMediaResponse('deepinfra', model, payload, 'image');
   return imageBytes(sourceFromPayload(payload));
 };
 
@@ -279,6 +283,7 @@ const executeFal = async (model: string, prompt: string, key: string, settings: 
     if (status?.status === 'COMPLETED') {
       try {
         const result = await jsonRequest(responseURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 45_000);
+        recordMediaResponse('fal', model, result, 'image', requestId);
         return imageBytes(sourceFromPayload(result));
       } catch (error: any) {
         if (error?.status === 422 && !error?.assetURL) throw externalServiceJobFailed(error.message);
@@ -299,12 +304,18 @@ const executeKrea = async (model: string, prompt: string, key: string, settings:
     body: JSON.stringify({ prompt, aspect_ratio: aspect === '3:4' ? '4:5' : aspect, resolution: '1K', creativity: 'medium' }),
   });
   const jobId = String(payload?.job_id || '').trim();
-  if (!jobId) return imageBytes(sourceFromPayload(payload));
+  if (!jobId) {
+    recordMediaResponse('krea', model, payload, 'image');
+    return imageBytes(sourceFromPayload(payload));
+  }
   rememberExternalServiceJob('krea', model, jobId);
   for (let attempt = 0; attempt < 300; attempt += 1) {
     await waitForExternalService(2000);
     const job = await jsonRequest(`${baseURL}/jobs/${encodeURIComponent(jobId)}`, { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } }, 30_000);
-    if (job?.status === 'completed') return imageBytes(sourceFromPayload(job));
+    if (job?.status === 'completed') {
+      recordMediaResponse('krea', model, job, 'image', jobId);
+      return imageBytes(sourceFromPayload(job));
+    }
     if (['failed', 'canceled', 'cancelled'].includes(job?.status)) throw externalServiceJobFailed(`Krea job ${job.status}: ${job?.result?.error || 'No result returned.'}`);
   }
   throw new Error('Krea image request timed out while waiting for the job.');
@@ -325,7 +336,10 @@ const executeFreepik = async (model: string, prompt: string, key: string, settin
     await waitForExternalService(2000);
     const status = await jsonRequest(`${endpoint}/${encodeURIComponent(taskId)}`, { headers: { ...freepikAuthHeaders(baseURL, key), Accept: 'application/json' } }, 30_000);
     const state = String(status?.data?.status || '').toUpperCase();
-    if (state === 'COMPLETED') return imageBytes(sourceFromPayload(status?.data?.generated?.[0] || status));
+    if (state === 'COMPLETED') {
+      recordMediaResponse('freepik', model, status, 'image', taskId);
+      return imageBytes(sourceFromPayload(status?.data?.generated?.[0] || status));
+    }
     if (['FAILED', 'ERROR', 'CANCELED', 'CANCELLED'].includes(state)) throw externalServiceJobFailed('Freepik image task failed.');
   }
   throw new Error('Freepik image task timed out.');
@@ -351,7 +365,11 @@ export async function executeImageGeneration(input: ImageGenerationInput, contex
   if (!providerOrder(settings).includes(preferred)) throw new Error('The requested image provider is not enabled in the primary or fallback order.');
   if (input.jobId && !['fal', 'krea', 'freepik'].includes(preferred)) throw new Error('This image provider does not expose resumable generation jobs.');
   const model = input.model?.trim() || settings.modelByProvider[preferred] || IMAGE_PROVIDER_META[preferred].defaultModel;
-  return withExternalServiceContext({ ...context, serviceSettings: settings, job: input.jobId ? { id: input.jobId, provider: preferred, model } : undefined }, () => executeImageRoute(input, settings, context));
+  return measureFeature('image', () => withExternalServiceContext({
+    ...context, serviceSettings: settings, job: input.jobId ? { id: input.jobId, provider: preferred, model } : undefined,
+  }, () => executeImageRoute(input, settings, context)), result => ({
+    success: result.success, pending: result.providerActionMode === 'pending', provider: result.provider, model: result.model,
+  }), context?.abortSignal ?? context?.signal);
 }
 
 async function executeImageRoute(input: ImageGenerationInput, settings: ImageSettings, context?: ExternalServiceContext): Promise<ImageGenerationResult> {

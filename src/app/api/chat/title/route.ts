@@ -8,7 +8,9 @@ import { createProviderChatStream } from '../../../../lib/agent/provider-stream-
 import { createCodexSubscriptionClient } from '../../../../lib/agent/codex-subscription-runtime';
 import { applyCompatibleThinkingParameters, assertSuccessfulCompatibleFinish, createCompatibleTaggedReasoningSplitter, splitCompatibleDeltaContent } from '../../../../lib/agent/provider-capabilities';
 import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
-import { normalizeProviderCacheUsage } from '../../../../lib/agent/provider-prompt-cache';
+import { meterModelResponse } from '../../../../lib/usage/ledger';
+import { measureFeature } from '../../../../lib/telemetry/runtime';
+import { mergeProviderUsageSnapshots, normalizeProviderCacheUsage } from '../../../../lib/agent/provider-prompt-cache';
 import { isConcreteModelId, isModelProvider } from '../../../../lib/agent/model-selector-store';
 import {
   buildScopedRuntimeSettings,
@@ -47,13 +49,15 @@ const normalizeRequestedTitleModel = (value: unknown): RequestedTitleModel | nul
   return { provider, modelName };
 };
 
+type GeneratedTitle = { title: string; provider: MainAgentProvider; model: string; usageId?: string; usage?: Record<string, number> };
+
 async function generateTitleWithProviderOnce(
   provider: MainAgentProvider,
   modelName: string,
   prompt: string,
   apiKey: string,
   signal: AbortSignal,
-): Promise<{ title: string; provider: MainAgentProvider; model: string; usage?: Record<string, number> }> {
+): Promise<GeneratedTitle> {
   if (provider === 'anthropic') {
     const client = new Anthropic({
       apiKey,
@@ -66,7 +70,8 @@ async function generateTitleWithProviderOnce(
       messages: [{ role: 'user', content: prompt }],
       max_tokens: STANDARD_TITLE_TOKENS,
     };
-    const result = await client.messages.create(params, { signal });
+    const { response: result, usageId } = await meterModelResponse(provider, modelName, () => client.messages.create(params, { signal }),
+      response => ({ usage: response.usage, responseModel: response.model }), signal);
     const titleText = Array.isArray((result as any).content)
       ? (result as any).content
         .map((part: any) => part?.type === 'text' ? String(part.text || '') : '')
@@ -75,7 +80,7 @@ async function generateTitleWithProviderOnce(
       : '';
     const title = cleanGeneratedTitle(titleText);
     if (!title) throw new Error('Model returned an invalid chat title');
-    return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usage) };
+    return { title, provider, model: modelName, usageId, usage: normalizeProviderCacheUsage(provider, (result as any).usage) };
   }
 
   if (provider === 'gemini') {
@@ -85,7 +90,7 @@ async function generateTitleWithProviderOnce(
     const thinkingConfig = lowestThinkingLevel
       ? getGeminiThinkingConfig(lowestThinkingLevel, modelName, false, metadata.thinking)
       : null;
-    const result = await genAI.models.generateContent({
+    const { response: result, usageId } = await meterModelResponse(provider, modelName, () => genAI.models.generateContent({
       model: modelName,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
@@ -94,12 +99,12 @@ async function generateTitleWithProviderOnce(
         maxOutputTokens: thinkingConfig ? REASONING_TITLE_TOKENS : STANDARD_TITLE_TOKENS,
         ...(thinkingConfig ? { thinkingConfig } : {}),
       },
-    });
+    }), response => ({ usage: response.usageMetadata, responseModel: response.modelVersion }), signal);
     const candidates = result.candidates || [];
     const titleText = candidates[0]?.content?.parts || (result as any).text;
     const title = cleanGeneratedTitle(titleText);
     if (!title) throw new Error('Model returned an invalid chat title');
-    return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usageMetadata) };
+    return { title, provider, model: modelName, usageId, usage: normalizeProviderCacheUsage(provider, (result as any).usageMetadata) };
   }
 
   // Use the same endpoint and reasoning contract as normal chat requests.
@@ -133,14 +138,14 @@ async function generateTitleWithProviderOnce(
   for await (const chunk of createProviderChatStream(client, provider, baseParams, signal, metadata.wire)) {
     const choice = chunk?.choices?.[0];
     titleText += splitCompatibleDeltaContent(choice?.delta?.content, taggedReasoning).text;
-    if (chunk.usage) usage = chunk.usage;
+    if (chunk.usage) usage = mergeProviderUsageSnapshots(usage, chunk.usage);
     finishReason = choice?.finish_reason ?? finishReason;
   }
   titleText += taggedReasoning.flush().text;
   assertSuccessfulCompatibleFinish(finishReason, false);
   const title = cleanGeneratedTitle(titleText);
   if (!title) throw new Error('Model returned an invalid chat title');
-  return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, usage) };
+  return { title, provider, model: modelName, usageId: usage?.eterxUsageId, usage: normalizeProviderCacheUsage(provider, usage) };
 }
 
 async function generateTitleWithProvider(
@@ -149,7 +154,7 @@ async function generateTitleWithProvider(
   prompt: string,
   runtimeSettings: ScopedRuntimeSettings,
   requestSignal: AbortSignal,
-): Promise<{ title: string; provider: MainAgentProvider; model: string; usage?: Record<string, number> }> {
+): Promise<GeneratedTitle> {
   if (provider === 'codex') {
     return generateTitleWithProviderOnce(provider, modelName, prompt, '',
       AbortSignal.any([requestSignal, AbortSignal.timeout(TITLE_REQUEST_TIMEOUT_MS)]));
@@ -205,13 +210,13 @@ export async function POST(req: NextRequest) {
     // Use only the model that ran this chat. Title generation must not switch
     // providers or silently consume a different model's quota.
     try {
-      const generated = await generateTitleWithProvider(
+      const generated = await measureFeature('title', () => generateTitleWithProvider(
         primaryProvider,
         primaryModelName,
         prompt,
         runtimeSettings,
         req.signal,
-      );
+      ), result => ({ success: !isDefaultChatTitle(result.title), provider: result.provider, model: result.model }), req.signal);
       if (generated.title && !isDefaultChatTitle(generated.title)) {
         return NextResponse.json(generated);
       }

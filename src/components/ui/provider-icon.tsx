@@ -86,7 +86,11 @@ const PROVIDER_ICON_MASK_SIZE: Record<string, string> = {
   llamacpp: '92% auto',
 };
 
-export function ProviderIconAsset({ provider, className = 'h-4 w-4' }: { provider: string; className?: string }) {
+export function ProviderIconAsset({ provider, className = 'h-4 w-4', color }: {
+  provider: string;
+  className?: string;
+  color?: string;
+}) {
   const iconPath = PROVIDER_ICON_PATH[provider];
   if (!iconPath) return <Key aria-hidden="true" className={`shrink-0 ${className}`} />;
   if (/\.(?:ico|png|jpe?g|webp)$/i.test(iconPath) || PROVIDER_ICON_INTRINSIC_COLOR.has(provider)) {
@@ -97,7 +101,7 @@ export function ProviderIconAsset({ provider, className = 'h-4 w-4' }: { provide
     <span
       aria-hidden="true"
       className={`inline-block shrink-0 bg-current ${className}`}
-      style={{ color: PROVIDER_ICON_COLOR[provider], WebkitMask: mask, mask }}
+      style={{ color: color ?? PROVIDER_ICON_COLOR[provider], WebkitMask: mask, mask }}
     />
   );
 }

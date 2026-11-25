@@ -101,7 +101,7 @@ export function TaskPlanCard({ plan }: { plan: TaskTrackerState }) {
 
 const stepIcons = { done: Check, skipped: CircleSlash, failed: CircleAlert, blocked: CircleDashed, in_progress: Loader2, pending: Circle };
 
-export function WorkspacePlan({ tab, owner, logs, ledger }: { tab: WorkspaceTab; owner: string; logs: any[]; ledger?: LiveChatLedger }) {
+export function WorkspacePlan({ tab, owner, logs, ledger, running }: { tab: WorkspaceTab; owner: string; logs: any[]; ledger?: LiveChatLedger; running: boolean }) {
   const sourceChat = tab.planChatId || owner;
   const live = useLiveChat(ledger, sourceChat);
   const source = sourceChat === owner || !live?.traceLogs?.length ? logs : live.traceLogs;
@@ -123,9 +123,10 @@ export function WorkspacePlan({ tab, owner, logs, ledger }: { tab: WorkspaceTab;
     {steps.length > 0 && <>
       <h2 className={styles.stepHeading}>Implementation steps</h2>
       <ol className={styles.steps}>{steps.map(step => {
-        const Icon = stepIcons[step.status] || Circle;
+        const active = running && plan.status === 'in_progress' && step.status === 'in_progress';
+        const Icon = active ? Loader2 : step.status === 'in_progress' ? Circle : stepIcons[step.status] || Circle;
         return <li key={step.id || step.step}><details>
-          <summary><Icon size={15} aria-hidden /><span>{step.name}</span><ChevronRight size={14} className={styles.chevron} /></summary>
+          <summary aria-current={active ? 'step' : undefined}><Icon size={15} className={active ? 'motion-safe:animate-spin' : undefined} aria-hidden /><span>{step.name}</span><ChevronRight size={14} className={styles.chevron} /></summary>
           <div className={styles.stepDetails}>
             <small>{planStepLabels[step.status]}{step.depends_on?.length ? ' · After ' + step.depends_on.map(n => 'step ' + n).join(', ') : ''}</small>
             {step.description && <p>{step.description}</p>}

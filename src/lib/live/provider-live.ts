@@ -1,3 +1,4 @@
+import { recordLiveUsage } from './live-usage';
 import { requestJson } from '../request-json';
 import { captureMicrophone } from '../microphone';
 import {
@@ -216,6 +217,7 @@ export class ProviderLiveSession implements LiveSession {
   private playbackSampleRate = 24000;
   private manualDisconnect = false;
   private lifecycleId = 0;
+  private usageModel = '';
   private desktopRunId = `live-${crypto.randomUUID()}`;
   private desktopSessionRequested = false;
   private connectPromise: Promise<void> | null = null;
@@ -731,6 +733,7 @@ export class ProviderLiveSession implements LiveSession {
     if (!response.ok || payload?.ok === false) {
       throw new Error(String(payload?.error || `Could not authorize ${this.provider.label}.`));
     }
+    this.usageModel = payload.model || this.options.model || this.provider.label;
     return payload;
   }
 
@@ -1625,6 +1628,13 @@ export class ProviderLiveSession implements LiveSession {
       }
     }
     const responseId = String(message.response_id || message.response?.id || '');
+    if (type === 'response.done' && (message.response?.usage || message.response?.status === 'completed')) {
+      recordLiveUsage(this.provider.provider, message.response?.model || this.usageModel, message.response?.usage, responseId || eventId || undefined);
+    }
+    if (type === 'conversation.item.input_audio_transcription.completed' && message.usage) {
+      const model = this.provider.transport === 'openai-webrtc' ? 'gpt-4o-mini-transcribe' : 'grok-transcribe';
+      recordLiveUsage(this.provider.provider, model, message.usage, message.item_id ? 'asr:' + message.item_id : undefined);
+    }
     // WebRTC audio can keep playing after response.done. Handle its playback
     // events even after the response's remaining content events are ignored.
     if (this.provider.transport === 'openai-webrtc' && type.startsWith('output_audio_buffer.')) {
@@ -1725,6 +1735,7 @@ export class ProviderLiveSession implements LiveSession {
       if (type === 'AgentThinking') this.setState('thinking');
       if (type === 'AgentStartedSpeaking') this.setState('speaking');
       if (type === 'AgentAudioDone') {
+        recordLiveUsage('deepgram', DEFAULT_DEEPGRAM_THINK_MODEL, message.usage);
         this.setState('listening');
         this.completeCurrentTurn();
       }
@@ -1761,6 +1772,7 @@ export class ProviderLiveSession implements LiveSession {
           this.callbacks.onInputTranscription(this.inputTranscript);
         }
       } else if (type === 'agent_response') {
+        recordLiveUsage('elevenlabs', 'Conversational agent', message.agent_response_event?.usage, eventId || undefined);
         const text = String(message.agent_response_event?.agent_response || '').trim();
         this.outputTranscript = appendText(this.outputTranscript, text);
         this.emitOutputTranscript();

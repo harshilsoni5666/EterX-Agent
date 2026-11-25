@@ -3,6 +3,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
+import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { formatModelName } from '../../lib/agent/model-presentation';
 import { modelEntryKey, parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
 
@@ -11,13 +12,19 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
   entries: ModelSelectorEntry[];
   onSelect: (selection: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const workspaceVisible = useWorkspacePaneVisible();
+  const [menuOpen, setOpen] = useState(false);
+  const open = workspaceVisible && menuOpen;
   const [position, setPosition] = useState({ left: 0, top: 0, width: 260, maxHeight: 280, transform: '' });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
   const active = parseModelEntryKey(selection);
   const name = active?.modelId ? formatModelName(active.modelId) : 'Select a model';
+
+  useLayoutEffect(() => {
+    if (!workspaceVisible) setOpen(false);
+  }, [workspaceVisible]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -91,7 +98,6 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
       aria-haspopup="menu"
       aria-expanded={open}
       aria-controls={open ? menuId : undefined}
-      title={active?.modelId || name}
       onClick={() => setOpen(value => !value)}
       onKeyDown={event => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); }

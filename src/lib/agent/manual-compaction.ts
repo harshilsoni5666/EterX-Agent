@@ -15,21 +15,24 @@ export type CompactionRun = {
 
 /** The next safe provider boundary can claim a request only while its run owns it. */
 type Request = { run: CompactionRun; claimed: boolean; rawSettings?: unknown; finish: (result: ManualCompactionResult) => void };
+type DirectRunControls = { cancel: () => void; codexModel?: string };
+type DirectRun = CompactionRun & { controls?: DirectRunControls };
 const state = globalThis as typeof globalThis & {
   __eterxManualCompactions?: Map<string, Request>;
   __eterxManualCompactionJobs?: Map<string, Promise<ManualCompactionResult>>;
-  __eterxDirectCompactionRuns?: Map<string, CompactionRun>;
+  __eterxDirectCompactionRuns?: Map<string, DirectRun>;
 };
 const requests = state.__eterxManualCompactions ||= new Map();
 const jobs = state.__eterxManualCompactionJobs ||= new Map();
 const directRuns = state.__eterxDirectCompactionRuns ||= new Map();
 export const getDirectCompactionRun = (chatId: string) => directRuns.get(chatId);
 export const isDirectChatRunning = (chatId: string) => directRuns.has(chatId);
-export function beginDirectChatRun(chatId: string, runId: string | undefined, signal: AbortSignal) {
+export const getActiveDirectChatRuns = () => [...directRuns.values()];
+export function beginDirectChatRun(chatId: string, runId: string | undefined, signal: AbortSignal, controls?: DirectRunControls) {
   let succeeded = false;
   let finish!: () => void;
   const finished = new Promise<void>(resolve => { finish = resolve; });
-  const run = { runId, signal, finished, completed: () => succeeded };
+  const run: DirectRun = { runId, signal, finished, completed: () => succeeded, controls };
   directRuns.set(chatId, run);
   return (completed: boolean) => {
     if (directRuns.get(chatId) !== run) return;

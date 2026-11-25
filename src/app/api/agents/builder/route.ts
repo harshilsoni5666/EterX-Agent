@@ -4,6 +4,7 @@ import type { MainAgentMode } from '../../../../lib/agent/model-routing';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
+import { beginTelemetryTurn } from '../../../../lib/telemetry/runtime';
 import {
   cleanString,
   isSafeAgentId,
@@ -72,6 +73,8 @@ export async function POST(req: NextRequest) {
       async start(controller) {
         let closed = false;
         const abortController = new AbortController();
+        let telemetry: ReturnType<typeof beginTelemetryTurn> | undefined;
+        let succeeded = false;
         const abortRun = () => {
           closed = true;
           abortController.abort();
@@ -99,7 +102,10 @@ export async function POST(req: NextRequest) {
           const selectedMode: MainAgentMode = selectedProvider === 'gemini'
             ? 'think'
             : selectedProvider;
-          const result = await orchestrator.executePipeline(
+          telemetry = beginTelemetryTurn(crypto.randomUUID(), {
+            feature: 'builder', mode: 'agent', origin: 'interactive', provider: selectedProvider, model: selectedModelName,
+          });
+          const result = await telemetry.run(() => orchestrator.executePipeline(
             'default_user',
             `agent_builder_${safeAgentId}`,
             currentRequest,
@@ -127,7 +133,8 @@ export async function POST(req: NextRequest) {
             'Developer',
             runtimeSettings.preferredGeminiApiKey,
             runtimeSettings,
-          );
+          ));
+          succeeded = result.success !== false;
           if (!closed && !req.signal.aborted) {
             controller.enqueue(encoder.encode(String(result.finalAnswer || 'Agent Builder returned no response.')));
           }
@@ -136,6 +143,7 @@ export async function POST(req: NextRequest) {
             controller.enqueue(encoder.encode(`\nAgent Builder failed: ${String(error?.message || error).slice(0, 500)}`));
           }
         } finally {
+          telemetry?.finish(abortController.signal.aborted ? 'cancelled' : succeeded ? 'succeeded' : 'failed');
           req.signal.removeEventListener('abort', abortRun);
           closed = true;
           try { controller.close(); } catch { }

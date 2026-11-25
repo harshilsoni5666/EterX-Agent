@@ -58,7 +58,9 @@ import {
 } from '../search/search-runtime';
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { createProviderChatStream } from '../agent/provider-stream-adapter';
+import { meterModelResponse, meterModelStream } from '../usage/ledger';
 import { createCodexSubscriptionClient } from '../agent/codex-subscription-runtime';
+import { withFastRequestTags } from '../agent/model-fast-mode';
 import { compactContextAtBoundary } from '../agent/resilience/context-compaction';
 import { readModelUsage } from '../model-usage';
 import { openWorkingContextCheckpoint } from '../agent/working-context-checkpoint';
@@ -649,7 +651,8 @@ async function runGeminiDirect(
       ...(thinkingConfig ? { thinkingConfig } : {}),
     },
   };
-  const response: any = await ai.models.generateContent(request);
+  const { response } = await meterModelResponse('gemini', model, () => ai.models.generateContent(request),
+    result => ({ usage: result.usageMetadata, responseModel: result.modelVersion }));
   assertSuccessfulCompatibleFinish(response?.candidates?.[0]?.finishReason, false);
   return String((response as any)?.text || '').trim();
 }
@@ -669,6 +672,7 @@ async function runOpenAiCompatibleDirect(
   thinking: DirectThinking,
   systemInstruction: string,
   conversationScope = '',
+  wireCapabilities?: string[],
 ) {
   const baseURL = getProviderBaseURL(provider);
   if (!baseURL) throw new Error(`${provider} requires a configured API base URL.`);
@@ -702,7 +706,8 @@ async function runOpenAiCompatibleDirect(
     applyOpenAIPromptCachePolicy(params, { model, staticPrompt: systemInstruction, tools: [], conversationScope });
     delete params.stream_options;
   }
-  const stream = createProviderChatStream(client, provider, params, undefined, readStoredModelMetadata(provider, model).wire, conversationScope);
+  const stream = createProviderChatStream(client, provider, params, undefined,
+    withFastRequestTags(readStoredModelMetadata(provider, model).wire, wireCapabilities), conversationScope);
   let text = '';
   let finishReason: unknown;
   const taggedReasoning = createCompatibleTaggedReasoningSplitter();
@@ -750,9 +755,10 @@ async function runAnthropicDirect(
   const cacheObservation = beginPromptCacheDiagnostics({
     provider: 'anthropic', model, scope: conversationScope, endpoint: client.baseURL, apiKey: key, request: params,
   });
-  const response: any = attachments.some(item => item.fileId)
+  const { response } = await meterModelResponse('anthropic', model, async () => attachments.some(item => item.fileId)
     ? await client.beta.messages.create(params)
-    : await client.messages.create(params);
+    : await client.messages.create(params),
+  result => ({ usage: result.usage, responseModel: result.model }));
   const stopReason = String(response?.stop_reason || '');
   if (!stopReason || (stopReason !== 'end_turn' && stopReason !== 'stop_sequence')) {
     throw new Error(`MODEL_STREAM_INCOMPLETE: Anthropic ended the response with stop_reason=${stopReason || 'missing'}.`);
@@ -806,7 +812,8 @@ export async function runDirectChat(request: DirectChatRequest): Promise<{
             ? runGeminiDirect(model, key, history, currentText, attachments, thinking, systemInstruction)
             : provider === 'anthropic'
               ? runAnthropicDirect(model, key, history, currentText, attachments, thinking, systemInstruction, request.chatId || request.runId)
-              : runOpenAiCompatibleDirect(provider, model, key, history, currentText, attachments, thinking, systemInstruction, request.chatId || request.runId);
+              : runOpenAiCompatibleDirect(provider, model, key, history, currentText, attachments, thinking, systemInstruction,
+                request.chatId || request.runId, request.modelWireCapabilities);
         },
         undefined,
         undefined,
@@ -968,7 +975,7 @@ const createDirectUsageTrace = (
   const cachedTokens = Number(normalized.cachedTokens || 0);
   return {
     type: 'model_usage',
-    usageId: `usage_direct_chat_${provider}_${timestamp}_${Math.random().toString(36).slice(2, 9)}`,
+    usageId: (usage as any)?.eterxUsageId || `usage_direct_chat_${provider}_${timestamp}_${Math.random().toString(36).slice(2, 9)}`,
     source: 'provider',
     provider,
     model,
@@ -1011,12 +1018,11 @@ const streamGeminiDirect = async (
       ...(thinkingConfig ? { thinkingConfig } : {}),
     },
   };
-  const stream: any = await ai.models.generateContentStream(request);
   let text = '';
   let reasoningText = '';
   let usage: unknown;
   let finishReason: unknown;
-  for await (const chunk of stream as any) {
+  for await (const chunk of meterModelStream('gemini', model, () => ai.models.generateContentStream(request), 'gemini', undefined, { signal })) {
     throwIfAborted(signal);
     const parts = Array.isArray(chunk?.candidates?.[0]?.content?.parts)
       ? chunk.candidates[0].content.parts
@@ -1050,6 +1056,7 @@ const streamOpenAiCompatibleDirect = async (
   systemInstruction: string,
   signal?: AbortSignal,
   conversationScope = '',
+  wireCapabilities?: string[],
 ): Promise<DirectProviderStreamResult> => {
   const baseURL = getProviderBaseURL(provider);
   if (!baseURL) throw new Error(`${provider} requires a configured API base URL.`);
@@ -1083,7 +1090,8 @@ const streamOpenAiCompatibleDirect = async (
   if (provider === 'openai' && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1') {
     applyOpenAIPromptCachePolicy(params, { model, staticPrompt: systemInstruction, tools: [], conversationScope });
   }
-  const stream: any = await createProviderChatStream(client, provider, params, signal, readStoredModelMetadata(provider, model).wire, conversationScope);
+  const stream: any = await createProviderChatStream(client, provider, params, signal,
+    withFastRequestTags(readStoredModelMetadata(provider, model).wire, wireCapabilities), conversationScope);
   let text = '';
   let reasoningText = '';
   let usage: unknown;
@@ -1182,7 +1190,8 @@ const streamAnthropicDirect = async (
   let reasoningText = '';
   let usage: unknown;
   const readContent = createAnthropicContentStreamReader();
-  for await (const event of runner as any) {
+  const usageId = crypto.randomUUID();
+  for await (const event of meterModelStream('anthropic', model, runner, 'anthropic', usageId, { signal })) {
     throwIfAborted(signal);
     const content = readContent(event);
     reasoningText = appendReasoningText(reasoningText, content.reasoning, onReasoningDelta);
@@ -1195,7 +1204,7 @@ const streamAnthropicDirect = async (
     reasoningText = appendReasoningText(reasoningText, reasoning, onReasoningDelta);
     onReasoningDelta('', true);
   }
-  if (finalMessage?.usage) usage = finalMessage.usage;
+  if (finalMessage?.usage) usage = { ...finalMessage.usage, eterxUsageId: usageId };
   const stopReason = String(finalMessage?.stop_reason || '');
   if (!stopReason || (stopReason !== 'end_turn' && stopReason !== 'stop_sequence')) {
     throw new Error(`MODEL_STREAM_INCOMPLETE: Anthropic ended the stream with stop_reason=${stopReason || 'missing'}.`);
@@ -1522,7 +1531,8 @@ export async function streamDirectChat(
               ? streamGeminiDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal)
               : provider === 'anthropic'
                 ? streamAnthropicDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal, request.chatId || request.runId)
-                : streamOpenAiCompatibleDirect(provider, model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal, request.chatId || request.runId);
+                : streamOpenAiCompatibleDirect(provider, model, attemptKey, history, attemptText, attemptAttachments, thinking,
+                  onDelta, onReasoningDelta, systemInstruction, signal, request.chatId || request.runId, request.modelWireCapabilities);
           },
           signal,
           (attempt, totalAttempts, error) => resetProviderAttemptLifecycle({

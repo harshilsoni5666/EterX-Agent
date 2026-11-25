@@ -10,6 +10,7 @@ import { buildTemporaryTitle, mergeChatTitleMetadata } from './chat/title-genera
 import { visibleUserRequest } from './chat-user-payload';
 import { normalizeImportedTraces } from './imports/presentation';
 import { mergeChatWorkspaceSelection } from './imports/workspace';
+import { mergeChatFocusDisposition } from './chat-focus';
 import {
   mergeFeedTraceHistories,
   isConclusiveSettledAnswerTrace,
@@ -703,6 +704,7 @@ function mergeChatForAction(durable: any, incoming: unknown) {
     workspacePath: candidate.workspacePath ?? null,
     ...mergeChatWorkspaceSelection(durable, candidate),
     ...mergeChatTitleMetadata(durable, candidate),
+    ...mergeChatFocusDisposition(durable, candidate),
     updatedAt: Math.max(Number(durable.updatedAt || 0), Number(candidate.updatedAt || 0)),
     traceLogs: mergeFeedTraceHistories(durable.traceLogs || [], candidate.traceLogs || []),
   };
@@ -781,6 +783,7 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
         ...(durable.importOrigin ? { importOrigin: durable.importOrigin, importFolder: durable.importFolder, importPresentationVersion: durable.importPresentationVersion } : {}),
         ...mergeChatWorkspaceSelection(durable, chat),
         ...mergeChatTitleMetadata(durable, chat),
+        ...mergeChatFocusDisposition(durable, chat),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
           chat.traceLogs || [],
@@ -834,6 +837,7 @@ export async function patchChatSnapshot(
         ...(durable.importOrigin ? { importOrigin: durable.importOrigin, importFolder: durable.importFolder, importPresentationVersion: durable.importPresentationVersion } : {}),
         ...mergeChatWorkspaceSelection(durable, chat),
         ...mergeChatTitleMetadata(durable, chat),
+        ...mergeChatFocusDisposition(durable, chat),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
           chat.traceLogs || [],

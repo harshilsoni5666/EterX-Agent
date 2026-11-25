@@ -1,18 +1,72 @@
 {
   "$schema": "./docs/release-notes.schema.json",
-  "version": "0.1.52",
-  "summary": "Improved ChatGPT plan sign-in recovery and subscription error details.",
+  "version": "0.1.53",
+  "summary": "Added usage insights and account controls, and refined chat navigation, model selection, and activity displays.",
   "sections": [
+    {
+      "kind": "new",
+      "items": [
+        {
+          "title": "Fast model mode",
+          "description": "Added an optional Fast mode that stayed off by default. The lightning icon appeared only for supported OpenAI API and Codex subscription models."
+        },
+        {
+          "title": "ChatGPT account management",
+          "description": "Added multiple ChatGPT accounts in Settings → Subscription, with usage status for the active account. You could stop active runs before switching or use Change & Resume to switch after in-flight requests finished. Account switching remained manual to help manage OpenAI usage limits."
+        },
+        {
+          "title": "Usage dashboard",
+          "description": "Added an in-app Usage dashboard with All, API, and Sub filters; 7, 30, and 90-day ranges; selectable daily charts; provider and model trends; token counts; pricing details; recent saved usage; and CSV export."
+        },
+        {
+          "title": "Focus mode and thinking controls",
+          "description": "Added Focus mode in Recents with live Working, Attention Needed, and Settled counts, provider icons, and a saved Settle chat action. Added a Show thinking in container setting that hid expandable thinking cards while keeping activity headings and fallback status indicators visible."
+        },
+        {
+          "title": "Configurable activity telemetry",
+          "description": "Added opt-in activity telemetry with a durable local queue and reporting for daily activity and provider, model, platform, and version breakdowns. Live collection required deploying the receiver and configuring ETERX_TELEMETRY_URL."
+        }
+      ]
+    },
     {
       "kind": "improved",
       "items": [
         {
-          "title": "ChatGPT plan sign-in recovery",
-          "description": "Updated token requests to include explicit form headers. When OpenAI returned invalid_grant for a one-time authorization code, EterX opened one fresh authorization using the same registered client. Other token-exchange failures showed the HTTP status and any returned error code in Settings → Subscription."
+          "title": "Model picker",
+          "description": "Redesigned the chat model picker as a compact provider-and-model view. It opened on the active provider, scrolled the selected model into view, and supported changing thinking levels with clear hover feedback."
         },
         {
-          "title": "EterX sign-in callback",
-          "description": "Routed sign-in and subscription requests through Electron’s network stack to respect system proxy settings. Added a restrictive policy to the local callback page and cleared callback parameters from browser history after sign-in."
+          "title": "Chat activity and tool groups",
+          "description": "Grouped consecutive Browser use and Computer use activity into collapsible sections with action counts. Groups stayed together across pauses and ended when a file edit, work note, unrelated tool, or other activity type interrupted them."
+        },
+        {
+          "title": "Recents and workspace navigation",
+          "description": "Updated Recent chats with softer backgrounds, scrollable lists and scope menus, hidden scrollbars, and edge fades when more content was available. Refined the curved Usage workspace and kept the sidebar visible while Usage was open."
+        },
+        {
+          "title": "File links and tooltips",
+          "description": "Moved answer file links inline with their text and retained colorful file icons. Added link tooltips that stayed near the link and within the window while adapting to available space."
+        },
+        {
+          "title": "Settings and plan panels",
+          "description": "Moved notification settings above their trigger, removed the Settings pane’s horizontal scrollbar, and hid the compact tab strip’s scrollbar while preserving swipe navigation. The Work panel showed Plan only when a chat had one and cleared its active-step spinner when work stopped."
+        }
+      ]
+    },
+    {
+      "kind": "fixed",
+      "items": [
+        {
+          "title": "Thought Sequence grouping",
+          "description": "Kept sub-agent messages and unrelated tools in the regular chat feed. Browser and Computer Use groups followed the tool identity, and the same grouping rules applied to imported chat histories."
+        },
+        {
+          "title": "Chat feed scrolling and search status",
+          "description": "Allowed the mouse wheel to scroll tall tables and then continue through the chat at the table boundaries, while preserving horizontal scrolling. Stopped the web-search shimmer as soon as a search returned or ended."
+        },
+        {
+          "title": "Live Convo layout",
+          "description": "Kept status messages readable, placed Refresh within the catalog panel, and matched Live Convo fields to the standard Settings font."
         }
       ]
     }

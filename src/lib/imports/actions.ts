@@ -1,5 +1,6 @@
 /** Provider-neutral presentation adapters. These translate recorded data only;
  * they never execute an imported command, patch, or agent instruction. */
+import { getControlToolSurface } from '../control-tool-surface';
 import { numberDiffLines, type NumberedDiffLine } from '../diff-line-numbers';
 import { recordedFileContent, shellFileRead } from './file-reads';
 type Data = Record<string, any>;
@@ -142,6 +143,7 @@ function fileChanges(name: string, args: Data, result: Data, cwd: string): Chang
 export function adaptImportedAction(log: Data): Data[] {
   const originalName = string(log.sourceToolName || log.toolName || log.tool) || 'Tool output';
   const name = sourceToolName(originalName);
+  const controlSurface = getControlToolSurface(originalName);
   const args = object(log.toolArgs || log.args);
   const result = recordedResult(log.toolResult ?? log.output);
   const cwd = string(args.workdir || args.cwd || result.cwd || log.cwd || log.workspacePath);
@@ -223,13 +225,13 @@ export function adaptImportedAction(log: Data): Data[] {
   } else if (search) {
     next.type = 'exploration'; next.text = /glob|listdir|ls/.test(name) ? 'Explored files' : 'Searched files'; next.iconCategory = 'search';
     next.secondary = string(args.pattern || args.query || args.search_term || args.path);
-  } else if (/websearch|webfetch|web.*run/.test(name) || originalName === 'web.run' || originalName === 'web__run') {
+  } else if (/websearch|webfetch|web.*run/.test(name) || name === 'browsersearch' || originalName === 'web.run' || originalName === 'web__run') {
     next.type = 'exploration'; next.text = /fetch/.test(name) ? 'Read web page' : 'Searched the web'; next.iconCategory = 'web_search';
     next.secondary = string(args.query || args.url) || string(args.search_query?.[0]?.q);
     if (Array.isArray(result.results)) { next.toolName = next.tool = 'web_search'; next.toolResult = result; }
-  } else if (/browser/i.test(originalName)) {
+  } else if (controlSurface === 'browser') {
     next.type = 'browser'; next.iconCategory = 'browser'; next.text = /screenshot/.test(name) ? 'Captured screenshot' : 'Used browser'; next.secondary = string(args.title || args.url || args.action);
-  } else if (/computer|screen[_-]?agent|screenshot/i.test(originalName)) {
+  } else if (controlSurface === 'computer') {
     next.type = 'tool_call';
     next.iconCategory = 'computer';
     next.text = /screenshot/.test(name) ? 'Captured screenshot' : 'Used computer';

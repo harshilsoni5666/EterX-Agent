@@ -82,20 +82,6 @@
   line-height: 1.4;
 }
 
-.learnMore {
-  flex: 0 0 auto;
-  padding: 2px 0;
-  color: var(--composer-menu-muted);
-  font-size: 12px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.learnMore:hover {
-  color: var(--composer-menu-ink);
-}
-
 .option {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 17px;

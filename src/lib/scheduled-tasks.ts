@@ -41,6 +41,12 @@ export interface ScheduledTaskRecord {
   lastError?: string;
 }
 
+export function scheduledTaskSection(status: ScheduledTaskStatus) {
+  if (status === 'queued' || status === 'running') return 'queue';
+  if (status === 'scheduled' || status === 'paused') return 'my-list';
+  return 'completed';
+}
+
 export const SCHEDULED_TASKS_STORAGE_KEY = 'eterx_scheduled_tasks';
 export const SCHEDULED_TASKS_UPDATED_EVENT = 'eterx_scheduled_tasks_updated';
 

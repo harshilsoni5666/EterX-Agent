@@ -3,10 +3,12 @@ import { ExternalLink } from 'lucide-react';
 import { workspacePathKey } from '../../lib/workspace-paths';
 import { getFileIconPath } from '../../lib/utils/file-icon-utils';
 import { defaultUrlTransform } from 'react-markdown';
+import { LinkHoverTooltip } from './link-hover-tooltip';
 
 export const LOCAL_FILE_HREF_PREFIX = '#eterx-local-file:';
 export const LocalFileWorkspaceContext = React.createContext<string | null>(null);
 export const LocalFilePathsContext = React.createContext<string[]>([]);
+export const InlineLocalFileLinksContext = React.createContext(false);
 
 const isAbsoluteLocalPath = (value: string) => /^(?:[A-Za-z]:[\\/]|\\\\|\/|~[\\/])/.test(value);
 const isRelativeArtifactPath = (value: string) => !/^(?:[a-z][\w+.-]*:|\/\/|#|\?)/i.test(value)
@@ -281,6 +283,7 @@ export const LocalFileIcon = React.memo(({ fileName, size = 'md' }: { fileName: 
 export const LocalFileLinkChip = React.memo(({ filePath, label, compact = false }: { filePath: string; label?: string; compact?: boolean }) => {
   const workspace = React.useContext(LocalFileWorkspaceContext);
   const recordedPaths = React.useContext(LocalFilePathsContext);
+  const inline = React.useContext(InlineLocalFileLinksContext);
   const source = (decodeLocalFileHref(filePath) || filePath).trim();
   const reference = source.replace(/#L?\d+(?:[-:]L?\d+)?$/i, '').replace(/:(\d+)(?::\d+)?$/, '');
   const synthetic = /^(?:sandbox|attachment):/i.test(reference);
@@ -307,8 +310,7 @@ export const LocalFileLinkChip = React.memo(({ filePath, label, compact = false 
     return joined;
   }, [recordedPaths, reference, synthetic, workspace]);
   const filename = getLocalFileName(target || reference.replace(/^(?:sandbox|attachment):/i, ''));
-  const suppliedLabel = label?.trim();
-  const name = filename || suppliedLabel || 'File';
+  const name = (inline ? label?.trim() : undefined) || filename;
   const [message, setMessage] = useState('');
   const [opening, setOpening] = useState(false);
   const pending = useRef(false);
@@ -326,6 +328,27 @@ export const LocalFileLinkChip = React.memo(({ filePath, label, compact = false 
     setOpening(false);
     setMessage(ok ? '' : 'Could not open this file. It may be missing or have no associated app.');
   };
+  if (inline) {
+    const [, hashLine, lastLine, colonLine] = source.slice(reference.length).match(/^#L?(\d+)(?:[-:]L?(\d+))?|^:(\d+)/i) ?? [];
+    const line = hashLine || colonLine || name.match(/\(line\s+(\d+)\)$/i)?.[1];
+    const location = target || reference;
+    let tooltipText = location;
+    if (lastLine) tooltipText += ` (lines ${hashLine}–${lastLine})`;
+    else if (line) tooltipText += ` (line ${line})`;
+
+    return (
+      <>
+        <LinkHoverTooltip text={tooltipText} showFullText>
+          <button type="button" className="eterx-inline-file-link" onClick={openPath} aria-label={`Open ${name} in default app`} aria-busy={opening} disabled={opening}>
+            <LocalFileIcon fileName={location} size="sm" />
+            <span>{name}</span>
+          </button>
+        </LinkHoverTooltip>
+        {message && <span role="status" className="ml-1 text-xs text-[var(--eterx-md-muted)]">{message}</span>}
+      </>
+    );
+  }
+
   return <span className={'eterx-local-file-chip inline-flex min-w-0 max-w-full flex-wrap items-center overflow-hidden align-middle text-left ' + (compact ? 'my-0.5' : 'my-1') + ' rounded-[10px] border transition-colors'} title={target || reference}>
     <button type="button" onClick={openPath} aria-label={'Open ' + name + ' in default app'} aria-busy={opening} disabled={opening}
       className={'eterx-local-file-chip-open inline-flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-[10px] ' + (compact ? 'h-8 px-2' : 'h-9 px-2.5') + ' text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current'}>

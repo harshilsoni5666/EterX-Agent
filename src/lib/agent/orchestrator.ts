@@ -565,6 +565,7 @@ export class AgentOrchestrator {
       context.source = pinnedContext.source;
       context.telegram = pinnedContext.telegram;
       (context as any).telegramBot = pinnedContext.telegramBot;
+      (context as any).modelWireCapabilities = pinnedContext.modelWireCapabilities;
       context.selectedModelProvider = String(pinnedContext.selectedModelProvider || '').trim() || undefined;
       context.strictModelSelection = pinnedContext.strictModelSelection === true;
       context.contextCompaction = pinnedContext.contextCompaction;

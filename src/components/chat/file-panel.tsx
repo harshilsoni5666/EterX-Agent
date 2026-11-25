@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { createPortal } from 'react-dom';
+import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GeistMono } from 'geist/font/mono';
 import {
@@ -761,6 +762,7 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
 };
 
 export const IdePanel = () => {
+  const workspaceVisible = useWorkspacePaneVisible();
   const { openFiles, reviewFiles, reviewSubagents, activeIndex, activeChatId, closePanel, setActiveIndex, openPanel } = useGlobalFilePanel();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, index: number } | null>(null);
@@ -1958,7 +1960,7 @@ export const IdePanel = () => {
     </div>
   );
 
-  const dockPortal = activeTabMode !== 'review' && !isFullscreen && dockPosition && typeof document !== 'undefined' ? createPortal(
+  const dockPortal = workspaceVisible && activeTabMode !== 'review' && !isFullscreen && dockPosition && typeof document !== 'undefined' ? createPortal(
     <div
       className="fixed z-[9999] -translate-x-1/2 [-webkit-app-region:no-drag]"
       style={{ left: dockPosition.left, top: dockPosition.top }}

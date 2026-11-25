@@ -9,6 +9,7 @@ import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-impro
 import { rebaseContextCompactionWindow } from '../model-context-window';
 import { CONVERSATION_INTENT_POLICY } from '../conversation-intent-policy';
 import { parseModelEntryKey } from '../model-selector-store';
+import { withTelemetryScope } from '../../telemetry/runtime';
 import {
   delegationTelemetryFromTrace,
   type DelegatedAgentEvidence,
@@ -1570,7 +1571,8 @@ export class UserProxyRuntime {
     };
     let response: any;
     try {
-      response = await client.executeMessageLoop(proxyContext, prompt, [], undefined, []);
+      response = await withTelemetryScope({ role: 'auxiliary', origin: 'proxy' }, () =>
+        client.executeMessageLoop(proxyContext, prompt, [], undefined, []));
     } catch (error) {
       throw error;
     }

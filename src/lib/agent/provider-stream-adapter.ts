@@ -1,10 +1,13 @@
 import type OpenAI from 'openai';
+import { meterModelStream } from '../usage/ledger';
+import { providerSupportsStreamUsage } from './provider-capabilities';
 import type { MainAgentProvider } from './model-routing';
 import { applyOpenAIResponsesCachePolicy, mergeProviderUsageSnapshots, withOpenAICacheFallback } from './provider-prompt-cache';
 import { beginPromptCacheDiagnostics } from './prompt-cache-diagnostics';
 import { getProviderProtocol } from './provider-protocol';
 import { streamMessagesBridge, streamGenerateContentBridge } from './provider-native-bridge';
 import { getDocumentedThinkingCapabilities } from './model-thinking-contracts';
+import { FAST_TIER, isNativeOpenAiEndpoint, isOpenAiFastModel, openAiFastRequest, requestedCodexFastAccount } from './model-fast-mode';
 import { extractCompatibleReasoningText, extractProviderReasoningText, reasoningContinuationFields } from './provider-capabilities';
 
 const toResponsesTools = (tools: any[] = []) => tools.map(tool => ({
@@ -97,7 +100,7 @@ function responsesRequest(params: Record<string, any>, provider: MainAgentProvid
   if (Object.keys(reasoning).length) body.reasoning = reasoning;
   const maxTokens = params.max_output_tokens ?? params.max_completion_tokens ?? params.max_tokens;
   if (!codex && maxTokens !== undefined) body.max_output_tokens = maxTokens;
-  const optionalFields = codex ? ['parallel_tool_calls', 'prompt_cache_key']
+  const optionalFields = codex ? ['parallel_tool_calls', 'prompt_cache_key', 'service_tier']
     : ['parallel_tool_calls', 'temperature', 'top_p', 'service_tier', 'user', 'metadata', 'prompt_cache_key', 'prompt_cache_retention'];
   for (const field of optionalFields) {
     if (params[field] !== undefined) body[field] = params[field];
@@ -112,17 +115,19 @@ function responsesRequest(params: Record<string, any>, provider: MainAgentProvid
 }
 
 function codexResponsesError(error: unknown): unknown {
-  const failure = error as { code?: string; status?: number; requestID?: string; request_id?: string; cause?: { code?: string } } | null;
+  const failure = error as { code?: string; status?: number; param?: string; requestID?: string; request_id?: string; cause?: { code?: string } } | null;
   const code = failure?.code || failure?.cause?.code;
   let message: string;
   if (code === 'subscription_sharing_usage_limit_exceeded' || failure?.status === 429) {
-    message = 'ChatGPT limited this request. Check Manage usage in Settings → Subscription (https://chatgpt.com/settings/usage).';
+    message = 'ChatGPT limited this request. Review your plan or EterX’s app limit in ChatGPT settings (https://chatgpt.com/settings/usage).';
   } else if (code === 'subscription_sharing_user_not_eligible') {
     message = 'ChatGPT plan usage is unavailable for this account or workspace.';
   } else if (code === 'subscription_sharing_usage_unavailable' || code === 'subscription_sharing_user_unavailable') {
     message = 'ChatGPT could not check plan usage. Try again in a moment.';
   } else if (code === 'subscription_sharing_invalid_user' || (failure?.status === 401 && code !== 'chatgpt_sign_in_required')) {
     message = 'ChatGPT could not authorize this account. Reconnect in Settings → Subscription.';
+  } else if (code === 'subscription_sharing_unsupported_capability' && failure?.param === 'service_tier') {
+    message = 'OpenAI rejected Fast for this ChatGPT model and account. Turn off Fast in the model picker to continue.';
   } else {
     return error;
   }
@@ -132,20 +137,21 @@ function codexResponsesError(error: unknown): unknown {
   });
 }
 
-async function* streamCodexResponses(client: OpenAI, params: Record<string, any>, signal?: AbortSignal) {
+async function* streamCodexResponses(client: OpenAI, params: Record<string, any>, signal?: AbortSignal, fastAccount?: string) {
   try {
-    yield* streamProviderResponses(client, 'codex', params, signal);
+    yield* streamProviderResponses(client, 'codex', params, signal, fastAccount);
   } catch (error) {
     throw codexResponsesError(error);
   }
 }
 
 async function* streamProviderResponses(
-  client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal,
+  client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal, fastAccount?: string,
 ): AsyncGenerator<any> {
   const body = responsesRequest(params, provider);
   if (provider === 'openai') applyOpenAIResponsesCachePolicy(body, params.messages || []);
-  const send = (request: Record<string, any>) => (client.responses.create as any)(request, signal ? { signal } : undefined);
+  const options = fastAccount ? { signal, headers: { 'x-eterx-codex-fast-profile': fastAccount } } : signal ? { signal } : undefined;
+  const send = (request: Record<string, any>) => (client.responses.create as any)(request, options);
   const codexResponse = provider === 'codex' ? await send(body).withResponse() : null;
   const events: any = codexResponse ? codexResponse.data
     : await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
@@ -286,9 +292,10 @@ async function* streamProviderResponses(
       }
       if (calls.some(call => !call.emitted)) throw new Error(`MODEL_STREAM_INCOMPLETE: ${provider} did not finish its tool arguments.`);
       yield { choices: [{ finish_reason: calls.length > 0 ? 'tool_calls' : 'stop', delta: {} }],
-        usage: event.response?.usage, responses_output: output };
+        model: event.response?.model, usage: event.response?.usage, responses_output: output };
       return;
     } else if (type === 'response.incomplete' || type === 'response.failed' || type === 'error') {
+      if (event.response?.usage) yield { choices: [], model: event.response.model, usage: event.response.usage };
       const failure = event?.response?.error || event?.error;
       const detail = event?.response?.incomplete_details?.reason || failure?.message || event?.message || type;
       throw Object.assign(new Error(`MODEL_STREAM_INCOMPLETE: ${provider} Responses API returned ${detail}.`), {
@@ -304,6 +311,7 @@ async function* streamCompatibleChat(
   client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal,
 ): AsyncGenerator<any> {
   const body: Record<string, any> = { ...params, stream: true };
+  if (providerSupportsStreamUsage(provider)) body.stream_options ??= { include_usage: true };
   // Responses metadata can remain in a checkpoint after switching models.
   body.messages = (params.messages || []).map(({ responses_output: _output, anthropic_content: _anthropic, gemini_content: _gemini, ...message }: any) => message);
   if (provider === 'minimax') body.reasoning_split = true;
@@ -311,7 +319,18 @@ async function* streamCompatibleChat(
     body.reasoning = { ...body.reasoning, exclude: false };
   }
   const send = (request: Record<string, any>) => client.chat.completions.create(request as any, signal ? { signal } : undefined) as any;
-  const stream: AsyncIterable<any> = await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
+  let stream: AsyncIterable<any>;
+  try {
+    stream = await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
+  } catch (error: any) {
+    const detail = String(error?.message || '') + ' ' + String(error?.error?.param || '');
+    const rejectedOption = /stream_options|include_usage/i.test(detail)
+      && /unsupported|not supported|unrecognized|unknown|unexpected|extra|not permitted|not allowed/i.test(detail);
+    if (!body.stream_options || ![400, 422].includes(error?.status) || !rejectedOption || signal?.aborted) throw error;
+    // Older compatible servers may reject this optional field before starting a stream.
+    const { stream_options: _usageOptions, ...compatibleBody } = body;
+    stream = await (provider === 'openai' ? withOpenAICacheFallback(compatibleBody, send) : send(compatibleBody));
+  }
   const textByChoice = new Map<number, string>();
   const reasoningByChoice = new Map<number, string>();
   for await (const chunk of stream) {
@@ -356,13 +375,25 @@ export function createProviderChatStream(
   client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal, capabilities: string[] = [],
   conversationScope?: string,
 ): AsyncIterable<any> {
-  if (provider === 'codex') return streamCodexResponses(client, params, signal);
-  const protocol = getProviderProtocol(provider, String(params.model || ''), capabilities);
+  const model = String(params.model || '');
+  const meter = (stream: AsyncIterable<any>) => meterModelStream(provider, params.model, stream, 'compatible', undefined, { signal });
+  if (provider === 'codex') {
+    const fastAccount = requestedCodexFastAccount(model, capabilities);
+    const request = { ...params };
+    if (fastAccount) request.service_tier = FAST_TIER;
+    else delete request.service_tier;
+    return meter(streamCodexResponses(client, request, signal, fastAccount));
+  }
+  if (provider === 'openai' && isOpenAiFastModel(model) && isNativeOpenAiEndpoint(client.baseURL)
+    && capabilities.includes(openAiFastRequest(model))) {
+    params = { ...params, service_tier: FAST_TIER };
+  }
+  const protocol = getProviderProtocol(provider, model, capabilities);
   let stream: AsyncIterable<any>;
   switch (protocol) {
     case 'responses': stream = streamProviderResponses(client, provider, params, signal); break;
-    case 'messages': return streamMessagesBridge(client, params, signal, conversationScope);
-    case 'generateContent': return streamGenerateContentBridge(client, params, signal, conversationScope);
+    case 'messages': return meter(streamMessagesBridge(client, params, signal, conversationScope));
+    case 'generateContent': return meter(streamGenerateContentBridge(client, params, signal, conversationScope));
     default: stream = streamCompatibleChat(client, provider, params, signal);
   }
   const observation = beginPromptCacheDiagnostics({
@@ -370,8 +401,8 @@ export function createProviderChatStream(
     endpoint: client.baseURL, apiKey: client.apiKey ?? '',
     request: protocol === 'responses' ? responsesRequest(params, provider) : params,
   });
-  if (!observation) return stream;
-  return (async function* () {
+  if (!observation) return meter(stream);
+  return meter((async function* () {
     let usage: any;
     for await (const chunk of stream) {
       if (chunk?.usage) usage = mergeProviderUsageSnapshots(usage, chunk.usage);
@@ -379,5 +410,5 @@ export function createProviderChatStream(
     }
     // Failed or cancelled streams never replace a successful request baseline.
     if (usage) observation.complete(usage);
-  })();
+  })());
 }

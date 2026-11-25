@@ -1,6 +1,8 @@
 import { MODEL_REQUEST_TIMEOUT_MS } from '../agent/model-request-policy';
 import { load } from 'cheerio';
 import { Anthropic, OpenAI } from '../agent/model-clients';
+import { meterModelResponse } from '../usage/ledger';
+import { measureFeature } from '../telemetry/runtime';
 import { GoogleGenAI } from '@google/genai';
 import {
   getRuntimeApiKeyValues,
@@ -356,12 +358,12 @@ const executeNativeGeminiSearch = async (input: SearchExecutionInput, context: a
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
   const baseURL = getProviderBaseURL('gemini');
   const ai = new GoogleGenAI({ httpOptions: { timeout: MODEL_REQUEST_TIMEOUT_MS, ...(baseURL ? { baseUrl: baseURL } : {}) }, apiKey: key });
-  const response: any = await withTimeout(ai.models.generateContent({
+  const { response } = await meterModelResponse('gemini', capability.model, () => withTimeout(ai.models.generateContent({
     model: capability.model,
     contents: nativeSearchPrompt(input),
     config: { tools: [{ googleSearch: {} }], abortSignal: externalServiceSignal() },
-  }), MODEL_REQUEST_TIMEOUT_MS);
-  const metadata = response?.candidates?.[0]?.groundingMetadata || response?.groundingMetadata || {};
+  }), MODEL_REQUEST_TIMEOUT_MS), result => ({ usage: result.usageMetadata, responseModel: result.modelVersion }), externalServiceSignal());
+  const metadata = response?.candidates?.[0]?.groundingMetadata || (response as any)?.groundingMetadata || {};
   const chunks = Array.isArray(metadata?.groundingChunks) ? metadata.groundingChunks : [];
   const items = chunks.map((chunk: any) => {
     const web = chunk?.web || chunk?.retrievedContext || {};
@@ -387,7 +389,8 @@ const executeNativeResponsesSearch = async (input: SearchExecutionInput, context
   const baseURL = getProviderBaseURL(provider);
   if (!baseURL) throw new Error(`${provider} requires a configured API base URL.`);
   const chatSearch = provider === 'openai' && /-search-(?:api|preview)(?:-|$)/i.test(capability.model);
-  const payload = await requestJson(`${baseURL}/${chatSearch ? 'chat/completions' : 'responses'}`, {
+  const { response: payload } = await meterModelResponse(provider, capability.model,
+    () => requestJson(`${baseURL}/${chatSearch ? 'chat/completions' : 'responses'}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
@@ -402,7 +405,7 @@ const executeNativeResponsesSearch = async (input: SearchExecutionInput, context
         ...(provider === 'openai' ? { include: ['web_search_call.action.sources'] } : {}),
       }),
     }),
-  }, MODEL_REQUEST_TIMEOUT_MS);
+  }, MODEL_REQUEST_TIMEOUT_MS), result => ({ usage: result.usage, responseModel: result.model }), externalServiceSignal());
   const citations = responseURLCitations(payload);
   return {
     provider: 'model',
@@ -424,12 +427,14 @@ const executeNativeAnthropicSearch = async (input: SearchExecutionInput, context
   const blocks: any[] = [];
   let response: any;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    response = await withTimeout(client.messages.create({
+    const recorded = await meterModelResponse('anthropic', capability.model, () => withTimeout(client.messages.create({
       model: capability.model,
       max_tokens: 1600,
       messages,
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-    } as any, { signal: externalServiceSignal() }), MODEL_REQUEST_TIMEOUT_MS);
+    } as any, { signal: externalServiceSignal() }), MODEL_REQUEST_TIMEOUT_MS),
+    result => ({ usage: result.usage, responseModel: result.model }), externalServiceSignal());
+    response = recorded.response;
     if (Array.isArray(response?.content)) blocks.push(...response.content);
     if (response?.stop_reason !== 'pause_turn') break;
     messages.push({ role: 'assistant', content: response.content });
@@ -453,11 +458,12 @@ const executeNativePerplexitySearch = async (input: SearchExecutionInput, contex
   if (!key) throw new Error('No Perplexity API key is available for native model search.');
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
   const client = new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey: key, baseURL: getProviderBaseURL('perplexity'), maxRetries: 0 });
-  const response: any = await withTimeout(client.chat.completions.create({
+  const { response } = await meterModelResponse('perplexity', capability.model, () => withTimeout(client.chat.completions.create({
     model: capability.model,
     messages: [{ role: 'user', content: nativeSearchPrompt(input) }],
     max_tokens: 1600,
-  }, { signal: externalServiceSignal() }), MODEL_REQUEST_TIMEOUT_MS);
+  }, { signal: externalServiceSignal() }), MODEL_REQUEST_TIMEOUT_MS),
+  result => ({ usage: result.usage, responseModel: result.model }), externalServiceSignal());
   const citations = responseURLCitations(response);
   return {
     provider: 'model',
@@ -471,7 +477,8 @@ const executeNativePerplexitySearch = async (input: SearchExecutionInput, contex
 };
 
 const executeNativeOpenRouterSearch = async (input: SearchExecutionInput, capability: NativeModelSearchCapability, apiKey: string): Promise<NormalizedSearchResult> => {
-  const payload = await requestJson(`${getProviderBaseURL('openrouter')}/chat/completions`, {
+  const { response: payload } = await meterModelResponse('openrouter', capability.model,
+    () => requestJson(`${getProviderBaseURL('openrouter')}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
@@ -479,7 +486,7 @@ const executeNativeOpenRouterSearch = async (input: SearchExecutionInput, capabi
       messages: [{ role: 'user', content: nativeSearchPrompt(input) }],
       tools: [{ type: 'openrouter:web_search', parameters: { engine: 'native' } }],
     }),
-  }, MODEL_REQUEST_TIMEOUT_MS);
+  }, MODEL_REQUEST_TIMEOUT_MS), result => ({ usage: result.usage, responseModel: result.model }), externalServiceSignal());
   return { provider: 'model', source: 'model', nativeSearch: true, modelProvider: capability.provider, model: capability.model, ai_summary: responseText(payload) || null, results: normalizeItems(responseURLCitations(payload)) };
 };
 
@@ -506,7 +513,9 @@ const executeNativeProviderSearch = async (input: SearchExecutionInput, capabili
   } else {
     body.tools = [{ type: 'web_search', web_search: { enable: true, search_engine: 'search-prime', search_result: true, search_query: input.query, count: Math.min(50, input.numResults || 5) } }];
   }
-  const payload = await requestJson(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }, MODEL_REQUEST_TIMEOUT_MS);
+  const { response: payload } = await meterModelResponse(provider, capability.model,
+    () => requestJson(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }, MODEL_REQUEST_TIMEOUT_MS),
+    result => ({ usage: result.usage, responseModel: result.model }), externalServiceSignal());
   return { provider: 'model', source: 'model', nativeSearch: true, modelProvider: provider, model: capability.model, ai_summary: responseText(payload) || null, results: normalizeItems(responseURLCitations(payload)) };
 };
 
@@ -931,7 +940,10 @@ const annotateProviderResponse = (response: NormalizedSearchResult, provider: Se
 };
 
 export async function executeSearchWithFailover(input: SearchExecutionInput, context?: any): Promise<NormalizedSearchResult> {
-  return withExternalServiceContext(context, () => executeSearchRoute(input, getRuntimeSearchSettings(), context));
+  return measureFeature('search',
+    () => withExternalServiceContext(context, () => executeSearchRoute(input, getRuntimeSearchSettings(), context)),
+    result => ({ provider: result.provider === 'model' ? result.modelProvider : result.provider, model: result.model }),
+    context?.abortSignal ?? context?.signal);
 }
 
 async function executeSearchRoute(input: SearchExecutionInput, settings: SearchSettings, context?: any): Promise<NormalizedSearchResult> {

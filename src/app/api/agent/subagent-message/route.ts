@@ -56,6 +56,9 @@ export async function POST(request: NextRequest) {
       requestedModelSelection: cleanString(body.requestedModelSelection, 360) || undefined,
       requestedModelProvider: cleanString(body.requestedModelProvider, 80) || undefined,
       requestedModelName: cleanString(body.requestedModelName, 240) || undefined,
+      requestedModelWireCapabilities: Array.isArray(body.requestedModelWireCapabilities)
+        ? readStringList(body.requestedModelWireCapabilities, 100) ?? []
+        : undefined,
       requestedMode: cleanString(body.requestedMode, 40) as any || undefined,
       requestedThinkingLevel: cleanString(body.requestedThinkingLevel, 20) as any || undefined,
     });

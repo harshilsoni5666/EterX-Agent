@@ -54,7 +54,7 @@
 }
 
 :root[data-theme="dark"] .eterx-sidebar-project-menu {
-  background: rgba(36, 36, 36, 0.98) !important;
+  background: linear-gradient(165deg, #22252B, #191B1F) !important;
 }
 
 :root .eterx-composer-shell [data-adaptive-menu="true"],

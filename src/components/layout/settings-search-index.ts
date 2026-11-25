@@ -24,6 +24,7 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
     { title: 'Self-improvement', keywords: 'learning reflection learned guidance adaptation agent memory pause' },
     { title: 'Synapse Graph', keywords: 'local graph memory context routing topic continuity file evidence' },
     { title: 'Follow-up behavior', keywords: 'followup steer queue messages interrupt running send' },
+    { title: 'Show thinking in container', keywords: 'thought reasoning details expandable card chat activity' },
     { title: 'Code review', keywords: 'inline detached separate review chat' },
     { title: 'Open source licenses', keywords: 'third party dependencies legal notices license' },
     { title: 'User manual', keywords: 'documentation guide help how to use tutorial' },
@@ -103,8 +104,8 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
     { title: 'Live model discovery', keywords: 'refresh catalog fetch available models provider availability' },
   ],
   subscription: [
-    { title: 'Connect ChatGPT', section: 'Codex', keywords: 'sign in openai subscription plan connect account', target: 'chatgpt-subscription' },
-    { title: 'ChatGPT usage', section: 'Codex', keywords: 'subscription limits quota manage usage', target: 'chatgpt-usage', fallbackTarget: 'chatgpt-subscription' },
+    { title: 'ChatGPT accounts', section: 'Codex', keywords: 'sign in openai subscription plan add connect switch active workspace sign out', target: 'chatgpt-subscription' },
+    { title: 'ChatGPT usage status', section: 'Codex', keywords: 'subscription rate limits quota last request', target: 'chatgpt-usage', fallbackTarget: 'chatgpt-subscription' },
     { title: 'Available models', section: 'Codex', keywords: 'chatgpt catalog refresh models', target: 'chatgpt-models', fallbackTarget: 'chatgpt-subscription' },
   ],
   api: [

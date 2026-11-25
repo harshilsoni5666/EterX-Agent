@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useWorkspacePaneVisible } from './workspace-pane-visibility';
 
 const tooltipMeasureCache = new Map<string, number>();
 let tooltipMeasureCanvas: HTMLCanvasElement | null = null;
@@ -54,6 +55,8 @@ export const Tooltip = React.memo(({
   delay?: number;
   showOnFocus?: boolean;
 }) => {
+  const workspaceVisible = useWorkspacePaneVisible();
+  const suppressed = disabled || !workspaceVisible;
   const [visible, setVisible] = useState(false);
   const [isPositioned, setIsPositioned] = useState(false);
   const [coords, setCoords] = useState({ left: 0, top: 0, width: 96, arrowLeft: 43, arrowTop: 10 });
@@ -66,7 +69,7 @@ export const Tooltip = React.memo(({
 
   const handleMouseEnter = () => {
     hoveredRef.current = true;
-    if (disabled) return;
+    if (suppressed) return;
     dismissedRef.current = false;
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     if (delay <= 0) {
@@ -90,7 +93,7 @@ export const Tooltip = React.memo(({
   };
 
   const handleFocus = () => {
-    if (!showOnFocus || disabled) return;
+    if (!showOnFocus || suppressed) return;
     focusedRef.current = true;
     dismissedRef.current = false;
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
@@ -102,7 +105,7 @@ export const Tooltip = React.memo(({
     if (!showOnFocus) return;
     if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
     focusedRef.current = false;
-    if (hoveredRef.current && !dismissedRef.current && !disabled) return;
+    if (hoveredRef.current && !dismissedRef.current && !suppressed) return;
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     hoverTimerRef.current = null;
     setVisible(false);
@@ -126,14 +129,19 @@ export const Tooltip = React.memo(({
   }, []);
 
   useEffect(() => {
-    if (!disabled) return;
+    if (!suppressed) return;
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = null;
+    if (!workspaceVisible) {
+      hoveredRef.current = false;
+      focusedRef.current = false;
+    }
     setVisible(false);
     setIsPositioned(false);
-  }, [disabled]);
+  }, [suppressed, workspaceVisible]);
 
   useEffect(() => {
-    if (disabled || !visible || !ref.current || typeof window === 'undefined') return;
+    if (suppressed || !visible || !ref.current || typeof window === 'undefined') return;
 
     const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
     
@@ -145,7 +153,12 @@ export const Tooltip = React.memo(({
         return;
       }
       const rect = trigger.getBoundingClientRect();
-      if (!rect.width || !rect.height) { setVisible(false); setIsPositioned(false); frame = 0; return; }
+      if (!rect.width || !rect.height || trigger.closest('[inert]') || window.getComputedStyle(trigger).visibility !== 'visible') {
+        setVisible(false);
+        setIsPositioned(false);
+        frame = 0;
+        return;
+      }
       const margin = 12;
       const gap = 8;
       const pane = trigger.closest('.eterx-conversation-pane, .eterx-side-workspace, .eterx-main-header')?.getBoundingClientRect();
@@ -208,7 +221,7 @@ export const Tooltip = React.memo(({
       window.removeEventListener('resize', handleUpdate);
       window.removeEventListener('scroll', handleUpdate, { capture: true });
     };
-  }, [content, contentHeight, contentWidth, disabled, visible, side, text]);
+  }, [content, contentHeight, contentWidth, suppressed, visible, side, text]);
 
   const tooltipText = text || '';
   const hasHotkey = tooltipText.includes('@') || tooltipText.includes('⌘') || tooltipText.includes('Ctrl') || tooltipText.includes('Alt');
@@ -219,7 +232,7 @@ export const Tooltip = React.memo(({
   return (
     <div ref={ref} className="relative flex items-center justify-center shrink-0" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onFocusCapture={handleFocus} onBlurCapture={handleBlur} onKeyDownCapture={handleKeyDown}>
       {children}
-      {typeof document !== 'undefined' && createPortal(
+      {workspaceVisible && typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           {visible && (
             <div role="tooltip"

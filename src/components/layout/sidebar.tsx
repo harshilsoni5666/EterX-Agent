@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { X, ChevronRight, ChevronDown, Check, FolderClosed, History, Search, AlarmClockCheck, Link as LinkIcon, Users } from 'lucide-react';
+import { X, ChevronRight, ChevronDown, Check, FolderClosed, History, Search, AlarmClockCheck, ChevronUp, CircleCheck, Link as LinkIcon, ListFilter, RotateCcw, Users } from 'lucide-react';
 import { PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
 import { CopyChatIcon, OpenChatWindowIcon } from '../ui/chat-menu-icons';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
@@ -10,6 +10,10 @@ import { appStorage, appStorageReady } from '../../lib/client-storage';
 import { preloadAppPanel } from '../../lib/preload-app-panel';
 import { IMPORT_LABELS, type ImportOrigin } from '../../lib/imports/types';
 import { chatMatchesScope, chatWorkspaceKey, RECENTS_CHAT_SCOPE, type ChatScope } from '../../lib/chat-scope';
+import { FOCUS_GROUPS, type ChatFocusDisposition, type FocusGroup } from '../../lib/chat-focus';
+import type { LiveChatLedger } from '../../lib/live-chat-ledger';
+import type { ScheduledTaskRecord } from '../../lib/scheduled-tasks';
+import { FocusRowContent, FocusTaskRow, useSidebarFocus } from './sidebar-focus';
 
 const SIDEBAR_DEFAULT_WIDTH = 308;
 const SIDEBAR_LEGACY_DEFAULT_WIDTH = 256;
@@ -270,6 +274,17 @@ const handleMenuKeyboardNavigation = (event: React.KeyboardEvent<HTMLElement>) =
   items[nextIndex]?.focus();
 };
 
+function useSidebarScrollFades() {
+  const [fades, setFades] = React.useState({ top: false, bottom: false });
+  const updateFades = React.useCallback((container: HTMLElement) => {
+    const maxScrollTop = container.scrollHeight - container.clientHeight;
+    const top = maxScrollTop > 1 && container.scrollTop > 1;
+    const bottom = maxScrollTop > 1 && container.scrollTop < maxScrollTop - 1;
+    setFades(current => current.top === top && current.bottom === bottom ? current : { top, bottom });
+  }, []);
+  return [fades, updateFades] as const;
+}
+
 const lightweightSidebarCss = `
   :root .eterx-sidebar-menu.eterx-move-project-menu {
     border-radius: 12px !important;
@@ -374,64 +389,328 @@ const lightweightSidebarCss = `
     box-shadow: none !important;
   }
 
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
-    /* Slim the visible thumb inside the existing lane without moving chat rows. */
-    scrollbar-gutter: stable !important;
-    --eterx-sb-thumb: rgba(255, 255, 255, 0.12);
-    --eterx-sb-thumb-hover: rgba(255, 255, 255, 0.20);
-    --eterx-sb-thumb-active: rgba(255, 255, 255, 0.28);
-    --eterx-sb-arrow-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.3 6.2 5.25 1.35a.95.95 0 0 1 1.5 0L10.7 6.2c.5.62.06 1.55-.75 1.55h-7.9c-.81 0-1.25-.93-.75-1.55Z' fill='%23fff' fill-opacity='.12'/%3E%3C/svg%3E");
-    --eterx-sb-arrow-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='m1.3 1.8 3.95 4.85a.95.95 0 0 0 1.5 0L10.7 1.8c.5-.62.06-1.55-.75-1.55h-7.9c-.81 0-1.25-.93-.75-1.55Z' fill='%23fff' fill-opacity='.12'/%3E%3C/svg%3E");
-    --eterx-sidebar-scroll-fade-size: 12px;
-    -webkit-mask-image: none !important;
-    mask-image: none !important;
+  .eterx-sidebar-scroll-area {
+    --sidebar-scroll-fade-size: 18px;
+    scrollbar-width: none !important;
+    scrollbar-gutter: auto !important;
+    scroll-padding-block: var(--sidebar-scroll-fade-size);
+    overscroll-behavior: contain;
   }
 
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll.eterx-sidebar-scroll-fade-top {
-    -webkit-mask-image: linear-gradient(
-      180deg,
-      transparent 0%,
-      #000 var(--eterx-sidebar-scroll-fade-size),
-      #000 100%
-    ) !important;
-    mask-image: linear-gradient(
-      180deg,
-      transparent 0%,
-      #000 var(--eterx-sidebar-scroll-fade-size),
-      #000 100%
-    ) !important;
+  .eterx-sidebar-scroll-area::-webkit-scrollbar {
+    display: none !important;
   }
 
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll.eterx-sidebar-scroll-fade-bottom {
-    -webkit-mask-image: linear-gradient(
-      180deg,
-      #000 0%,
-      #000 calc(100% - var(--eterx-sidebar-scroll-fade-size)),
-      transparent 100%
-    ) !important;
-    mask-image: linear-gradient(
-      180deg,
-      #000 0%,
-      #000 calc(100% - var(--eterx-sidebar-scroll-fade-size)),
-      transparent 100%
-    ) !important;
+  .eterx-sidebar-scroll-area[data-fade-top] {
+    --sidebar-scroll-fade-top: var(--sidebar-scroll-fade-size);
   }
 
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll.eterx-sidebar-scroll-fade-both {
-    -webkit-mask-image: linear-gradient(
-      180deg,
-      transparent 0%,
-      #000 var(--eterx-sidebar-scroll-fade-size),
-      #000 calc(100% - var(--eterx-sidebar-scroll-fade-size)),
-      transparent 100%
-    ) !important;
+  .eterx-sidebar-scroll-area[data-fade-bottom] {
+    --sidebar-scroll-fade-bottom: var(--sidebar-scroll-fade-size);
+  }
+
+  .eterx-sidebar-scroll-area:is([data-fade-top], [data-fade-bottom]) {
     mask-image: linear-gradient(
-      180deg,
+      to bottom,
       transparent 0%,
-      #000 var(--eterx-sidebar-scroll-fade-size),
-      #000 calc(100% - var(--eterx-sidebar-scroll-fade-size)),
+      #000 var(--sidebar-scroll-fade-top, 0px),
+      #000 calc(100% - var(--sidebar-scroll-fade-bottom, 0px)),
       transparent 100%
-    ) !important;
+    );
+  }
+
+  .eterx-sidebar-focus-panel {
+    --sidebar-focus-accent: #a6c8ff;
+    --sidebar-focus-done: #68d6b5;
+    --sidebar-focus-input: #c9bcff;
+    --sidebar-focus-schedule: #efbd79;
+    --sidebar-focus-error: #f29a9c;
+    --sidebar-focus-claude-color: #db886d;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-focus-panel {
+    --sidebar-focus-accent: #2555a0;
+    --sidebar-focus-done: #16765d;
+    --sidebar-focus-input: #6548a8;
+    --sidebar-focus-schedule: #805019;
+    --sidebar-focus-error: #a63843;
+    --sidebar-focus-claude-color: #9d4c32;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents.eterx-sidebar-focus-panel {
+    background: linear-gradient(155deg, #171a20, #101216 72%) !important;
+  }
+
+  :root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-recents.eterx-sidebar-focus-panel {
+    background: linear-gradient(155deg, #f9fafc, #fdfdfe 72%) !important;
+  }
+
+  .eterx-sidebar-focus-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 5px 7px 10px;
+  }
+
+  .eterx-sidebar-focus-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    width: 100%;
+    padding: 8px 9px;
+    border-radius: 8px;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 140ms ease;
+  }
+
+  .eterx-sidebar-focus-row:is(:hover, [data-menu-open="true"]) {
+    background: color-mix(in srgb, var(--sidebar-strong-text) 6%, transparent);
+  }
+
+  .eterx-sidebar-focus-row:is([aria-current="page"], [aria-pressed="true"]) {
+    background: color-mix(in srgb, var(--sidebar-focus-accent) 8%, transparent);
+  }
+
+  .eterx-sidebar-focus-row[aria-current="page"]::before {
+    content: "";
+    position: absolute;
+    inset-block: 12px;
+    inset-inline-start: 0;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--sidebar-focus-accent);
+  }
+
+  .eterx-sidebar-focus-card {
+    display: grid;
+    min-width: 0;
+    flex: 1;
+    row-gap: 5px;
+  }
+
+  .eterx-sidebar-focus-row-header,
+  .eterx-sidebar-focus-row-footer,
+  .eterx-sidebar-focus-title-line {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .eterx-sidebar-focus-row-header,
+  .eterx-sidebar-focus-row-footer {
+    min-height: 20px;
+    color: var(--sidebar-muted-text);
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .eterx-sidebar-focus-row-footer {
+    font-size: 11.5px;
+  }
+
+  .eterx-sidebar-focus-folder {
+    inline-size: 16px;
+    block-size: 16px;
+    flex-shrink: 0;
+  }
+
+  .eterx-sidebar-focus-workspace,
+  .eterx-sidebar-focus-detail {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .eterx-sidebar-focus-workspace {
+    color: var(--sidebar-text);
+    font-weight: 520;
+  }
+
+  .eterx-sidebar-focus-title-line {
+    align-items: baseline;
+  }
+
+  .eterx-sidebar-focus-title,
+  .eterx-sidebar-focus-title-input {
+    color: var(--sidebar-strong-text);
+    font-size: 14.5px;
+    font-weight: 600;
+    line-height: 1.35;
+    min-width: 0;
+  }
+
+  .eterx-sidebar-focus-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+
+  .eterx-sidebar-focus-title-input {
+    width: 100%;
+    background: transparent;
+  }
+
+  .eterx-sidebar-focus-row:not([data-focus-status], [aria-current="page"], [aria-pressed="true"], [data-focus-unread]) .eterx-sidebar-focus-title {
+    color: var(--sidebar-text);
+    font-weight: 520;
+  }
+
+  .eterx-sidebar-focus-age,
+  .eterx-sidebar-focus-status {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .eterx-sidebar-focus-status {
+    color: var(--sidebar-focus-accent);
+    font-weight: 600;
+  }
+
+  .eterx-sidebar-focus-status-icon,
+  .eterx-sidebar-focus-provider {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+  }
+
+  .eterx-sidebar-focus-provider {
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    color: var(--sidebar-text);
+    --provider-icon-neutral: currentColor;
+  }
+
+  .eterx-sidebar-focus-claude {
+    width: 18px;
+    height: 18px;
+    background: var(--sidebar-focus-claude-color);
+    mask: url("/icons/files/claude.svg") center / contain no-repeat;
+  }
+
+  .eterx-sidebar-focus-status[data-status="done"] {
+    color: var(--sidebar-focus-done);
+  }
+
+  .eterx-sidebar-focus-status[data-status="input"] {
+    color: var(--sidebar-focus-input);
+  }
+
+  .eterx-sidebar-focus-status:is([data-status="scheduled"], [data-status="queued"]) {
+    color: var(--sidebar-focus-schedule);
+  }
+
+  .eterx-sidebar-focus-status[data-status="failed"] {
+    color: var(--sidebar-focus-error);
+  }
+
+  .eterx-sidebar-focus-status:is([data-status="paused"], [data-status="stopped"]) {
+    color: var(--sidebar-muted-text);
+  }
+
+  .eterx-sidebar-focus-status[data-status="working"] .eterx-sidebar-focus-status-icon {
+    animation: eterx-sidebar-spin 1s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .eterx-sidebar-focus-row,
+    .eterx-sidebar-focus-status-icon {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+
+  .eterx-sidebar-focus-groups {
+    position: relative;
+    z-index: 10;
+    display: grid;
+    flex-shrink: 0;
+    gap: 4px;
+    padding: 9px 7px 0;
+  }
+
+  .eterx-sidebar-focus-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 31px;
+    padding: 0 9px;
+    color: var(--sidebar-muted-text);
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 560;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .eterx-sidebar-focus-group-rule {
+    min-width: 8px;
+    height: 1px;
+    flex: 1;
+    background: currentColor;
+    opacity: 0.22;
+  }
+
+  .eterx-sidebar-focus-group[aria-pressed="true"] {
+    color: var(--sidebar-focus-accent);
+  }
+
+  .eterx-sidebar-focus-group[aria-pressed="true"] .eterx-sidebar-focus-group-rule {
+    opacity: 0.38;
+  }
+
+  .eterx-sidebar-focus-group:is(:hover, :focus-visible),
+  .eterx-sidebar-focus-options:hover {
+    background: color-mix(in srgb, var(--sidebar-strong-text) 8%, transparent);
+  }
+
+  .eterx-sidebar-focus-row:focus-visible,
+  .eterx-sidebar-focus-group:focus-visible,
+  .eterx-sidebar-focus-options:focus-visible,
+  .eterx-sidebar-focus-title-input:focus-visible {
+    outline: 1px solid var(--sidebar-focus-accent);
+    outline-offset: -1px;
+  }
+
+  .eterx-sidebar-focus-group[aria-pressed="true"] svg {
+    rotate: 180deg;
+  }
+
+  .eterx-sidebar-focus-options {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 20px;
+    border-radius: 5px;
+    color: var(--sidebar-muted-text);
+    opacity: 0;
+  }
+
+  .eterx-sidebar-focus-row:hover .eterx-sidebar-focus-options,
+  .eterx-sidebar-focus-row:focus-within .eterx-sidebar-focus-options,
+  .eterx-sidebar-focus-options[aria-expanded="true"] {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    .eterx-sidebar-focus-options {
+      opacity: 1;
+    }
   }
 
   .eterx-sidebar-project-filter {
@@ -471,22 +750,10 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-project-menu {
-    --eterx-sb-size: 14px;
     background: color-mix(in srgb, var(--sidebar-bg) 88%, var(--sidebar-strong-text) 12%);
     border-color: transparent !important;
     box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28) !important;
-    scrollbar-gutter: auto !important;
     transform-origin: top left;
-  }
-
-  .eterx-sidebar-project-menu::-webkit-scrollbar-button:single-button:vertical:decrement,
-  .eterx-sidebar-project-menu::-webkit-scrollbar-button:single-button:vertical:increment {
-    height: 18px !important;
-    background-size: 7px 5px !important;
-  }
-
-  .eterx-sidebar-project-menu::-webkit-scrollbar-thumb {
-    border-width: 3px !important;
   }
 
   .eterx-sidebar-project-search {
@@ -567,31 +834,9 @@ const lightweightSidebarCss = `
 
 
 
-  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents,
-  .eterx-sidebar-shell .eterx-sidebar-recents {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.040), rgba(255, 255, 255, 0.018)),
-      rgba(47, 47, 47, 0.34) !important;
-    border-color: transparent !important;
-    box-shadow: none !important;
-  }
-
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents {
-    background: rgba(255, 255, 255, 0.52) !important;
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
-    border-color: transparent !important;
-    box-shadow: none !important;
-  }
-
-  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
-    -webkit-backdrop-filter: blur(14px) saturate(1.08) !important;
-    backdrop-filter: blur(14px) saturate(1.08) !important;
-    --eterx-sb-thumb: rgba(31, 31, 29, 0.12);
-    --eterx-sb-thumb-hover: rgba(31, 31, 29, 0.20);
-    --eterx-sb-thumb-active: rgba(31, 31, 29, 0.28);
-    --eterx-sb-arrow-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.3 6.2 5.25 1.35a.95.95 0 0 1 1.5 0L10.7 6.2c.5.62.06 1.55-.75 1.55h-7.9c-.81 0-1.25-.93-.75-1.55Z' fill='%231f1f1d' fill-opacity='.12'/%3E%3C/svg%3E");
-    --eterx-sb-arrow-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='m1.3 1.8 3.95 4.85a.95.95 0 0 0 1.5 0L10.7 1.8c.5-.62.06-1.55-.75-1.55h-7.9c-.81 0-1.25-.93-.75-1.55Z' fill='%231f1f1d' fill-opacity='.12'/%3E%3C/svg%3E");
   }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile,
@@ -1122,11 +1367,12 @@ const lightweightSidebarCss = `
 
 `;
 
-interface ChatSession {
+interface ChatSession extends ChatFocusDisposition {
   id: string;
   title: string;
   updatedAt: number;
   traceLogs: any[];
+  modelSelection?: string;
   isFavorite?: boolean;
   workspacePath?: string | null;
   importOrigin?: ImportOrigin;
@@ -1154,6 +1400,11 @@ interface SidebarProps {
   chatScope: ChatScope;
   onChatScopeChange: (scope: ChatScope) => void;
   chats: ChatSession[];
+  liveChatLedger: LiveChatLedger;
+  focusGroup: FocusGroup | null;
+  onFocusGroupChange: (group: FocusGroup | null) => void;
+  onSetChatSettled: (id: string, settled: boolean) => void;
+  onOpenFocusTask: (task: ScheduledTaskRecord) => void;
   isLoadingChats?: boolean;
   historyError?: string | null;
   retryHistory?: () => void;
@@ -1178,7 +1429,8 @@ interface SidebarProps {
 
 export const Sidebar = React.memo<SidebarProps>(
   ({
-    isOpen, titlebarToggleExternal = false, setIsOpen, createNewChat, chatScope, onChatScopeChange, chats, isLoadingChats = false, historyError, retryHistory, activeChatId, additionalActiveChatIds, loadChat, copyChat, openChatWindow, deleteChat, deleteChats, renameChat, toggleFavorite, moveChatToProject, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
+    isOpen, titlebarToggleExternal = false, setIsOpen, createNewChat, chatScope: selectedChatScope, onChatScopeChange, chats, isLoadingChats = false, historyError, retryHistory, activeChatId, additionalActiveChatIds, loadChat, copyChat, openChatWindow, deleteChat, deleteChats, renameChat, toggleFavorite, moveChatToProject, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking,
+    liveChatLedger, focusGroup, onFocusGroupChange, onSetChatSettled, onOpenFocusTask,
 }) => {
   const reduceMotion = useReducedMotion();
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean, anchoredToButton?: boolean } | null>(null);
@@ -1209,6 +1461,8 @@ export const Sidebar = React.memo<SidebarProps>(
   const [viewportWidth, setViewportWidth] = React.useState(1440);
   const [sidebarWidth, setSidebarWidth] = React.useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
+  const focusMode = focusGroup !== null;
+  const chatScope = focusMode ? RECENTS_CHAT_SCOPE : selectedChatScope;
   const selectedProjectPath = chatScope.kind === 'project' ? chatScope.path : null;
   const selectedImportFolder = chatScope.kind === 'folder' ? chatScope.name : null;
   const importFolders = React.useMemo(() => [...new Set([
@@ -1218,6 +1472,8 @@ export const Sidebar = React.memo<SidebarProps>(
   const [projectMenuPosition, setProjectMenuPosition] = React.useState({ top: 0, left: 0 });
   const projectMenuRef = React.useRef<HTMLDivElement>(null);
   const projectMenuPortalRef = React.useRef<HTMLDivElement>(null);
+  const projectMenuScrollRef = React.useRef<HTMLDivElement>(null);
+  const [projectMenuScrollFades, updateProjectMenuScrollFades] = useSidebarScrollFades();
   const chatMenuRef = React.useRef<HTMLDivElement>(null);
   const moveProjectTriggerRef = React.useRef<HTMLButtonElement>(null);
   const moveProjectMenuRef = React.useRef<HTMLDivElement>(null);
@@ -1359,15 +1615,24 @@ export const Sidebar = React.memo<SidebarProps>(
     () => projects.find(project => chatWorkspaceKey(project.path) === chatWorkspaceKey(selectedProjectPath)) || null,
     [projects, selectedProjectPath],
   );
+  const scopeLabel = focusMode ? 'Focus mode' : selectedImportFolder || activeProject?.name || 'Recents';
   const filteredChats = React.useMemo(
     () => chatScope.kind === 'recents' ? chats : chats.filter(chat => chatMatchesScope(chat, chatScope)),
     [chats, chatScope],
   );
+  const knownChatIds = React.useMemo(() => new Set(chats.map(chat => chat.id)), [chats]);
+  const { groups: focusGroups, details: focusDetails, unlinkedTasks } = useSidebarFocus({
+    enabled: focusMode, ledger: liveChatLedger, chats: filteredChats, chatScope, runningChats, knownChatIds,
+  });
+  const displayedChats = focusGroup ? focusGroups[focusGroup] : filteredChats;
+  const displayedTasks = focusGroup ? unlinkedTasks[focusGroup] : [];
+  const focusGroupButtons = React.useRef<Partial<Record<FocusGroup, HTMLButtonElement | null>>>({});
+  const menuFocusChat = focusMode && menuState ? focusDetails.get(menuState.id) : undefined;
   const [visibleChatCount, setVisibleChatCount] = React.useState(CHAT_RENDER_BATCH);
-  const [recentScrollFades, setRecentScrollFades] = React.useState({ top: false, bottom: false });
+  const [recentScrollFades, updateRecentScrollFades] = useSidebarScrollFades();
   const visibleChats = React.useMemo(
-    () => filteredChats.slice(0, visibleChatCount),
-    [filteredChats, visibleChatCount]
+    () => displayedChats.slice(0, visibleChatCount),
+    [displayedChats, visibleChatCount]
   );
 
   React.useEffect(() => {
@@ -1395,7 +1660,9 @@ export const Sidebar = React.memo<SidebarProps>(
   React.useEffect(() => {
     if (!projectMenuOpen) return;
     const frameId = window.requestAnimationFrame(() => {
-      projectMenuPortalRef.current?.querySelector<HTMLButtonElement>('button[role="menuitemradio"]')?.focus();
+      const menu = projectMenuPortalRef.current;
+      const selected = menu?.querySelector<HTMLButtonElement>('button[role="menuitemradio"][aria-checked="true"]');
+      (selected || menu?.querySelector<HTMLButtonElement>('button[role="menuitemradio"]'))?.focus();
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [projectMenuOpen]);
@@ -1413,28 +1680,16 @@ export const Sidebar = React.memo<SidebarProps>(
     window.requestAnimationFrame(() => chatMenuButtonRefs.current[chatId]?.focus());
   }, []);
 
-  const updateRecentScrollFades = React.useCallback((container: HTMLDivElement | null) => {
-    if (!container) return;
-    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    const next = {
-      top: maxScrollTop > 1 && container.scrollTop > 1,
-      bottom: maxScrollTop > 1 && container.scrollTop < maxScrollTop - 1,
-    };
-    setRecentScrollFades(current => (
-      current.top === next.top && current.bottom === next.bottom ? current : next
-    ));
-  }, []);
-
   const handleRecentChatsScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const container = event.currentTarget;
-    updateRecentScrollFades(container);
+    if (focusMode) updateRecentScrollFades(container);
     if (
-      visibleChatCount < filteredChats.length &&
+      visibleChatCount < displayedChats.length &&
       container.scrollHeight - container.scrollTop - container.clientHeight < 320
     ) {
-      setVisibleChatCount(current => Math.min(filteredChats.length, current + CHAT_RENDER_BATCH));
+      setVisibleChatCount(current => Math.min(displayedChats.length, current + CHAT_RENDER_BATCH));
     }
-  }, [filteredChats.length, updateRecentScrollFades, visibleChatCount]);
+  }, [displayedChats.length, focusMode, updateRecentScrollFades, visibleChatCount]);
 
   const [now, setNow] = React.useState(() => Date.now());
   const resizeStartRef = React.useRef({ x: 0, width: SIDEBAR_DEFAULT_WIDTH });
@@ -1571,17 +1826,32 @@ export const Sidebar = React.memo<SidebarProps>(
   const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false);
   const [isDeleting, setIsDeleting] = React.useState(false);
 
+  React.useEffect(() => {
+    const container = projectMenuScrollRef.current;
+    if (!container) return;
+
+    const refreshFades = () => updateProjectMenuScrollFades(container);
+    refreshFades();
+
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(refreshFades);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [isOpen, isSelectMode, projectMenuOpen, importFolders.length, projects.length, updateProjectMenuScrollFades]);
+
   // Smart drag selection states
   const [isDragSelecting, setIsDragSelecting] = React.useState(false);
   const [dragSelectState, setDragSelectState] = React.useState<boolean>(true);
   const previousChatScopeRef = React.useRef<ChatScope | null>(null);
+  const previousFocusGroupRef = React.useRef<FocusGroup | null>(null);
   const revealedActiveChatRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
-    const activeIndex = activeChatId ? filteredChats.findIndex(chat => chat.id === activeChatId) : -1;
+    const activeIndex = activeChatId ? displayedChats.findIndex(chat => chat.id === activeChatId) : -1;
     const requiredCount = Math.max(CHAT_RENDER_BATCH, Math.ceil((activeIndex + 1) / CHAT_RENDER_BATCH) * CHAT_RENDER_BATCH);
-    if (previousChatScopeRef.current !== chatScope) {
+    if (previousChatScopeRef.current !== chatScope || previousFocusGroupRef.current !== focusGroup) {
       previousChatScopeRef.current = chatScope;
+      previousFocusGroupRef.current = focusGroup;
       revealedActiveChatRef.current = null;
       setVisibleChatCount(requiredCount);
       setProjectMenuOpen(false);
@@ -1593,7 +1863,7 @@ export const Sidebar = React.memo<SidebarProps>(
     } else if (activeIndex >= visibleChatCount) {
       setVisibleChatCount(requiredCount);
     }
-  }, [activeChatId, chatScope, filteredChats, visibleChatCount]);
+  }, [activeChatId, chatScope, displayedChats, focusGroup, visibleChatCount]);
 
   React.useEffect(() => {
     if (!isOpen || !activeChatId || activeView !== 'chat') {
@@ -1611,11 +1881,11 @@ export const Sidebar = React.memo<SidebarProps>(
       container.scrollTop = top + row.offsetHeight - container.clientHeight;
     }
     revealedActiveChatRef.current = activeChatId;
-  }, [activeChatId, activeView, chatScope, isOpen, visibleChatCount]);
+  }, [activeChatId, activeView, chatScope, displayedChats, focusGroup, isOpen, visibleChatCount]);
 
   React.useEffect(() => {
     const container = scrollContainerRef.current;
-    if (!container) return;
+    if (!focusMode || !container) return;
 
     const refreshFades = () => updateRecentScrollFades(container);
     refreshFades();
@@ -1624,7 +1894,7 @@ export const Sidebar = React.memo<SidebarProps>(
     const observer = new ResizeObserver(refreshFades);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [isOpen, isProjectPending, isSelectMode, filteredChats.length, selectedProjectPath, selectedImportFolder, updateRecentScrollFades, visibleChatCount]);
+  }, [isOpen, isProjectPending, isSelectMode, displayedChats.length, displayedTasks.length, focusGroup, focusMode, updateRecentScrollFades, visibleChatCount]);
 
   const isNewChatActive = activeView === 'chat' && !activeChatId;
   const [glassClick, setGlassClick] = React.useState<{ key: string; x: number; y: number; tick: number } | null>(null);
@@ -1847,13 +2117,13 @@ export const Sidebar = React.memo<SidebarProps>(
   React.useEffect(() => {
     if (!isSelectMode || selectedChatIds.size === 0) return;
 
-    const validIds = new Set(filteredChats.map(chat => chat.id));
+    const validIds = new Set(displayedChats.map(chat => chat.id));
     const current = selectedChatIdsRef.current;
     const next = new Set([...current].filter(id => validIds.has(id)));
     if (next.size !== current.size) commitSelectedChatIds(next);
-  }, [commitSelectedChatIds, filteredChats, isSelectMode, selectedChatIds.size]);
+  }, [commitSelectedChatIds, displayedChats, isSelectMode, selectedChatIds.size]);
 
-  const chatIds = React.useMemo(() => filteredChats.map(chat => chat.id), [filteredChats]);
+  const chatIds = React.useMemo(() => displayedChats.map(chat => chat.id), [displayedChats]);
   const allChatsSelected = chatIds.length > 0 && chatIds.every(id => selectedChatIds.has(id));
   const selectedCount = selectedChatIds.size;
 
@@ -1869,12 +2139,20 @@ export const Sidebar = React.memo<SidebarProps>(
   }, [commitSelectedChatIds]);
 
   const enterSelectMode = React.useCallback(() => {
-    if (filteredChats.length === 0) return;
+    if (displayedChats.length === 0) return;
     setMenuState(null);
+    setProjectMenuOpen(false);
     setShowDeleteConfirm(false);
     setIsSelectMode(true);
     commitSelectedChatIds(new Set());
-  }, [commitSelectedChatIds, filteredChats.length]);
+  }, [commitSelectedChatIds, displayedChats.length]);
+
+  const changeFocusGroup = (group: FocusGroup | null) => {
+    if (group === focusGroup) return;
+    exitSelectMode();
+    setEditingChatId(null);
+    onFocusGroupChange(group);
+  };
 
   const handleSelectAllToggle = React.useCallback(() => {
     if (chatIds.length === 0) return;
@@ -1906,7 +2184,7 @@ export const Sidebar = React.memo<SidebarProps>(
 
   const handleBulkDelete = () => {
     if (isDeleting) return;
-    const idsToDelete = [...selectedChatIds].filter(id => filteredChats.some(chat => chat.id === id));
+    const idsToDelete = [...selectedChatIds].filter(id => displayedChats.some(chat => chat.id === id));
     if (idsToDelete.length === 0) {
       setShowDeleteConfirm(false);
       setIsSelectMode(false);
@@ -1927,13 +2205,12 @@ export const Sidebar = React.memo<SidebarProps>(
     }, 180);
   };
 
-  const handleProjectSelect = React.useCallback((path: string | null) => {
-    const normalizedPath = normalizeProjectPath(path);
+  const handleScopeSelect = (scope: ChatScope, group: FocusGroup | null = null) => {
     setProjectMenuOpen(false);
-    startProjectTransition(() => onChatScopeChange(normalizedPath
-      ? { kind: 'project', path: normalizedPath }
-      : RECENTS_CHAT_SCOPE));
-  }, [onChatScopeChange, startProjectTransition]);
+    changeFocusGroup(group);
+    startProjectTransition(() => onChatScopeChange(scope));
+    window.requestAnimationFrame(() => projectMenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus());
+  };
 
   React.useEffect(() => {
     const handleClickOutside = () => setMenuState(null);
@@ -2111,7 +2388,7 @@ export const Sidebar = React.memo<SidebarProps>(
 
           {/* Expanded Recents List */}
           {isOpen ? (
-            <div className="eterx-sidebar-recents flex-1 mt-0 ml-1 mr-1 mb-1 bg-transparent rounded-[16px] border border-transparent flex flex-col py-3 overflow-hidden relative">
+            <div className={`eterx-sidebar-recents min-h-0 flex-1 mt-0 ml-1 mr-1 mb-1 bg-transparent rounded-[16px] border border-transparent flex flex-col py-3 overflow-hidden relative ${focusMode ? 'eterx-sidebar-focus-panel' : ''}`}>
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-transparent" />
               <div className="flex items-center justify-between pl-3.5 pr-1.5 mb-1.5 min-h-[26px] relative z-30">
                 <div ref={projectMenuRef} className="relative flex min-w-0 flex-1">
@@ -2122,7 +2399,7 @@ export const Sidebar = React.memo<SidebarProps>(
                   ) : (
                     <button
                       type="button"
-                      aria-label={`Chat scope: ${ selectedImportFolder || activeProject?.name || 'Recents' }`}
+                      aria-label={`Chat scope: ${scopeLabel}`}
                       aria-haspopup="menu"
                       aria-expanded={projectMenuOpen}
                       onClick={(event) => {
@@ -2138,7 +2415,7 @@ export const Sidebar = React.memo<SidebarProps>(
                       className={`eterx-sidebar-project-filter group/filter flex min-w-0 max-w-full items-center gap-1 rounded-full border border-transparent px-2 py-1 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:scale-[0.985] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ projectMenuOpen ? 'is-open' : '' }`}
                     >
                       <span className="eterx-sidebar-section-title min-w-0 truncate">
-                        {selectedImportFolder || activeProject?.name || 'Recents'}
+                        {scopeLabel}
                       </span>
                       <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform duration-150 ${ projectMenuOpen ? 'rotate-180' : '' }`} strokeWidth={2.1} />
                     </button>
@@ -2164,37 +2441,56 @@ export const Sidebar = React.memo<SidebarProps>(
                         handleMenuKeyboardNavigation(event);
                       }}
                       style={{ position: 'fixed', top: projectMenuPosition.top, left: projectMenuPosition.left }}
-                      className="eterx-sidebar-project-menu eterx-scrollbar z-[120] max-h-[min(360px,calc(100vh-180px))] w-[220px] min-w-0 max-w-[calc(100vw-24px)] overflow-y-auto rounded-[16px] border-0 p-1.5"
+                      className="eterx-sidebar-project-menu z-[120] flex max-h-[min(360px,calc(100vh-180px))] w-[220px] min-w-0 max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-[16px] border-0"
                     >
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={!selectedProjectPath && !selectedImportFolder}
-                        onClick={() => handleProjectSelect(null)}
-                        className="eterx-sidebar-project-menu-item group/menu-item"
+                      <div
+                        ref={projectMenuScrollRef}
+                        onScroll={event => updateProjectMenuScrollFades(event.currentTarget)}
+                        data-fade-top={projectMenuScrollFades.top || undefined}
+                        data-fade-bottom={projectMenuScrollFades.bottom || undefined}
+                        className="eterx-sidebar-scroll-area min-h-0 overflow-y-auto p-1.5"
                       >
-                        <span className="min-w-0 flex-1 truncate text-left">Recents</span>
-                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted-text)] transition-transform duration-150 group-hover/menu-item:translate-x-0.5 group-hover/menu-item:text-[var(--sidebar-hover-text)]" strokeWidth={2} />
-                      </button>
-
-                      {importFolders.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-[var(--sidebar-muted-text)]">Folders</div>}
-                      {importFolders.map(folder => <button key={folder} type="button" role="menuitemradio" aria-checked={selectedImportFolder === folder} onClick={() => { setProjectMenuOpen(false); startProjectTransition(() => onChatScopeChange({ kind: 'folder', name: folder })); }} className="eterx-sidebar-project-menu-item group/menu-item"><FolderClosed className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">{folder}</span>{selectedImportFolder === folder && <Check className="h-3.5 w-3.5" />}</button>)}
-                      {importFolders.length > 0 && projects.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-[var(--sidebar-muted-text)]">Projects</div>}
-                      {projects.map(project => (
                         <button
-                          key={project.path}
                           type="button"
                           role="menuitemradio"
-                          aria-checked={chatWorkspaceKey(activeProject?.path) === chatWorkspaceKey(project.path)}
-                          title={project.path}
-                          onClick={() => handleProjectSelect(project.path)}
+                          aria-checked={!focusMode && chatScope.kind === 'recents'}
+                          onClick={() => handleScopeSelect(RECENTS_CHAT_SCOPE)}
                           className="eterx-sidebar-project-menu-item group/menu-item"
                         >
-                          <FolderClosed className="h-3.5 w-3.5 shrink-0" strokeWidth={1.95} />
-                          <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
+                          <span className="min-w-0 flex-1 truncate text-left">Recents</span>
                           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted-text)] transition-transform duration-150 group-hover/menu-item:translate-x-0.5 group-hover/menu-item:text-[var(--sidebar-hover-text)]" strokeWidth={2} />
                         </button>
-                      ))}
+
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={focusMode}
+                          onClick={() => handleScopeSelect(RECENTS_CHAT_SCOPE, focusGroup ?? 'attention')}
+                          className="eterx-sidebar-project-menu-item group/menu-item"
+                        >
+                          <ListFilter className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate text-left">Focus mode</span>
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted-text)] transition-transform duration-150 group-hover/menu-item:translate-x-0.5 group-hover/menu-item:text-[var(--sidebar-hover-text)]" strokeWidth={2} aria-hidden="true" />
+                        </button>
+                        {importFolders.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-[var(--sidebar-muted-text)]">Folders</div>}
+                        {importFolders.map(folder => <button key={folder} type="button" role="menuitemradio" aria-checked={selectedImportFolder === folder} onClick={() => handleScopeSelect({ kind: 'folder', name: folder })} className="eterx-sidebar-project-menu-item group/menu-item"><FolderClosed className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">{folder}</span>{selectedImportFolder === folder && <Check className="h-3.5 w-3.5" />}</button>)}
+                        {importFolders.length > 0 && projects.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-[var(--sidebar-muted-text)]">Projects</div>}
+                        {projects.map(project => (
+                          <button
+                            key={project.path}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={chatWorkspaceKey(activeProject?.path) === chatWorkspaceKey(project.path)}
+                            title={project.path}
+                            onClick={() => handleScopeSelect({ kind: 'project', path: project.path })}
+                            className="eterx-sidebar-project-menu-item group/menu-item"
+                          >
+                            <FolderClosed className="h-3.5 w-3.5 shrink-0" strokeWidth={1.95} />
+                            <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
+                            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted-text)] transition-transform duration-150 group-hover/menu-item:translate-x-0.5 group-hover/menu-item:text-[var(--sidebar-hover-text)]" strokeWidth={2} />
+                          </button>
+                        ))}
+                      </div>
                     </motion.div>,
                     document.body
                   )}
@@ -2225,7 +2521,7 @@ export const Sidebar = React.memo<SidebarProps>(
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); handleSelectAllToggle(); }}
-                            disabled={filteredChats.length === 0}
+                            disabled={displayedChats.length === 0}
                             className={`h-7 w-7 inline-flex items-center justify-center rounded-[8px] hover:bg-[var(--sidebar-hover-bg)] disabled:text-[var(--sidebar-muted-text)] disabled:hover:bg-transparent transition-colors ${ allChatsSelected ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)]' : 'text-[var(--sidebar-muted-text)]' }`}
                           >
                             <Check className="w-[13px] h-[13px]" strokeWidth={2.6} />
@@ -2264,7 +2560,7 @@ export const Sidebar = React.memo<SidebarProps>(
                           <button
                             type="button"
                             aria-label="Select chats"
-                            disabled={filteredChats.length === 0}
+                            disabled={displayedChats.length === 0}
                             onMouseDown={(e) => triggerGlassClick(e, 'select-chats')}
                             onClick={(e) => { e.stopPropagation(); enterSelectMode(); }}
                             style={glassClickStyle('select-chats')}
@@ -2280,11 +2576,18 @@ export const Sidebar = React.memo<SidebarProps>(
               </div>
 
               <div
+                id="eterx-sidebar-recent-chats"
+                role={focusMode ? 'region' : undefined}
+                aria-label={FOCUS_GROUPS.find(group => group.id === focusGroup)?.label}
                 ref={scrollContainerRef}
                 onScroll={handleRecentChatsScroll}
                 aria-busy={(isLoadingChats && chats.length === 0) || (isProjectPending && filteredChats.length === 0)}
-                className={`eterx-sidebar-recents-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto eterx-scrollbar pl-2 pr-2 space-y-0.5 relative z-10 ${ recentScrollFades.top && recentScrollFades.bottom ? 'eterx-sidebar-scroll-fade-both' : recentScrollFades.top ? 'eterx-sidebar-scroll-fade-top' : recentScrollFades.bottom ? 'eterx-sidebar-scroll-fade-bottom' : '' }`}
-                style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
+                data-fade-top={focusMode && recentScrollFades.top ? true : undefined}
+                data-fade-bottom={focusMode && recentScrollFades.bottom ? true : undefined}
+                className={`eterx-sidebar-recents-scroll relative z-10 min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto ${focusMode
+                  ? 'eterx-sidebar-focus-list eterx-sidebar-scroll-area'
+                  : 'eterx-scrollbar space-y-0.5 overscroll-contain px-2'}`}
+                style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined }}
               >
                 {(isLoadingChats && chats.length === 0) || (isProjectPending && filteredChats.length === 0) ? (
                   <div role="status" aria-label="Loading chats" className="flex h-16 items-center justify-center text-[var(--sidebar-muted-text)]">
@@ -2302,28 +2605,104 @@ export const Sidebar = React.memo<SidebarProps>(
                     </button>
                   </div>
                 ) : null}
-                {filteredChats.length === 0 ? (isLoadingChats || isProjectPending || historyError ? null : (
+                {!isSelectMode && displayedTasks.map(task => (
+                  <FocusTaskRow
+                    key={task.id}
+                    task={task}
+                    workspace={task.workspacePath ? projectNameFromPath(task.workspacePath) : 'No workspace'}
+                    onOpen={onOpenFocusTask}
+                  />
+                ))}
+                {displayedChats.length === 0 ? (isLoadingChats || isProjectPending || historyError || displayedTasks.length ? null : (
                   <div className="eterx-sidebar-empty px-3 py-2 text-[12.5px] text-[var(--sidebar-muted-text)]">
-                    {selectedImportFolder ? 'No chats in this folder yet' : selectedProjectPath ? 'No chats in this project yet' : 'No recent chats'}
+                    {focusGroup ? FOCUS_GROUPS.find(group => group.id === focusGroup)?.empty
+                      : selectedImportFolder ? 'No chats in this folder yet' : selectedProjectPath ? 'No chats in this project yet' : 'No recent chats'}
                   </div>
                 )) : (
                   visibleChats.map((chat) => {
                     const isActive = (activeChatId === chat.id || (additionalActiveChatIds instanceof Set ? additionalActiveChatIds.has(chat.id) : Array.isArray(additionalActiveChatIds) ? additionalActiveChatIds.includes(chat.id) : false)) && activeView === 'chat';
-                    const isWorking = runningChats?.has(chat.id) ?? false;
+                    const focusChat = focusDetails.get(chat.id);
+                    const isWorking = focusMode ? focusChat?.group === 'working' : runningChats?.has(chat.id) ?? false;
                     const hasUnread = !isActive && !isWorking && (unreadChats?.has(chat.id) ?? false);
                     const isMenuOpen = menuState?.id === chat.id;
                     const isSelected = selectedChatIds.has(chat.id);
                     const timeLabel = formatChatUpdatedAt(chat.updatedAt, now);
+                    const updatedTime = timeLabel && new Date(chat.updatedAt).toLocaleString();
+                    const nextRunTime = focusChat?.nextRunAt
+                      ? new Date(focusChat.nextRunAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                      : undefined;
+                    const chatTitle = editingChatId === chat.id && !isWorking ? (
+                      <input
+                        autoFocus
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        onBlur={() => {
+                          if (editTitle.trim() && editTitle !== chat.title) renameChat(chat.id, editTitle.trim());
+                          setEditingChatId(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            if (editTitle.trim() && editTitle !== chat.title) renameChat(chat.id, editTitle.trim());
+                            setEditingChatId(null);
+                          } else if (e.key === 'Escape') {
+                            setEditingChatId(null);
+                          }
+                        }}
+                        className={focusMode ? 'eterx-sidebar-focus-title-input'
+                          : 'bg-transparent border-none outline-hidden text-[var(--sidebar-strong-text)] font-medium w-full text-[13px] leading-normal relative z-10 p-0 m-0'}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : focusMode ? (
+                      <>
+                        <span className="eterx-sidebar-focus-title" title={chat.title}>{chat.title}</span>
+                        {chat.isFavorite && <PremiumStar className="size-3 shrink-0 text-yellow-500/90" aria-hidden="true" />}
+                      </>
+                    ) : (
+                      // Key by the actual title so replacement fully
+                      // discards the temporary marquee measurement and
+                      // animation state instead of painting both states.
+                      <ChatTitleMarquee
+                        key={`${chat.id}:${chat.title}`}
+                        title={chat.title}
+                        isFavorite={chat.isFavorite}
+                      />
+                    );
+                    const chatOptionsButton = (
+                      <button
+                        type="button"
+                        aria-label="Chat options"
+                        aria-haspopup="menu"
+                        aria-expanded={isMenuOpen}
+                        ref={(element) => { chatMenuButtonRefs.current[chat.id] = element; }}
+                        onMouseDown={focusMode ? undefined : (e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
+                        style={focusMode ? undefined : glassClickStyle(`chat-menu-${ chat.id }`)}
+                        className={focusMode ? 'eterx-sidebar-focus-options'
+                          : `eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-center rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] focus-visible:opacity-100 ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!focusMode && isWorking) return;
+                          if (isMenuOpen) {
+                            setMenuState(null);
+                          } else {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const dropUp = rect.bottom + 350 > window.innerHeight;
+                            setMenuState({ id: chat.id, x: rect.right, y: dropUp ? rect.top : rect.bottom, dropUp, anchoredToButton: true });
+                          }
+                        }}
+                      >
+                        <PremiumMoreHorizontal className="w-4 h-4 transition-colors duration-150" />
+                      </button>
+                    );
 
                     return (
                       <div
                         key={chat.id}
                         role="button"
                         tabIndex={0}
-                        aria-label={`Open chat ${ chat.title }${ isWorking ? ', agent working' : hasUnread ? ', unread agent update' : '' }`}
+                        aria-label={`Open chat ${ chat.title }${ focusChat?.status ? ', ' + focusChat.status : isWorking ? ', agent working' : hasUnread ? ', unread agent update' : '' }`}
                         aria-pressed={isSelectMode ? isSelected : undefined}
                         onPointerDown={(e) => {
-                          triggerGlassClick(e, `chat-${ chat.id }`);
+                          if (!focusMode) triggerGlassClick(e, `chat-${ chat.id }`);
                           if (isSelectMode) {
                             e.preventDefault();
                             try { e.currentTarget.setPointerCapture(e.pointerId); } catch { }
@@ -2338,7 +2717,7 @@ export const Sidebar = React.memo<SidebarProps>(
                           }
                         }}
                         onContextMenu={(e) => {
-                          if (isWorking) return;
+                          if (!focusMode && isWorking) return;
                           if (isSelectMode) {
                             e.preventDefault();
                             return;
@@ -2348,6 +2727,8 @@ export const Sidebar = React.memo<SidebarProps>(
                           setMenuState({ id: chat.id, x: e.clientX, y: e.clientY, dropUp: e.clientY + 350 > window.innerHeight });
                         }}
                         data-chat-id={chat.id}
+                        data-focus-status={focusChat?.status}
+                        data-focus-unread={focusMode && hasUnread ? 'true' : undefined}
                         data-menu-open={isMenuOpen ? 'true' : undefined}
                         aria-current={isActive && !isSelectMode ? 'page' : undefined}
                         onClick={() => {
@@ -2357,6 +2738,11 @@ export const Sidebar = React.memo<SidebarProps>(
                         }}
                         onKeyDown={(event) => {
                           if (event.target !== event.currentTarget) return;
+                          if (focusMode && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) && !isSelectMode) {
+                            event.preventDefault();
+                            chatMenuButtonRefs.current[chat.id]?.click();
+                            return;
+                          }
                           if (event.key !== 'Enter' && event.key !== ' ') return;
                           event.preventDefault();
                           if (isSelectMode) {
@@ -2366,8 +2752,10 @@ export const Sidebar = React.memo<SidebarProps>(
                           loadChat(chat.id);
                           setActiveView('chat');
                         }}
-                        style={glassClickStyle(`chat-${ chat.id }`)}
-                        className={`eterx-sidebar-click-surface eterx-sidebar-chat-row ${ glassClickClass(`chat-${ chat.id }`) } ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } ${ hasUnread && !isSelectMode ? 'eterx-sidebar-chat-unread' : '' } ${ isSelectMode && isSelected ? 'eterx-sidebar-chat-selected' : '' } w-full min-h-[38px] text-left px-3 transition-colors duration-150 ease-out flex items-center group cursor-pointer text-[13px] leading-normal rounded-[10px] border relative z-0 overflow-hidden ${ isActive && !isSelectMode ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent font-medium' : isWorking && !isSelectMode ? 'bg-transparent text-[var(--sidebar-text)] border-transparent' : 'text-[var(--sidebar-text)] border-transparent' } ${ isSelectMode && isSelected ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
+                        style={focusMode ? undefined : glassClickStyle(`chat-${ chat.id }`)}
+                        className={focusMode
+                          ? `eterx-sidebar-focus-row ${isSelectMode ? 'select-none touch-none' : ''}`
+                          : `eterx-sidebar-click-surface eterx-sidebar-chat-row ${ glassClickClass(`chat-${ chat.id }`) } ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } ${ hasUnread && !isSelectMode ? 'eterx-sidebar-chat-unread' : '' } ${ isSelectMode && isSelected ? 'eterx-sidebar-chat-selected' : '' } w-full min-h-[38px] text-left px-3 transition-colors duration-150 ease-out flex items-center group cursor-pointer text-[13px] leading-normal rounded-[10px] border relative z-0 overflow-hidden ${ isActive && !isSelectMode ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent font-medium' : isWorking && !isSelectMode ? 'bg-transparent text-[var(--sidebar-text)] border-transparent' : 'text-[var(--sidebar-text)] border-transparent' } ${ isSelectMode && isSelected ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
                       >
                         {isSelectMode && (
                           <span
@@ -2378,95 +2766,80 @@ export const Sidebar = React.memo<SidebarProps>(
                           </span>
                         )}
 
-                        <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && isMenuOpen ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 max-w-full flex-1 items-center overflow-hidden relative z-10 pl-0`}>
-                          {editingChatId === chat.id && !isWorking ? (
-                            <input
-                              autoFocus
-                              value={editTitle}
-                              onChange={(e) => setEditTitle(e.target.value)}
-                              onBlur={() => {
-                                if (editTitle.trim() && editTitle !== chat.title) renameChat(chat.id, editTitle.trim());
-                                setEditingChatId(null);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  if (editTitle.trim() && editTitle !== chat.title) renameChat(chat.id, editTitle.trim());
-                                  setEditingChatId(null);
-                                } else if (e.key === 'Escape') {
-                                  setEditingChatId(null);
-                                }
-                              }}
-                              className="bg-transparent border-none outline-hidden text-[var(--sidebar-strong-text)] font-medium w-full text-[13px] leading-normal relative z-10 p-0 m-0"
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                          ) : (
-                            // Key by the actual title so replacement fully
-                            // discards the temporary marquee measurement and
-                            // animation state instead of painting both states.
-                            <ChatTitleMarquee
-                              key={`${chat.id}:${chat.title}`}
-                              title={chat.title}
-                              isFavorite={chat.isFavorite}
-                            />
-                          )}
-                        </div>
+                        {focusMode ? (
+                          <FocusRowContent
+                            workspace={chat.workspacePath ? projectNameFromPath(chat.workspacePath) : chat.importFolder || 'No workspace'}
+                            workspacePath={chat.workspacePath}
+                            status={focusChat?.status}
+                            age={timeLabel}
+                            date={updatedTime}
+                            title={chatTitle}
+                            metadata={nextRunTime}
+                            model={focusChat?.model}
+                            fallback={chat.importOrigin?.provider === 'claude' ? 'anthropic'
+                              : chat.importOrigin?.provider === 'codex' ? 'codex' : undefined}
+                            options={!isSelectMode ? chatOptionsButton : undefined}
+                          />
+                        ) : (
+                          <>
+                            <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && isMenuOpen ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 max-w-full flex-1 items-center overflow-hidden relative z-10 pl-0`}>
+                              {chatTitle}
+                            </div>
 
-                        {!isSelectMode && (
-                          <div className="eterx-sidebar-chat-meta ml-1.5 flex shrink-0 items-center justify-end relative z-10">
-                            {chat.importOrigin && <ImportOriginMark origin={chat.importOrigin} folder={chat.importFolder} />}
-                            {isWorking ? (
-                              <span
-                                className="eterx-sidebar-running-indicator eterx-splash-spinner"
-                                aria-label="Agent working"
-                              />
-                            ) : hasUnread ? (
-                              <span className="eterx-sidebar-unread-dot" aria-label="Unread agent update" />
-                            ) : (
-                              <div className="relative w-7 h-7 shrink-0 flex items-center justify-center">
-                                {timeLabel && (
+                            {!isSelectMode && (
+                              <div className="eterx-sidebar-chat-meta ml-1.5 flex shrink-0 items-center justify-end relative z-10">
+                                {chat.importOrigin && <ImportOriginMark origin={chat.importOrigin} folder={chat.importFolder} />}
+                                {isWorking ? (
                                   <span
-                                    className={`eterx-sidebar-chat-time tabular-nums transition-opacity duration-150 absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap ${ isMenuOpen ? 'opacity-0' : 'group-hover:opacity-0' }`}
-                                    title={new Date(chat.updatedAt).toLocaleString()}
-                                  >{timeLabel}</span>
+                                    className="eterx-sidebar-running-indicator eterx-splash-spinner"
+                                    aria-label="Agent working"
+                                  />
+                                ) : hasUnread ? (
+                                  <span className="eterx-sidebar-unread-dot" aria-label="Unread agent update" />
+                                ) : (
+                                  <div className="relative w-7 h-7 shrink-0 flex items-center justify-center">
+                                    {timeLabel && (
+                                      <span
+                                        className={`eterx-sidebar-chat-time tabular-nums transition-opacity duration-150 absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap ${ isMenuOpen ? 'opacity-0' : 'group-hover:opacity-0' }`}
+                                        title={updatedTime}
+                                      >{timeLabel}</span>
+                                    )}
+                                    {chatOptionsButton}
+                                  </div>
                                 )}
-                                <button
-                                  type="button"
-                                  aria-label="Chat options"
-                                  aria-haspopup="menu"
-                                  aria-expanded={isMenuOpen}
-                                  ref={(element) => { chatMenuButtonRefs.current[chat.id] = element; }}
-                                  onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
-                                  style={glassClickStyle(`chat-menu-${ chat.id }`)}
-                                  className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-center rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] focus-visible:opacity-100 ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (isWorking) return;
-                                    if (isMenuOpen) {
-                                      setMenuState(null);
-                                    } else {
-                                      const rect = e.currentTarget.getBoundingClientRect();
-                                      const dropUp = rect.bottom + 350 > window.innerHeight;
-                                      setMenuState({ id: chat.id, x: rect.right, y: dropUp ? rect.top : rect.bottom, dropUp, anchoredToButton: true });
-                                    }
-                                  }}
-                                >
-                                  <PremiumMoreHorizontal className="w-4 h-4 transition-colors duration-150" />
-                                </button>
                               </div>
                             )}
-                          </div>
+                          </>
                         )}
-
                       </div>
                     );
                   })
                 )}
-                {visibleChatCount < filteredChats.length && (
+                {visibleChatCount < displayedChats.length && (
                   <div className="px-3 py-2 text-center text-[11px] text-[var(--sidebar-muted-text)]">
-                    Scroll for {filteredChats.length - visibleChatCount} older chats
+                    Scroll for {displayedChats.length - visibleChatCount} older chats
                   </div>
                 )}
               </div>
+              {focusGroup && (
+                <div className="eterx-sidebar-focus-groups" role="group" aria-label="Focus mode groups">
+                  {FOCUS_GROUPS.map(group => (
+                    <button
+                      key={group.id}
+                      ref={button => { focusGroupButtons.current[group.id] = button; }}
+                      type="button"
+                      aria-pressed={focusGroup === group.id}
+                      aria-controls="eterx-sidebar-recent-chats"
+                      onClick={() => changeFocusGroup(group.id)}
+                      className="eterx-sidebar-focus-group"
+                    >
+                      <span>{group.label} ({focusGroups[group.id].length + unlinkedTasks[group.id].length})</span>
+                      <span className="eterx-sidebar-focus-group-rule" aria-hidden="true" />
+                      <ChevronUp className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
             <div className="flex-1" />
@@ -2592,6 +2965,26 @@ export const Sidebar = React.memo<SidebarProps>(
                   <span aria-live="polite">Copying…</span>
                 </> : <><CopyChatIcon className="w-4 h-4 shrink-0" strokeWidth={1.75} aria-hidden="true" /> Copy Chat</>}
               </button>
+              {menuFocusChat && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={chatActionPending || menuFocusChat.group === 'working'}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSetChatSettled(menuState.id, menuFocusChat.group !== 'settled');
+                    setMenuState(null);
+                    if (focusGroup) window.requestAnimationFrame(() => focusGroupButtons.current[focusGroup]?.focus());
+                  }}
+                  className="eterx-sidebar-menu-item flex w-full items-center gap-3 rounded-[10px] px-3 py-2 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] disabled:opacity-50"
+                >
+                  {menuFocusChat.group === 'settled' ? (
+                    <><RotateCcw className="h-4 w-4 shrink-0" aria-hidden="true" /> Move to Attention Needed</>
+                  ) : (
+                    <><CircleCheck className="h-4 w-4 shrink-0" aria-hidden="true" /> Settle chat</>
+                  )}
+                </button>
+              )}
               <button type="button" role="menuitem" disabled={chatActionPending}
                 onClick={(event) => { event.stopPropagation(); void runChatAction(openChatWindow, menuState.id, 'window'); }}
                 className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 text-left disabled:opacity-50 disabled:cursor-wait">
@@ -2603,7 +2996,7 @@ export const Sidebar = React.memo<SidebarProps>(
               <button
                 type="button"
                 role="menuitem"
-                disabled={chatActionPending}
+                disabled={chatActionPending || menuFocusChat?.group === 'working'}
                 onClick={(e) => {
                   e.stopPropagation();
                   setEditingChatId(menuState.id);

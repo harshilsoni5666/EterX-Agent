@@ -20,6 +20,8 @@ import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
 import { beginDirectChatRun, isDirectChatRunning, isManualCompactionActive } from '../../../../lib/agent/manual-compaction';
+import { waitForSubscriptionHandoff } from '../../../../lib/agent/subscription-handoff';
+import { beginTelemetryTurn } from '../../../../lib/telemetry/runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -96,7 +98,13 @@ export async function POST(req: NextRequest) {
     const encoder = new TextEncoder();
     const streamAbortController = new AbortController();
     const normalizedRunId = String(runId || '').trim().slice(0, 160) || undefined;
-    const finishDirectRun = beginDirectChatRun(chatId, normalizedRunId, streamAbortController.signal);
+    const finishDirectRun = beginDirectChatRun(chatId, normalizedRunId, streamAbortController.signal, {
+      cancel: () => streamAbortController.abort(),
+      codexModel: selectedProvider === 'codex' ? selectedModelId : undefined,
+    });
+    const telemetry = beginTelemetryTurn(JSON.stringify(['chat', chatId, normalizedRunId || crypto.randomUUID()]), {
+      mode: 'chat', origin: 'interactive', provider: selectedProvider, model: selectedModelId, effort: thinkingLevel,
+    });
     let completed = false;
     let streamClosed = false;
     const forwardAbort = () => streamAbortController.abort();
@@ -121,22 +129,25 @@ export async function POST(req: NextRequest) {
           }
         };
 
-        void streamDirectChat({
-          chatId,
-          prompt,
-          history: normalizeHistory(history),
-          mediaAttachments: chatMediaAttachments,
-          mode,
-          thinkingLevel: String(thinkingLevel || 'low'),
-          modelThinkingCapability,
-          modelWireCapabilities: Array.isArray(modelWireCapabilities)
-            ? modelWireCapabilities.map(value => String(value || '').trim()).filter(Boolean).slice(0, 100)
-            : [],
-          selectedModel,
-          contextCompaction,
-          runId: normalizedRunId,
-          runtimeSettings: buildScopedRuntimeSettings(),
-        }, trace => send({ type: 'trace', data: trace }), streamAbortController.signal)
+        void telemetry.run(async () => {
+          await waitForSubscriptionHandoff(streamAbortController.signal);
+          return streamDirectChat({
+            chatId,
+            prompt,
+            history: normalizeHistory(history),
+            mediaAttachments: chatMediaAttachments,
+            mode,
+            thinkingLevel: String(thinkingLevel || 'low'),
+            modelThinkingCapability,
+            modelWireCapabilities: Array.isArray(modelWireCapabilities)
+              ? modelWireCapabilities.map(value => String(value || '').trim()).filter(Boolean).slice(0, 100)
+              : [],
+            selectedModel,
+            contextCompaction,
+            runId: normalizedRunId,
+            runtimeSettings: buildScopedRuntimeSettings(),
+          }, trace => send({ type: 'trace', data: trace }), streamAbortController.signal);
+        })
           .then(result => {
             completed = true;
             send({ type: 'done', data: { success: true, ...result } });
@@ -169,6 +180,7 @@ export async function POST(req: NextRequest) {
             close();
           })
           .finally(() => {
+            telemetry.finish(completed ? 'succeeded' : streamAbortController.signal.aborted ? 'cancelled' : 'failed');
             finishDirectRun(completed);
             req.signal.removeEventListener('abort', forwardAbort);
           });

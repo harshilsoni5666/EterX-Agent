@@ -20,6 +20,7 @@ import {
 } from '../agent/model-routing';
 import { appStorage } from '../client-storage';
 import { MODEL_THINKING_CAPABILITIES_STORAGE_KEY, modelEntryKey } from '../agent/model-selector-store';
+import { recordLiveUsage } from './live-usage';
 import { normalizeGeminiLiveModelName } from './live-provider';
 import { getGeminiLiveThinkingConfig, isGeminiExtendedThinkingModel } from './gemini-live-contract';
 import {
@@ -233,6 +234,12 @@ const appendTranscriptChunk = (currentValue: string, nextValue: string): string 
 
 export class AgentLiveSession implements LiveSession {
   private ws: WebSocket | null = null;
+  private turnUsage: Record<string, unknown> | null = null;
+  private flushTurnUsage() {
+    const model = normalizeGeminiLiveModelName(this.options?.model).replace(/^models\//, '');
+    recordLiveUsage('gemini', model, this.turnUsage);
+    this.turnUsage = null;
+  }
   private captureContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
@@ -1989,6 +1996,9 @@ export class AgentLiveSession implements LiveSession {
       }
       if (!sourceSocket || this.ws !== sourceSocket || this.manualDisconnect) return;
 
+      if (data.usageMetadata) this.turnUsage = { ...this.turnUsage, ...data.usageMetadata };
+      if (data.serverContent?.turnComplete) this.flushTurnUsage();
+
       const extendedThinking = isGeminiExtendedThinkingModel(this.options?.model);
       const interactionUpdate = String(data.interactionStatus || data.interaction_status
         || data.serverContent?.interactionStatus || data.serverContent?.interaction_status || '');
@@ -3341,6 +3351,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
    * Internal cleanup of all WebSocket, audio capture, and playback resources.
    */
   private cleanup(preserveVisualCapture = false): void {
+    if (this.turnUsage) this.flushTurnUsage();
     if (!preserveVisualCapture) {
       const closingDesktopRun = this.desktopRunId;
       this.desktopRunId = `live-${crypto.randomUUID()}`;

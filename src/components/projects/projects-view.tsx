@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2, Search, Pencil, Pause, RotateCcw } from 'lucide-react';
 import { PremiumSend } from '../ui/premium-icons';
 import { Shimmer } from '../ui/shimmer';
-import { normalizeScheduledTask, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
+import { normalizeScheduledTask, scheduledTaskSection, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
 import { persistScheduledTasks } from '../../lib/scheduled-task-sync';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
@@ -228,6 +228,8 @@ interface ProjectsViewProps {
   selectedSection: string;
   setSelectedSection: (section: string) => void;
   onOpenChat?: (chatId: string) => void;
+  focusTaskRequest?: { id: string } | null;
+  onFocusTaskHandled?: (request: null) => void;
   onOpenSettingsTab?: (tab: 'api' | 'models') => void;
 }
 
@@ -235,6 +237,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   selectedSection,
   setSelectedSection,
   onOpenChat,
+  focusTaskRequest,
+  onFocusTaskHandled,
   onOpenSettingsTab,
 }) => {
   const [inputValue, setInputValue] = useState("");
@@ -292,6 +296,23 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     }
     return [];
   });
+
+  useEffect(() => {
+    if (!focusTaskRequest) return;
+    const task = scheduledTasks.find(item => item.id === focusTaskRequest.id);
+    if (!task) return;
+    const section = scheduledTaskSection(task.status);
+    if (selectedSection !== section) {
+      setSelectedSection(section);
+      return;
+    }
+    const card = Array.from(document.querySelectorAll<HTMLElement>('[data-scheduled-task-id]'))
+      .find(element => element.dataset.scheduledTaskId === focusTaskRequest.id);
+    if (!card) return;
+    card.focus({ preventScroll: true });
+    card.scrollIntoView({ block: 'nearest' });
+    onFocusTaskHandled?.(null);
+  }, [focusTaskRequest, onFocusTaskHandled, scheduledTasks, selectedSection, setSelectedSection]);
 
   // Custom manual inputs
   const [customTimeVal, setCustomTimeVal] = useState('9:00');
@@ -1954,7 +1975,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                     </div>
                   ) : (
                     myListTasks.map((t) => (
-                      <div key={t.id} className="w-full bg-[#141414]/90 border border-white/[0.06] hover:border-white/[0.12] rounded-xl p-4 flex flex-col gap-2.5 transition-colors shadow-none text-left">
+                      <div key={t.id} data-scheduled-task-id={t.id} tabIndex={-1} className="w-full bg-[#141414]/90 border border-white/[0.06] hover:border-white/[0.12] rounded-xl p-4 flex flex-col gap-2.5 transition-colors shadow-none text-left">
                         <div className="flex items-start justify-between gap-3">
                           <span className="text-[14.5px] font-bold text-white leading-snug">{t.title}</span>
                           <div className="flex items-center gap-1.5">
@@ -2052,7 +2073,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                     </div>
                   ) : (
                     queueTasks.map((t) => (
-                      <div key={t.id} className="w-full bg-[#141414]/90 border border-white/[0.06] rounded-xl p-4 flex flex-col gap-2.5 shadow-none text-left">
+                      <div key={t.id} data-scheduled-task-id={t.id} tabIndex={-1} className="w-full bg-[#141414]/90 border border-white/[0.06] rounded-xl p-4 flex flex-col gap-2.5 shadow-none text-left">
                         <div className="flex items-start justify-between gap-3">
                           <span className="text-[14.5px] font-bold text-white leading-snug">{t.title}</span>
                           <span className={`px-2.5 py-0.5 rounded-full text-[10.5px] font-semibold capitalize tracking-wider flex items-center gap-1.5 ${
@@ -2125,7 +2146,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                     </div>
                   ) : (
                     completedTasks.map((t) => (
-                      <div key={t.id} className="w-full bg-[#141414]/90 border border-white/[0.06] rounded-xl p-4 flex flex-col gap-2.5 shadow-none text-left">
+                      <div key={t.id} data-scheduled-task-id={t.id} tabIndex={-1} className="w-full bg-[#141414]/90 border border-white/[0.06] rounded-xl p-4 flex flex-col gap-2.5 shadow-none text-left">
                         <div className="flex items-start justify-between gap-3">
                           <span className="text-[14.5px] font-bold text-white leading-snug">{t.title}</span>
                           <span className={`px-2.5 py-0.5 rounded-full text-[10.5px] font-semibold capitalize tracking-wider flex items-center gap-1.5 ${

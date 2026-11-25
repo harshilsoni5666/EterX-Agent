@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises';
+import { recordMediaResponse } from '../usage/ledger';
+import { measureFeature } from '../telemetry/runtime';
 import path from 'node:path';
 import { GoogleGenAI } from '@google/genai';
 import { withApiKeyRounds } from '../agent/api-retry';
@@ -216,6 +218,11 @@ export const assertVideo = (bytes: Buffer): void => {
 const videoExtension = (bytes: Buffer): string => bytes.subarray(4, 8).toString('ascii') === 'ftyp' ? '.mp4'
   : bytes.subarray(0, 4).toString('ascii') === 'OggS' ? '.ogv' : '.webm';
 
+function completedVideo(provider: string, model: string, payload: any, jobId?: string): Promise<Buffer> {
+  recordMediaResponse(provider, model, payload, 'video', jobId);
+  return videoBytes(sourceFromPayload(payload));
+}
+
 const executeGoogle = async (model: string, prompt: string, key: string, width: number, height: number, duration: number, imageUrl?: string): Promise<Buffer> => {
   const ai = new GoogleGenAI({ apiKey: key, httpOptions: { baseUrl: providerBaseURL('google').replace(/\/v1beta\/?$/, ''), timeout: 90_000 } });
   const config: Record<string, unknown> = { aspectRatio: width >= height ? '16:9' : '9:16', durationSeconds: duration <= 4 ? 4 : duration <= 6 ? 6 : 8, abortSignal: externalServiceSignal() };
@@ -244,6 +251,7 @@ const executeGoogle = async (model: string, prompt: string, key: string, width: 
   for (let attempt = 0; attempt < 900; attempt += 1) {
     if (operation?.error) throw externalServiceJobFailed(operation.error.message || 'Google video operation failed.');
     if (operation?.done || operation?.response?.generatedVideos?.length) {
+      recordMediaResponse('google', model, operation, 'video', operation.name);
       const source = sourceFromPayload(operation);
       if (source.url && new URL(source.url).origin === new URL(providerBaseURL('google')).origin) source.headers = { 'x-goog-api-key': key };
       return videoBytes(source);
@@ -273,6 +281,7 @@ const executeOpenAI = async (model: string, prompt: string, key: string, width: 
     const status = attempt === 0 && created?.status ? created : await jsonRequest(`${providerBaseURL('openai')}/videos/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } }, 45_000);
     const state = String(status?.status || '').toLowerCase();
     if (state === 'completed' || state === 'succeeded') {
+      recordMediaResponse('openai', model, status, 'video', id);
       const response = await request(`${providerBaseURL('openai')}/videos/${encodeURIComponent(id)}/content`, { headers: { Authorization: `Bearer ${key}`, Accept: 'video/mp4' } }, 180_000);
       return Buffer.from(await response.arrayBuffer());
     }
@@ -298,7 +307,7 @@ const executeRunway = async (model: string, prompt: string, key: string, width: 
   for (let attempt = 0; attempt < 900; attempt += 1) {
     const task = await jsonRequest(`${providerBaseURL('runway')}/tasks/${encodeURIComponent(taskId)}`, { headers: { Authorization: `Bearer ${key}`, 'X-Runway-Version': '2024-11-06', Accept: 'application/json' } }, 45_000);
     const state = String(task?.status || '').toUpperCase();
-    if (state === 'SUCCEEDED' || state === 'COMPLETED') return videoBytes(sourceFromPayload(task));
+    if (state === 'SUCCEEDED' || state === 'COMPLETED') return completedVideo('runway', model, task, taskId);
     if (['FAILED', 'CANCELED', 'CANCELLED'].includes(state)) throw externalServiceJobFailed(task?.failure || task?.failureCode || `Runway task ${state}.`);
     await sleep(1000);
   }
@@ -316,7 +325,7 @@ const executeLuma = async (model: string, prompt: string, key: string, width: nu
   for (let attempt = 0; attempt < 900; attempt += 1) {
     const status = await jsonRequest(`${baseURL}/generations/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } }, 45_000);
     const state = String(status?.state || status?.status || '').toLowerCase();
-    if (['completed', 'succeeded'].includes(state)) return videoBytes(sourceFromPayload(status));
+    if (['completed', 'succeeded'].includes(state)) return completedVideo('luma', model, status, id);
     if (['failed', 'error', 'canceled', 'cancelled'].includes(state)) throw externalServiceJobFailed(status?.failure_reason || status?.error || `Luma generation ${state}.`);
     await sleep(1000);
   }
@@ -348,6 +357,7 @@ const executeMiniMax = async (model: string, prompt: string, key: string, width:
     const record = task?.task || task;
     const state = String(record?.status || '').toLowerCase();
     if (['success', 'succeeded', 'completed'].includes(state)) {
+      recordMediaResponse('minimax', model, record, 'video', taskId);
       if (!useH3 && record?.file_id) {
         const fileURL = new URL(`${baseURL}/v1/files/retrieve`);
         fileURL.searchParams.set('file_id', String(record.file_id));
@@ -377,7 +387,7 @@ const executeVolcengine = async (model: string, prompt: string, key: string, wid
   for (let attempt = 0; attempt < 900; attempt += 1) {
     const task = await jsonRequest(`${baseURL}/contents/generations/tasks/${encodeURIComponent(taskId)}`, { headers }, 45_000);
     const state = String(task?.status || task?.task?.status || '').toLowerCase();
-    if (['succeeded', 'success', 'completed'].includes(state)) return videoBytes(sourceFromPayload(task));
+    if (['succeeded', 'success', 'completed'].includes(state)) return completedVideo('volcengine', model, task, taskId);
     if (['failed', 'canceled', 'cancelled', 'error', 'expired'].includes(state)) throw externalServiceJobFailed(task?.error?.message || task?.error || `Volcengine Ark task ${state}.`);
     await sleep(1000);
   }
@@ -403,7 +413,7 @@ const executeFal = async (model: string, prompt: string, key: string, width: num
   if (imageUrl) body.image_url = imageUrl;
   const submitted = externalServiceJob()?.id ? { request_id: externalServiceJob()!.id } : await jsonRequest(`${baseURL}/${modelPath(routedModel)}`, { method: 'POST', headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) });
   const requestId = String(submitted?.request_id || '').trim();
-  if (!requestId) return videoBytes(sourceFromPayload(submitted));
+  if (!requestId) return completedVideo('fal', routedModel, submitted);
   rememberExternalServiceJob('fal', routedModel, requestId);
   const queuePath = modelPath(routedModel.split('/').slice(0, 2).join('/'));
   const statusURL = String(submitted?.status_url || `${baseURL}/${queuePath}/requests/${encodeURIComponent(requestId)}/status`);
@@ -412,7 +422,8 @@ const executeFal = async (model: string, prompt: string, key: string, width: num
     const status = await jsonRequest(statusURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 45_000);
     if (status?.status === 'COMPLETED') {
       try {
-        return videoBytes(sourceFromPayload(await jsonRequest(responseURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 90_000)));
+        const result = await jsonRequest(responseURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 90_000);
+        return completedVideo('fal', routedModel, result, requestId);
       } catch (error: any) {
         if (error?.status === 422 && !error?.assetURL) throw externalServiceJobFailed(error.message);
         throw error;
@@ -444,14 +455,14 @@ const executeReplicate = async (model: string, prompt: string, key: string, _wid
   const baseURL = providerBaseURL('replicate');
   const created = externalServiceJob()?.id ? { id: externalServiceJob()!.id } : await jsonRequest(`${baseURL}/models/${encodeURIComponent(owner)}/${modelPath(name)}/predictions`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Prefer: 'wait=1', Accept: 'application/json' }, body: JSON.stringify({ input }) });
   const id = String(created?.id || '').trim();
-  if (!id) return videoBytes(sourceFromPayload(created));
+  if (!id) return completedVideo('replicate', model, created);
   rememberExternalServiceJob('replicate', model, id);
   for (let attempt = 0; attempt < 900; attempt += 1) {
     const prediction = attempt === 0 && ['succeeded', 'completed'].includes(String(created?.status || '').toLowerCase())
       ? created
       : await jsonRequest(`${baseURL}/predictions/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } }, 45_000);
     const state = String(prediction?.status || '').toLowerCase();
-    if (['succeeded', 'completed'].includes(state)) return videoBytes(sourceFromPayload(prediction));
+    if (['succeeded', 'completed'].includes(state)) return completedVideo('replicate', model, prediction, id);
     if (['failed', 'canceled', 'cancelled'].includes(state)) throw externalServiceJobFailed(prediction?.error || `Replicate prediction ${state}.`);
     await sleep(1000);
   }
@@ -469,7 +480,7 @@ const executeXai = async (model: string, prompt: string, key: string, width: num
   for (let attempt = 0; attempt < 900; attempt += 1) {
     const status = await jsonRequest(`${baseURL}/videos/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } }, 45_000);
     const state = String(status?.status || '').toLowerCase();
-    if (state === 'done' || state === 'completed' || state === 'succeeded') return videoBytes(sourceFromPayload(status));
+    if (state === 'done' || state === 'completed' || state === 'succeeded') return completedVideo('xai', model, status, id);
     if (['failed', 'expired', 'error', 'canceled', 'cancelled'].includes(state)) throw externalServiceJobFailed(status?.error || `xAI video request ${state}.`);
     await sleep(1000);
   }
@@ -499,7 +510,11 @@ export async function executeVideoGeneration(input: VideoGenerationInput, contex
   if (input.jobId && (!input.provider || !input.model?.trim())) throw new Error('Resuming a video requires the provider and model returned with the job ID.');
   if (!providerOrder(settings).includes(preferred)) throw new Error('The requested video provider is not enabled in the primary or fallback order.');
   const model = input.model?.trim() || settings.modelByProvider[preferred] || VIDEO_PROVIDER_META[preferred].defaultModel;
-  return withExternalServiceContext({ ...context, serviceSettings: settings, job: input.jobId ? { id: input.jobId, provider: preferred, model } : undefined }, () => executeVideoRoute(input, settings, context));
+  return measureFeature('video', () => withExternalServiceContext({
+    ...context, serviceSettings: settings, job: input.jobId ? { id: input.jobId, provider: preferred, model } : undefined,
+  }, () => executeVideoRoute(input, settings, context)), result => ({
+    success: result.success, pending: result.providerActionMode === 'pending', provider: result.provider, model: result.model,
+  }), context?.abortSignal ?? context?.signal);
 }
 
 async function executeVideoRoute(input: VideoGenerationInput, settings: VideoSettings, context?: ExternalServiceContext): Promise<VideoGenerationResult> {

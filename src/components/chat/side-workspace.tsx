@@ -3,7 +3,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { FolderOpen, GitBranch, GitFork, Globe, Lightbulb, Loader2, Maximize2, Minimize2, Plus, TerminalSquare, X } from 'lucide-react';
-import { WorkspacePlan } from './task-plan-card';
+import { openPlanInWorkspace, WorkspacePlan } from './task-plan-card';
+import { planViewKey, type TaskTrackerState } from '../../lib/task-plan-trace';
 import { addWorkspaceFolder, addWorkspaceTab, closeWorkspaceTab, resolveWorkspaceOwner, updateWorkspace, useSideWorkspace, type WorkspaceKind } from '../../lib/side-workspace-store';
 import { createTerminal, showTerminal, useChatTerminalControls } from '../../lib/chat-terminal-store';
 import { ChatTerminalDock } from './chat-terminal-dock';
@@ -45,11 +46,14 @@ const Git = dynamic(() => import('./workspace-git').then(module => module.Worksp
 });
 const emptyFolders: string[] = [];
 
-export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, chats, liveChatLedger, runningChats, actions, agentNavigation, onCapture }: { owner: string; mainChatId: string | null; workspacePath?: string | null; traceLogs: any[]; chats: SideChatSession[]; liveChatLedger?: LiveChatLedger; runningChats: Set<string>; actions: SideChatActions; agentNavigation: WorkspaceSubAgentsProps; onCapture: (capture: BrowserCapture, tabId: string) => Promise<void> }) {
+export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, plan, planRunning, chats, liveChatLedger, runningChats, actions, agentNavigation, onCapture }: { owner: string; mainChatId: string | null; workspacePath?: string | null; traceLogs: any[]; plan: TaskTrackerState | null; planRunning: boolean; chats: SideChatSession[]; liveChatLedger?: LiveChatLedger; runningChats: Set<string>; actions: SideChatActions; agentNavigation: WorkspaceSubAgentsProps; onCapture: (capture: BrowserCapture, tabId: string) => Promise<void> }) {
   const state = useSideWorkspace(owner);
   const gitPreferences = useGitPreferences();
   const gitEnabled = gitPreferences.ready && gitPreferences.gitIntegration && gitPreferences.gitWorkspaceEnabled;
-  const choices = useMemo(() => workspaceChoices.filter(choice => choice.kind !== 'git' || gitEnabled), [gitEnabled]);
+  const planAvailable = Boolean(mainChatId && plan);
+  const choices = useMemo(() => workspaceChoices.filter(choice =>
+    (choice.kind !== 'git' || gitEnabled) && (choice.kind !== 'plan' || planAvailable),
+  ), [gitEnabled, planAvailable]);
   const reviewLogs = useTraceSelection(traceLogs, isWorkspaceReviewTrace);
   const reviewFiles = useMemo(() => collectWorkspaceReviewFiles(reviewLogs, owner), [reviewLogs, owner]);
   const openedPaths = useMemo(() => state.tabs.filter(tab => tab.kind === 'files' && tab.path).map(tab => tab.path!), [state.tabs]);
@@ -98,7 +102,15 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
       await createTerminal(resolveWorkspaceOwner(owner), cwd);
     }
   };
-  const choose = (kind: WorkspaceKind) => { setMenu(false); addWorkspaceTab(owner, kind); if (kind === 'terminal') void openTerminal(); };
+  const choose = (kind: WorkspaceKind) => {
+    setMenu(false);
+    if (kind === 'plan') {
+      if (mainChatId && plan) openPlanInWorkspace(owner, mainChatId, plan);
+      return;
+    }
+    addWorkspaceTab(owner, kind);
+    if (kind === 'terminal') void openTerminal();
+  };
   const toggleMenu = async () => {
     if (menu) { setMenu(false); return; }
     const api = (window as any).electronAPI;
@@ -107,7 +119,7 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
       if (!rect) return;
       setNativeMenu(true); setMenu(true);
       try {
-        const kind = await api.workspaceBrowserMenu(active.id, { x: rect.left, y: rect.bottom + 5, gitEnabled });
+        const kind = await api.workspaceBrowserMenu(active.id, { x: rect.left, y: rect.bottom + 5, gitEnabled, planAvailable });
         if (choices.some(choice => choice.kind === kind)) choose(kind as WorkspaceKind);
       } catch { /* A closed or restarting browser can dismiss its menu. */ }
       finally { setMenu(false); setNativeMenu(false); }
@@ -152,7 +164,7 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [owner, workspacePath, terminal.tabCount, candidates, choices]);
+  }, [owner, workspacePath, terminal.tabCount, candidates, choices, mainChatId, plan]);
   useEffect(() => () => { if (drag.current) cancelAnimationFrame(drag.current.frame); }, []);
   const finish = (cancel = false) => {
     const movement = drag.current;
@@ -235,6 +247,8 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
       {!active ? <div className="eterx-workspace-launcher eterx-scrollbar"><div className="eterx-workspace-launcher-grid">{choices.map(choice => <button key={choice.kind} onClick={() => choose(choice.kind)}><span className="eterx-workspace-launcher-icon"><choice.icon size={20} /></span><span><strong>{choice.title}</strong></span></button>)}</div></div>
         : active.kind === 'terminal' ? terminal.open && terminal.placement === 'right' ? <ChatTerminalDock chatId={owner} cwd={terminalRoot} embedded /> : <div className="eterx-workspace-empty"><TerminalSquare size={32} /><h3>Your terminal sessions</h3><p>{terminal.open ? 'The terminal is currently docked below the chat.' : 'Open your local shell in this workspace.'}</p><button onClick={() => void openTerminal()}>Open terminal here</button></div>
         : active.kind === 'plan' ? <WorkspacePlan key={active.id} tab={active} owner={owner} ledger={liveChatLedger}
+            running={active.planChatId && active.planChatId !== owner ? runningChats.has(active.planChatId)
+              : planRunning && Boolean(plan && (!active.plan || planViewKey(active.plan) === planViewKey(plan)))}
             logs={active.planChatId && active.planChatId !== owner ? chats.find(chat => chat.id === active.planChatId)?.traceLogs || [] : traceLogs} />
         : active.kind === 'browser' ? <Browser key={active.id} owner={owner} tab={active} occluded={menu && !nativeMenu} onCapture={capture} />
         : active.kind === 'subagents' ? <WorkspaceSubAgents key={active.id} {...agentNavigation} onSelect={agentId => { agentNavigation.onSelect(agentId); if (state.expanded) updateWorkspace(owner, { expanded: false }); }} />

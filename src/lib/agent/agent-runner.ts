@@ -69,6 +69,7 @@ import {
   normalizeThinkingLevelForModel,
   type MainAgentMode,
 } from './model-routing';
+import { meterModelStream } from '../usage/ledger';
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
@@ -1222,12 +1223,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           // The first native reasoning chunk opens the visible Thought row.
           // An empty preflight shell caused a blank poll/update and could be
           // stranded when a provider returned only normal text.
-          const responseStream = await ai.models.generateContentStream(generateConfig);
           const streamedParts: any[] = [];
           let latestCandidate: any = null;
           let latestUsageMetadata: any = null;
           let bufferedVisibleText = '';
-          for await (const chunk of responseStream as any) {
+          for await (const chunk of meterModelStream('gemini', resolvedModel,
+            () => ai.models.generateContentStream(generateConfig), 'gemini')) {
             latestCandidate = chunk?.candidates?.[0] || latestCandidate;
             latestUsageMetadata = mergeProviderUsageSnapshots(latestUsageMetadata, chunk?.usageMetadata);
             const parts = chunk?.candidates?.[0]?.content?.parts || [];
@@ -1287,7 +1288,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                 contextRequestId: activeContextRequestId,
                 contextEstimatedTokens: requestContextEstimatedTokens,
                 contextLocalEstimatedTokens: requestContextLocalTokens,
-                usageId: `usage_gemini_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                usageId: latestUsageMetadata.eterxUsageId,
                 source: 'provider',
                 provider: 'gemini',
                 model: resolvedModel,

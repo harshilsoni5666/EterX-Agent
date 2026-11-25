@@ -948,6 +948,43 @@ async function stopDesktopRunsForClose({ keepScheduled = false, keepChannels = f
   }
 }
 
+function requestSubscriptionHandoff(action, id, mode) {
+  const target = new URL('/api/agent/subscription-handoff', getAppTarget());
+  const key = codexBridgeEnvironment?.ETERX_CODEX_BRIDGE_KEY;
+  if (!key || !['http:', 'https:'].includes(target.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) {
+    throw new Error('The local subscription runtime is unavailable.');
+  }
+  const payload = JSON.stringify({ action, id, mode });
+  return new Promise((resolve, reject) => {
+    const client = target.protocol === 'https:' ? https : http;
+    const request = client.request(target, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload),
+        'x-eterx-subscription-control': key,
+      },
+      signal: AbortSignal.timeout(action === 'stop' ? 20_000 : 8_000),
+    }, response => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { body += chunk; });
+      response.on('error', reject);
+      response.on('end', () => {
+        try {
+          const result = JSON.parse(body);
+          if (response.statusCode !== 200) {
+            reject(Object.assign(new Error(result.error || 'EterX could not prepare the account change.'), { status: response.statusCode }));
+          } else {
+            resolve(result);
+          }
+        } catch (error) { reject(error); }
+      });
+    });
+    request.on('error', reject);
+    request.end(payload);
+  });
+}
+
 let desktopClosePending = null;
 async function prepareDesktopClose(background = false, timeoutMs = 8000) {
   if (desktopClosePending) await desktopClosePending;
@@ -2900,6 +2937,7 @@ async function startPackagedServer() {
     PORT: String(port),
     ETERX_PORT: String(port),
     ETERX_APP_ROOT: runtimeRoot,
+    ETERX_APP_VERSION: app.getVersion(),
     ETERX_DATA_DIR: dataRoot,
     ETERX_WORKSPACE_ROOT: workspaceRoot(),
     ETERX_RUNTIME_MODULES: runtimeModules,
@@ -4117,11 +4155,19 @@ function registerChatGptSubscriptionHandler(channel, operation) {
 }
 
 registerChatGptSubscriptionHandler('state', subscription => subscription.state());
-registerChatGptSubscriptionHandler('sign-in', (subscription, differentAccount) => subscription.signIn(differentAccount === true));
+registerChatGptSubscriptionHandler('sign-in', (subscription, id) =>
+  id == null || typeof id === 'string' ? subscription.signIn(id ?? null) : null);
 registerChatGptSubscriptionHandler('cancel', subscription => subscription.cancelSignIn());
 registerChatGptSubscriptionHandler('refresh', subscription => subscription.refreshModels());
-registerChatGptSubscriptionHandler('disconnect', subscription => subscription.disconnect());
-registerChatGptSubscriptionHandler('usage', subscription => subscription.openUsage());
+registerChatGptSubscriptionHandler('switch-account', (subscription, request) =>
+  typeof request?.id === 'string' && ['idle', 'stop', 'resume'].includes(request.mode)
+    ? subscription.switchAccount(request.id, request.mode) : null);
+registerChatGptSubscriptionHandler('remove-account', (subscription, id) =>
+  typeof id === 'string' ? subscription.removeAccount(id) : null);
+registerChatGptSubscriptionHandler('disconnect', (subscription, id) =>
+  typeof id === 'string' ? subscription.disconnect(id) : null);
+registerChatGptSubscriptionHandler('disconnect-all', subscription => subscription.disconnectAll());
+registerChatGptSubscriptionHandler('dismiss-plan-welcome', subscription => subscription.dismissPlanWelcome());
 
 ipcMain.handle('gateway-get-state', async () => ({
   available: await secureStorageAvailable(),
@@ -4751,6 +4797,7 @@ app.on('ready', async () => {
       canEncrypt: async () => await secureStorageAvailable()
         && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
       openBrowser: url => shell.openExternal(url),
+      requestHandoff: requestSubscriptionHandoff,
       callbackAssets: {
         chatGptLogoPath: path.join(app.getAppPath(), app.isPackaged ? 'runtime/public' : 'public', 'icons/providers/openai.svg'),
         eterxLogoPath: APP_ICON_PNG,

@@ -4166,6 +4166,10 @@
   -webkit-line-clamp: 2;
 }
 
+.eterx-website-link-tooltip-url[data-full-text] {
+  display: block;
+}
+
 .eterx-website-link-tooltip-arrow {
   overflow: visible;
   fill: var(--eterx-md-card-soft);
@@ -4269,6 +4273,40 @@
   font-weight: 600;
   line-height: inherit;
   white-space: break-spaces;
+}
+
+.eterx-inline-file-link {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--eterx-md-strong);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-align: left;
+  vertical-align: baseline;
+}
+
+.eterx-inline-file-link > img {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin: 0 0.3em 0 0;
+  vertical-align: -0.12em;
+}
+
+.eterx-inline-file-link:is(:hover, :focus-visible) > span {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.eterx-inline-file-link:focus-visible {
+  border-radius: 0.25em;
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 /* Theme-aware Local File Link Chip styling */
@@ -4769,7 +4807,6 @@
   background: var(--eterx-md-card) !important;
   max-width: 100%;
   overflow-x: auto !important;
-  overflow-y: hidden !important;
   overscroll-behavior-inline: contain;
 }
 
@@ -5188,51 +5225,94 @@
   -webkit-user-select: none;
 }
 
-/* Settings is an editing surface: let users select/copy every label and value,
-   and keep form controls interactive even when the window frame is draggable. */
-.eterx-settings-nav-frame {
-  --settings-nav-fade-size: 12px;
+.eterx-settings-scroll-frame,
+.eterx-settings-token-list {
   background-color: inherit;
 }
 
-.eterx-settings-nav-frame > nav {
-  scroll-padding-block: var(--settings-nav-fade-size);
+.eterx-settings-scroll-frame {
+  --settings-fade-size: 12px;
 }
 
-.eterx-settings-nav-frame::before,
-.eterx-settings-nav-frame::after {
+.eterx-settings-scroll-frame > :first-child {
+  scroll-padding-block: var(--settings-fade-size);
+}
+
+.eterx-settings-scroll-frame::before,
+.eterx-settings-scroll-frame::after {
   content: '';
   position: absolute;
   z-index: 1;
-  inset-inline: 0 var(--settings-nav-scrollbar-width, 0px);
-  block-size: var(--settings-nav-fade-size);
+  inset-inline: 0 var(--settings-scrollbar-width, 0px);
+  block-size: var(--settings-fade-size);
   background-color: inherit;
   opacity: 0;
   pointer-events: none;
 }
 
-.eterx-settings-nav-frame::before {
+.eterx-settings-scroll-frame::before {
   inset-block-start: 0;
   mask-image: linear-gradient(to bottom, #000, transparent);
 }
 
-.eterx-settings-nav-frame::after {
+.eterx-settings-scroll-frame::after {
   inset-block-end: 0;
   mask-image: linear-gradient(to top, #000, transparent);
 }
 
-.eterx-settings-nav-frame[data-fade-top]::before,
-.eterx-settings-nav-frame[data-fade-bottom]::after {
+.eterx-settings-scroll-frame[data-fade-top]::before,
+.eterx-settings-scroll-frame[data-fade-bottom]::after {
   opacity: 1;
 }
 
-@media (prefers-reduced-motion: no-preference) {
+@media (width < 40rem) {
+  .eterx-settings-nav-frame > nav {
+    scroll-padding-block: 0;
+    scroll-padding-inline: var(--settings-fade-size);
+    scrollbar-width: none;
+  }
+
+  .eterx-settings-nav-frame > nav::-webkit-scrollbar {
+    display: none;
+  }
+
   .eterx-settings-nav-frame::before,
   .eterx-settings-nav-frame::after {
+    block-size: auto;
+    inline-size: var(--settings-fade-size);
+  }
+
+  .eterx-settings-nav-frame::before {
+    inset: 0 auto var(--settings-scrollbar-height, 0px) 0;
+    mask-image: linear-gradient(to right, #000, transparent);
+  }
+
+  .eterx-settings-nav-frame::after {
+    inset: 0 0 var(--settings-scrollbar-height, 0px) auto;
+    mask-image: linear-gradient(to left, #000, transparent);
+  }
+
+  .eterx-settings-nav-frame::before,
+  .eterx-settings-nav-frame::after,
+  .eterx-settings-nav-frame[data-fade-top]::before,
+  .eterx-settings-nav-frame[data-fade-bottom]::after {
+    opacity: 0;
+  }
+
+  .eterx-settings-nav-frame[data-fade-left]::before,
+  .eterx-settings-nav-frame[data-fade-right]::after {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .eterx-settings-scroll-frame::before,
+  .eterx-settings-scroll-frame::after {
     transition: opacity 120ms ease-out;
   }
 }
 
+/* Settings labels and values are selectable, with form controls available in draggable windows. */
 .eterx-settings-panel,
 .eterx-settings-panel * {
   user-select: text !important;
@@ -10492,21 +10572,6 @@ body.eterx-gateway-view section.mt-8 > main {
   background: rgba(255, 255, 255, 0.075) !important;
 }
 
-.eterx-composer-shell .eterx-model-menu-popout button[aria-expanded="true"],
-.eterx-composer-shell .eterx-model-menu-popout button[aria-expanded="false"] {
-  min-height: 48px !important;
-  border-radius: 12px !important;
-  padding: 7px 10px !important;
-}
-
-.eterx-composer-shell .eterx-model-menu-popout button[aria-expanded="true"]:hover,
-.eterx-composer-shell .eterx-model-menu-popout button[aria-expanded="true"]:focus-visible,
-.eterx-composer-shell .eterx-model-menu-popout button[aria-expanded="false"]:hover,
-.eterx-composer-shell .eterx-model-menu-popout button[aria-expanded="false"]:focus-visible {
-  background: rgba(255, 255, 255, 0.055) !important;
-  outline: none;
-}
-
 /* Keep this menu focused on model selection for now. Thinking controls remain
    available to the runtime but do not add a second content block here. */
 .eterx-composer-shell .eterx-model-menu-popout > .h-px,
@@ -12815,6 +12880,20 @@ body.eterx-gateway-view section.mt-8 > main {
   border-radius: 999px !important;
 }
 
+/* Keep the conversation mounted and sized while Usage occupies its pane. */
+.eterx-workspace-shell[data-usage-open="true"] {
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+}
+.eterx-workspace-shell[data-usage-open="true"] > .eterx-main-panel { grid-area: 1 / 1; }
+.eterx-workspace-shell[data-usage-open="true"] > .eterx-main-panel[data-usage-panel] { z-index: 1; }
+.eterx-workspace-shell[data-usage-open="true"] > .eterx-main-panel[data-usage-covered="true"],
+.eterx-proxy-chat-window[data-usage-covered="true"] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none !important;
+}
+
 /* Stable title-bar controls: narrowing the window never scales typography or
    hit targets. At genuinely tiny widths, lower-priority actions disappear in
    order instead of compressing every label into an unreadable cluster. */
@@ -12825,6 +12904,12 @@ body.eterx-gateway-view section.mt-8 > main {
 
 .eterx-topbar-actions > * {
   flex: 0 0 auto;
+}
+
+.eterx-topbar-actions {
+  overflow-x: auto;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
 }
 
 @media (max-width: 500px) {

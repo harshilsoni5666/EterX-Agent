@@ -6,17 +6,20 @@ const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { createChatGptCallbackPage } = require('./chatgpt-subscription-page');
+const { observeChatGptUsage } = require('./chatgpt-subscription-usage');
 
 // Sign in with ChatGPT for open-source local applications. The OAuth grant and
-// model catalog follow the same direct token sharing flow used by T3 Code.
+// model catalog follow the same direct token sharing flow.
 const ISSUER = 'https://auth.openai.com';
 const RESOURCE = 'https://api.openai.com/v1';
 const PLAN_SCOPE = 'chatgpt.tokens.use.direct';
 const SCOPES = `openid profile email offline_access resource.invoke ${PLAN_SCOPE}`;
-const USAGE_URL = 'https://chatgpt.com/settings/usage';
 const CALLBACK_PATH = '/auth/callback';
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
 const MAX_BRIDGE_BODY = 100 * 1024 * 1024;
+const PLAN_LIMIT_CODE = 'subscription_sharing_usage_limit_exceeded';
+const DEFAULT_LIMIT_BACKOFF_MS = 60_000;
+const HANDOFF_DRAIN_MS = 90_000;
 const UNUSABLE_REFRESH_CODES = new Set([
   'invalid_grant', 'invalid_refresh_token', 'token_expired', 'refresh_token_expired',
   'refresh_token_invalidated', 'refresh_token_reused',
@@ -76,6 +79,71 @@ function isIssuedClientId(value) {
   return typeof value === 'string' && /^oaiapp_[a-zA-Z0-9_-]{1,193}$/.test(value);
 }
 
+function hasPlanAccess(tokens) {
+  return Boolean(tokens?.accessToken && tokens.scopes.includes(PLAN_SCOPE));
+}
+
+function newProfile(profiles, clientId) {
+  const number = profiles.reduce((maximum, profile) => Math.max(maximum, profile.number), 0) + 1;
+  return { id: crypto.randomUUID(), number, clientId, subject: null, email: null, tokens: null };
+}
+
+function validProfile(profile) {
+  return profile && typeof profile.id === 'string' && profile.id.length > 0
+    && Number.isSafeInteger(profile.number) && profile.number > 0
+    && isIssuedClientId(profile.clientId)
+    && (profile.subject === null || typeof profile.subject === 'string' && profile.subject.length > 0)
+    && (profile.email === null || typeof profile.email === 'string')
+    && (profile.tokens === null || Boolean(profile.subject) && Array.isArray(profile.tokens?.scopes));
+}
+
+function readProfiles(saved) {
+  if (typeof saved?.hostId !== 'string' || !saved.hostId) throw new Error('Invalid ChatGPT host');
+  if (Object.hasOwn(saved, 'profiles')) {
+    if (!Array.isArray(saved.profiles) || !saved.profiles.every(validProfile)
+      || new Set(saved.profiles.map(profile => profile.id)).size !== saved.profiles.length
+      || new Set(saved.profiles.map(profile => profile.number)).size !== saved.profiles.length
+      || new Set(saved.profiles.map(profile => profile.clientId)).size !== saved.profiles.length
+      || (saved.activeProfileId !== null && !saved.profiles.some(profile => profile.id === saved.activeProfileId && profile.subject))) {
+      throw new Error('Invalid saved ChatGPT accounts');
+    }
+    return saved;
+  }
+
+  const profiles = [];
+  let activeProfileId = null;
+  if (saved.registration) {
+    const { clientId, subject, email } = saved.registration;
+    const profile = { ...newProfile(profiles, clientId), subject, email: email ?? null, tokens: saved.tokens ?? null };
+    if (!validProfile(profile)) throw new Error('Invalid saved ChatGPT connection');
+    profiles.push(profile);
+    activeProfileId = profile.id;
+  }
+  if (isIssuedClientId(saved.pendingClientId) && saved.pendingClientId !== saved.registration?.clientId) {
+    profiles.push(newProfile(profiles, saved.pendingClientId));
+  }
+  return { hostId: saved.hostId, activeProfileId, profiles, planWelcome: hasPlanAccess(saved.tokens) ? 'dismissed' : null };
+}
+
+function profileStatus(profile) {
+  if (!profile?.subject) return profile ? 'pending' : 'disconnected';
+  if (!profile.tokens) return 'disconnected';
+  if (!hasPlanAccess(profile.tokens)) return 'consent-required';
+  return 'connected';
+}
+
+function retryAfterTime(headers, now) {
+  const milliseconds = Number(headers.get('retry-after-ms'));
+  if (Number.isSafeInteger(milliseconds) && milliseconds > 0) return now + milliseconds;
+  const retryAfter = headers.get('retry-after');
+  if (retryAfter && /^\d+$/.test(retryAfter)) {
+    const seconds = Number(retryAfter);
+    if (Number.isSafeInteger(seconds * 1000) && seconds > 0) return now + seconds * 1000;
+  }
+  const date = Date.parse(retryAfter || '');
+  return date > now ? date : now + DEFAULT_LIMIT_BACKOFF_MS;
+}
+
 function signInExchangeMessage(status, code) {
   switch (code) {
     case 'invalid_grant':
@@ -100,24 +168,28 @@ function signInExchangeMessage(status, code) {
 }
 
 function normalizeTokens(body, current) {
-  if (!body || typeof body.access_token !== 'string' || !body.access_token
-    || typeof body.token_type !== 'string' || body.token_type.toLowerCase() !== 'bearer'
-    || !Number.isFinite(body.expires_in) || body.expires_in <= 0 || typeof body.scope !== 'string') {
+  if (typeof body?.scope !== 'string') {
     throw subscriptionError('ChatGPT returned an invalid session. Try signing in again.');
+  }
+  const scopes = body.scope.split(/\s+/).filter(Boolean);
+  const accessToken = typeof body.access_token === 'string' && body.access_token ? body.access_token : null;
+  const refreshToken = typeof body.refresh_token === 'string' && body.refresh_token ? body.refresh_token : null;
+  const needsRefreshToken = Boolean(current?.refreshToken || scopes.includes('offline_access'));
+  const expiresAt = typeof body.expires_in === 'number' ? Date.now() + body.expires_in * 1000 : NaN;
+  if ((!accessToken && (needsRefreshToken || scopes.includes(PLAN_SCOPE)))
+    || (accessToken && (typeof body.token_type !== 'string' || body.token_type.toLowerCase() !== 'bearer'
+      || !Number.isFinite(expiresAt) || body.expires_in <= 0))
+    || (needsRefreshToken && !refreshToken)) {
+    throw subscriptionError('ChatGPT returned incomplete credentials. Try signing in again.');
   }
   const refresh = body.earliest_refresh_at;
   const earliest = typeof refresh === 'number' ? (refresh < 1e12 ? refresh * 1000 : refresh)
     : typeof refresh === 'string' ? Date.parse(refresh) : NaN;
-  if (current?.refreshToken && (typeof body.refresh_token !== 'string' || !body.refresh_token)) {
-    throw subscriptionError('ChatGPT did not return a renewed connection. Try signing in again.');
-  }
   return {
-    id: current?.id || crypto.randomUUID(),
-    accessToken: body.access_token,
-    refreshToken: typeof body.refresh_token === 'string' ? body.refresh_token : null,
-    idToken: typeof body.id_token === 'string' ? body.id_token : current?.idToken || null,
-    scopes: body.scope.split(/\s+/).filter(Boolean),
-    expiresAt: Date.now() + body.expires_in * 1000,
+    accessToken, refreshToken, scopes,
+    // Preserve the ID token verified when this account was connected.
+    idToken: current?.idToken ?? (typeof body.id_token === 'string' ? body.id_token : null),
+    expiresAt: accessToken ? expiresAt : null,
     earliestRefreshAt: Number.isFinite(earliest) ? earliest : null,
   };
 }
@@ -137,6 +209,10 @@ function normalizeCatalog(payload) {
       efforts: Array.isArray(model.supported_reasoning_levels)
         ? model.supported_reasoning_levels.map(level => level?.effort).filter(effort => typeof effort === 'string') : [],
       imageInput: Array.isArray(model.input_modalities) ? model.input_modalities.includes('image') : null,
+      fast: (Array.isArray(model.service_tiers) && model.service_tiers.some(tier => {
+        const id = typeof tier === 'string' ? tier : tier?.id;
+        return id === 'fast' || id === 'priority';
+      })) || (Array.isArray(model.additional_speed_tiers) && model.additional_speed_tiers.includes('fast')),
     });
   }
   return [...models.values()];
@@ -157,7 +233,7 @@ function sendBridgeError(response, error) {
 }
 
 function createChatGptSubscription({
-  directory, safeStorage, canEncrypt, openBrowser, onChange, fetchRemote = fetch, log = () => {}, callbackAssets,
+  directory, safeStorage, canEncrypt, openBrowser, onChange, fetchRemote = fetch, log = () => {}, callbackAssets, requestHandoff,
 }) {
   const store = path.join(directory, 'chatgpt-subscription.enc');
   const callbackPage = createChatGptCallbackPage(callbackAssets);
@@ -170,31 +246,53 @@ function createChatGptSubscription({
   let loadPromise;
   let mutation = Promise.resolve();
   let catalogRequest;
-  let disconnectRequest;
+  let profileAction;
   let models = [];
+  let catalogReady = false;
+  let catalogRevision = 0;
   let signInError = '';
   let catalogError = '';
-  let revokedWarning = '';
-  let refreshFailureUntil = 0;
-  let accountAbort = new AbortController();
+  const refreshFailureUntil = new Map();
+  const observedUsage = new Map();
+  const streamingRequests = new Set();
+  let bridgeHold;
+  let connection = { id: crypto.randomUUID(), controller: new AbortController(), resumable: new Set() };
+
+  const findProfile = id => record?.profiles.find(profile => profile.id === id);
+  const activeProfile = () => findProfile(record?.activeProfileId);
 
   function state() {
-    const tokens = record?.tokens;
-    const connected = Boolean(tokens?.scopes.includes(PLAN_SCOPE));
+    const profile = activeProfile();
+    const status = profileStatus(profile);
+    const usage = status === 'connected' ? observedUsage.get(profile.id) : null;
     return {
       available: available && bridgeReady,
-      status: activeFlow ? 'authorizing' : connected ? 'connected' : tokens ? 'consent-required' : 'disconnected',
+      status,
+      accounts: (record?.profiles || []).map(account => ({
+        id: account.id,
+        label: `Connection ${account.number}`,
+        email: account.email,
+        status: profileStatus(account),
+      })),
+      activeAccountId: profile?.id ?? null,
+      authorizing: Boolean(activeFlow),
+      authorizingAccountId: activeFlow?.profileId ?? null,
       canCancel: Boolean(activeFlow && !activeFlow.committing),
-      disconnecting: Boolean(disconnectRequest),
-      email: record?.registration?.email || null,
-      hasRegistration: Boolean(record?.registration || isIssuedClientId(record?.pendingClientId)),
-      models: connected ? models : [],
+      accountAction: profileAction?.kind ?? null,
+      models: status === 'connected' ? models : [],
+      catalogReady,
+      catalogRevision,
       refreshing: Boolean(catalogRequest),
-      error: signInError || catalogError || revokedWarning || null,
+      catalogError: catalogError || null,
+      usage: usage ? { status: usage.status, observedAt: usage.observedAt } : null,
+      planWelcomePending: status === 'connected' && record.planWelcome === 'pending',
+      error: signInError || null,
     };
   }
 
-  const publish = () => onChange(state());
+  const publish = () => {
+    try { onChange(state()); } catch { log('[subscription] Could not publish connection status.'); }
+  };
 
   function serialize(operation) {
     const result = mutation.then(operation, operation);
@@ -206,14 +304,23 @@ function createChatGptSubscription({
     loadPromise ??= (async () => {
       available = await canEncrypt();
       if (!available) return;
+      let encrypted;
       try {
-        const encrypted = await fs.readFile(store);
+        encrypted = await fs.readFile(store);
+      } catch (error) {
+        if (error?.code === 'ENOENT') return;
+        signInError = 'Could not read the saved ChatGPT accounts from secure storage.';
+        available = false;
+        return;
+      }
+      try {
         const { result } = await safeStorage.decryptStringAsync(encrypted);
         const saved = JSON.parse(result);
-        if (typeof saved?.hostId !== 'string') throw new Error('Invalid host');
-        record = saved;
-      } catch (error) {
-        if (error?.code !== 'ENOENT') signInError = 'The saved ChatGPT connection could not be read. Sign in again.';
+        record = readProfiles(saved);
+        if (!Object.hasOwn(saved, 'profiles')) await save(record);
+      } catch {
+        signInError = 'Could not load the saved ChatGPT accounts from secure storage.';
+        available = false;
       }
     })();
     return loadPromise;
@@ -234,13 +341,22 @@ function createChatGptSubscription({
     }
   }
 
-  function changeAccount() {
-    accountAbort.abort();
-    accountAbort = new AbortController();
-    models = [];
+  function saveProfile(profile, { activeProfileId = record.activeProfileId, planWelcome = record.planWelcome } = {}) {
+    const profiles = record.profiles.some(entry => entry.id === profile.id)
+      ? record.profiles.map(entry => entry.id === profile.id ? profile : entry)
+      : [...record.profiles, profile];
+    return save({ ...record, profiles, activeProfileId, planWelcome });
+  }
+
+  function changeAccount({ resume = false, catalog = null } = {}) {
+    const resumable = resume ? new Set([...connection.resumable, connection.id]) : new Set();
+    connection.controller.abort();
+    connection = { id: crypto.randomUUID(), controller: new AbortController(), resumable };
+    models = catalog ?? [];
+    catalogReady = catalog !== null;
+    catalogRevision++;
     catalogRequest = undefined;
     catalogError = '';
-    refreshFailureUntil = 0;
   }
 
   async function fetchJson(url, options, signal) {
@@ -252,6 +368,20 @@ function createChatGptSubscription({
     });
     const body = await response.json().catch(() => null);
     return { response, body };
+  }
+
+  async function fetchCatalog(tokens, signal) {
+    const { response, body } = await fetchJson(`${RESOURCE}/models`, {
+      headers: { Authorization: `Bearer ${tokens.accessToken}` },
+    }, signal);
+    if (!response.ok) {
+      const code = oauthErrorCode(body);
+      if (code === 'subscription_sharing_user_not_eligible' || code === 'subscription_sharing_v2_user_not_eligible') {
+        throw subscriptionError('ChatGPT plan usage is unavailable for this account or workspace.');
+      }
+      throw subscriptionError(`Could not load the ChatGPT model catalog (HTTP ${response.status}).`);
+    }
+    return normalizeCatalog(body);
   }
 
   async function discover(signal) {
@@ -323,11 +453,16 @@ function createChatGptSubscription({
     if (!flow.clientId) {
       await serialize(async () => {
         signal.throwIfAborted();
-        // The registration can succeed even when its one-time code cannot be used.
-        // Keep the issued ID separate from a verified account and its credentials.
-        await save({ ...record, pendingClientId: clientId });
+        let profile = record.profiles.find(entry => entry.clientId === clientId);
+        if (!profile) {
+          // Keep an issued registration recoverable even if its code exchange fails.
+          profile = newProfile(record.profiles, clientId);
+          await saveProfile(profile);
+        }
+        flow.profileId = profile.id;
+        flow.clientId = profile.clientId;
+        publish();
       });
-      flow.clientId = clientId;
     }
 
     signal.throwIfAborted();
@@ -351,20 +486,31 @@ function createChatGptSubscription({
 
     const tokens = normalizeTokens(body);
     const identity = await verifyIdentity(tokens.idToken, clientId, nonce, endpoints, signal);
-    if (flow.registration?.subject && flow.registration.subject !== identity.subject) {
-      throw subscriptionError('ChatGPT returned a different account. Choose “Use another account” to connect it.');
-    }
+    const sharePlan = hasPlanAccess(tokens);
     await serialize(async () => {
       signal.throwIfAborted();
+      const profile = findProfile(flow.profileId);
+      if (!profile || profile.clientId !== clientId || (profile.subject && profile.subject !== identity.subject)) {
+        throw subscriptionError('ChatGPT returned a different account. Use “Add account” to connect it.');
+      }
+
+      const previous = activeProfile();
+      // Adding or reconnecting a different profile must not switch running work.
+      const activate = !previous || previous.id === profile.id;
       flow.committing = true;
       clearTimeout(flow.timer);
       publish();
-      await save({ ...record, pendingClientId: null, registration: identity, tokens });
-      changeAccount();
+      const updatedProfile = { ...profile, ...identity, tokens };
+      await saveProfile(updatedProfile, {
+        activeProfileId: activate ? profile.id : record.activeProfileId,
+        planWelcome: sharePlan && !record.planWelcome ? 'pending' : record.planWelcome,
+      });
+      refreshFailureUntil.delete(profile.id);
+      if (activate && (previous?.id !== profile.id || hasPlanAccess(previous?.tokens) !== sharePlan)) changeAccount();
       signInError = '';
     });
     signal.throwIfAborted();
-    return tokens.scopes.includes(PLAN_SCOPE);
+    return sharePlan;
   }
 
   async function authorize(flow, endpoints, allowRetry) {
@@ -411,7 +557,7 @@ function createChatGptSubscription({
       url.search = new URLSearchParams({
         client_id: flow.clientId || 'dynamic_agent_client',
         ...(flow.clientId ? {} : { agent_name_hint: 'EterX' }),
-        ...(flow.registration?.email ? { login_hint: flow.registration.email } : {}),
+        ...(flow.email ? { login_hint: flow.email } : {}),
         ...(flow.idTokenHint ? { id_token_hint: flow.idTokenHint } : {}),
         ...(flow.needsConsent ? { prompt: 'consent' } : {}),
         ext_agent_host_id: record.hostId, response_type: 'code', redirect_uri: redirect.href,
@@ -480,19 +626,21 @@ function createChatGptSubscription({
     }, SIGN_IN_TIMEOUT_MS);
   }
 
-  async function completeSignIn(flow, useDifferentAccount) {
+  async function completeSignIn(flow) {
     const { signal } = flow.abort;
     try {
       await serialize(async () => {
         signal.throwIfAborted();
-        if (!record) await save({ hostId: `urn:uuid:${crypto.randomUUID()}`, registration: null, tokens: null });
-        if (!useDifferentAccount) {
-          const pendingClientId = isIssuedClientId(record.pendingClientId) ? record.pendingClientId : null;
-          flow.registration = record.registration;
-          flow.clientId = flow.registration?.clientId || pendingClientId;
-          flow.idTokenHint = record.tokens?.idToken;
-          flow.needsConsent = Boolean(record.tokens && !record.tokens.scopes.includes(PLAN_SCOPE));
+        if (!record) {
+          await save({ hostId: `urn:uuid:${crypto.randomUUID()}`, activeProfileId: null, profiles: [], planWelcome: null });
         }
+        if (flow.profileId === null) return;
+        const profile = findProfile(flow.profileId);
+        if (!profile) throw subscriptionError('This ChatGPT account is no longer saved in EterX.');
+        flow.clientId = profile.clientId;
+        flow.email = profile.email;
+        flow.idTokenHint = profile.tokens?.idToken;
+        flow.needsConsent = profileStatus(profile) === 'consent-required';
       });
       signal.throwIfAborted();
       const endpoints = await discover(signal);
@@ -507,94 +655,113 @@ function createChatGptSubscription({
     } finally {
       if (activeFlow === flow) {
         finishFlow();
-        if (record?.tokens?.scopes.includes(PLAN_SCOPE)) void refreshModels();
+        if (!catalogReady) void refreshModels();
       }
     }
   }
 
-  async function signIn(useDifferentAccount) {
+  async function signIn(profileId = null) {
     await load();
-    if (!available || !bridgeReady || activeFlow || disconnectRequest
-      || (useDifferentAccount && record?.tokens?.scopes.includes(PLAN_SCOPE))) return state();
+    if (!available || !bridgeReady || activeFlow || profileAction) return state();
+    if (profileId !== null && !findProfile(profileId)) {
+      signInError = 'This ChatGPT account is no longer saved in EterX.';
+      publish();
+      return state();
+    }
     signInError = '';
-    revokedWarning = '';
-    const flow = { abort: new AbortController() };
+    const flow = { abort: new AbortController(), profileId };
     activeFlow = flow;
     startSignInTimer(flow);
     publish();
-    void completeSignIn(flow, useDifferentAccount);
+    void completeSignIn(flow);
     return state();
   }
 
-  function requireTokens(expectedConnection) {
+  async function requireProfileTokens(profile) {
+    const current = profile?.tokens;
+    if (!hasPlanAccess(current)) {
+      throw subscriptionError('Connect ChatGPT plan usage in Settings → Subscription.', 'chatgpt_sign_in_required', 401);
+    }
+    const now = Date.now();
+    if (current.expiresAt - now > 60_000 || (!current.refreshToken && current.expiresAt > now)) return current;
+    if (current.earliestRefreshAt > now || refreshFailureUntil.get(profile.id) > now) {
+      if (current.expiresAt > now) return current;
+      throw subscriptionError('ChatGPT could not renew the connection yet. Try again shortly.', 'chatgpt_refresh_unavailable');
+    }
+    if (current.refreshToken) {
+      let result;
+      try {
+        const settings = await discover();
+        result = await fetchJson(settings.token_endpoint, oauthForm({
+          grant_type: 'refresh_token', client_id: profile.clientId,
+          refresh_token: current.refreshToken, resource: RESOURCE,
+        }));
+      } catch { /* Temporary failures leave the saved account intact. */ }
+      if (result?.response.ok) {
+        const renewed = normalizeTokens(result.body, current);
+        await saveProfile({ ...profile, tokens: renewed });
+        if (hasPlanAccess(renewed)) return renewed;
+        if (profile.id === record.activeProfileId) changeAccount();
+        publish();
+        throw subscriptionError('Enable ChatGPT plan usage in Settings → Subscription.', 'chatgpt_sign_in_required', 401);
+      }
+      const code = oauthErrorCode(result?.body);
+      if (!UNUSABLE_REFRESH_CODES.has(code) && code !== 'invalid_client') {
+        refreshFailureUntil.set(profile.id, Date.now() + 15_000);
+        if (current.expiresAt > Date.now()) return current;
+        throw subscriptionError('Could not renew the ChatGPT connection. Try again shortly.', 'chatgpt_refresh_unavailable');
+      }
+    }
+    await saveProfile({ ...profile, tokens: null });
+    const message = 'The ChatGPT connection expired. Reconnect this account in Settings → Subscription.';
+    if (profile.id === record.activeProfileId) {
+      changeAccount();
+      signInError = message;
+    }
+    publish();
+    throw subscriptionError(message, 'chatgpt_sign_in_required', 401);
+  }
+
+  function isDisconnecting(profileId) {
+    return profileAction?.kind === 'disconnecting'
+      && (profileAction.profileId === null || profileAction.profileId === profileId);
+  }
+
+  function requireTokens(expectedConnection, forInference = false) {
     return serialize(async () => {
-      const current = record?.tokens;
-      if (disconnectRequest) throw subscriptionError('The ChatGPT connection is being disconnected.', 'chatgpt_connection_changed', 409);
-      if (expectedConnection && current?.id !== expectedConnection) {
+      const profile = activeProfile();
+      const lease = connection;
+      const validConnection = expectedConnection === lease.id || (forInference && lease.resumable.has(expectedConnection));
+      if (!validConnection || lease.controller.signal.aborted || isDisconnecting(profile?.id)) {
         throw subscriptionError('The ChatGPT connection changed. Start a new request.', 'chatgpt_connection_changed', 409);
       }
-      if (!current?.scopes.includes(PLAN_SCOPE)) {
-        throw subscriptionError('Connect ChatGPT plan usage in Settings → Subscription.', 'chatgpt_sign_in_required', 401);
+      const usage = observedUsage.get(profile?.id);
+      if (forInference && usage?.pausedUntil > Date.now()) {
+        throw subscriptionError('ChatGPT limited this account’s requests. Review usage in ChatGPT settings.', usage.pauseCode, 429);
       }
-      const now = Date.now();
-      if (current.expiresAt - now > 60_000) return current;
-      if (current.earliestRefreshAt > now || refreshFailureUntil > now) {
-        if (current.expiresAt > now) return current;
-        throw subscriptionError('ChatGPT could not renew the connection yet. Try again shortly.', 'chatgpt_refresh_unavailable');
-      }
-      if (current.refreshToken) {
-        let result;
-        try {
-          const settings = await discover();
-          result = await fetchJson(settings.token_endpoint, oauthForm({
-            grant_type: 'refresh_token', client_id: record.registration.clientId,
-            refresh_token: current.refreshToken, resource: RESOURCE,
-          }));
-        } catch { /* Temporary failures leave the current session intact. */ }
-        if (result?.response.ok) {
-          const renewed = normalizeTokens(result.body, current);
-          await save({ ...record, tokens: renewed });
-          if (renewed.scopes.includes(PLAN_SCOPE)) return renewed;
-          changeAccount();
-          publish();
-          throw subscriptionError('Enable ChatGPT plan usage in Settings → Subscription.', 'chatgpt_sign_in_required', 401);
-        }
-        const code = oauthErrorCode(result?.body);
-        if (!UNUSABLE_REFRESH_CODES.has(code) && code !== 'invalid_client') {
-          refreshFailureUntil = Date.now() + 15_000;
-          if (current.expiresAt > Date.now()) return current;
-          throw subscriptionError('Could not renew the ChatGPT connection. Try again shortly.', 'chatgpt_refresh_unavailable');
-        }
-      }
-      await save({ ...record, tokens: null });
-      changeAccount();
-      signInError = 'The ChatGPT connection expired. Sign in again.';
-      publish();
-      throw subscriptionError(signInError, 'chatgpt_sign_in_required', 401);
+      const tokens = await requireProfileTokens(profile);
+      return { tokens, lease, profileId: profile.id };
     });
   }
 
   function refreshModels() {
     if (catalogRequest) return catalogRequest;
-    if (!record?.tokens?.scopes.includes(PLAN_SCOPE)) return Promise.resolve(state());
-    const connection = record.tokens.id;
-    const signal = accountAbort.signal;
+    const profile = activeProfile();
+    if (!bridgeReady || !hasPlanAccess(profile?.tokens) || isDisconnecting(profile.id)) return Promise.resolve(state());
+    const lease = connection;
+    const { signal } = lease.controller;
     catalogError = '';
     const refresh = (async () => {
       try {
-        const tokens = await requireTokens(connection);
-        const { response, body } = await fetchJson(`${RESOURCE}/models`, {
-          headers: { Authorization: `Bearer ${tokens.accessToken}` },
-        }, signal);
-        if (!response.ok) {
-          if (body?.error?.code === 'subscription_sharing_user_not_eligible') {
-            throw subscriptionError('ChatGPT plan usage is unavailable for this account or workspace.');
-          }
-          throw subscriptionError(`Could not load the ChatGPT model catalog (HTTP ${response.status}).`);
+        const { tokens } = await requireTokens(lease.id);
+        const catalog = await fetchCatalog(tokens, signal);
+        if (!signal.aborted) {
+          models = catalog;
+          catalogReady = true;
+          catalogRevision++;
         }
-        if (record?.tokens?.id === connection && !signal.aborted) models = normalizeCatalog(body);
       } catch (error) {
-        if (record?.tokens?.id === connection && !signal.aborted) {
+        if (!signal.aborted && !isDisconnecting(profile.id)) {
           catalogError = error?.status ? error.message : 'Could not reach the ChatGPT model catalog. Try again.';
         }
       } finally {
@@ -610,52 +777,223 @@ function createChatGptSubscription({
     return refresh;
   }
 
-  async function disconnectAccount() {
-    finishFlow();
-    let credentials;
-    try {
-      await serialize(async () => {
-        if (!record?.tokens) return;
-        credentials = { clientId: record.registration.clientId, token: record.tokens.refreshToken || record.tokens.accessToken,
-          hint: record.tokens.refreshToken ? 'refresh_token' : 'access_token' };
-        await save({ ...record, tokens: null });
-        changeAccount();
-      });
-      signInError = '';
-      revokedWarning = '';
+  function savedProfile(profileId) {
+    const profile = findProfile(profileId);
+    if (!profile) throw subscriptionError('This ChatGPT account is no longer saved in EterX.');
+    return profile;
+  }
+
+  function runProfileAction(kind, profileId, run, { cancelSignIn = false } = {}) {
+    if (!available || !bridgeReady || profileAction || (activeFlow && !cancelSignIn)) return Promise.resolve(state());
+    signInError = '';
+    const action = { kind, profileId };
+    profileAction = action;
+    action.promise = Promise.resolve().then(run).catch(error => {
+      signInError = error?.status ? error.message : 'Could not update the ChatGPT connection. Try again.';
+    }).finally(() => {
+      profileAction = undefined;
+      if (!catalogReady) void refreshModels();
       publish();
-      if (credentials) {
-        const endpoints = await discover();
-        if (!endpoints.revocation_endpoint) throw new Error();
-        const response = await fetchRemote(endpoints.revocation_endpoint, {
-          ...oauthForm({ client_id: credentials.clientId, token: credentials.token, token_type_hint: credentials.hint }),
+    }).then(state);
+    if (cancelSignIn) finishFlow();
+    publish();
+    return action.promise;
+  }
+
+  async function switchAccount(profileId, mode) {
+    let activeWork = 0;
+    const next = await runProfileAction('switching', profileId, async () => {
+      const profile = savedProfile(profileId);
+      if (record.activeProfileId === profile.id) return;
+
+      const id = crypto.randomUUID();
+      const hold = Promise.withResolvers();
+      bridgeHold = hold;
+      const inFlight = [...streamingRequests];
+      try {
+        const handoff = await requestHandoff('begin', id, mode);
+        if (mode === 'idle' && (handoff.activeWork > 0 || inFlight.length > 0)) {
+          activeWork = Math.max(handoff.activeWork || 0, inFlight.length);
+          return;
+        }
+        if (handoff.held !== true) throw subscriptionError('Could not pause work for the account change.');
+
+        const tokens = await serialize(() => requireProfileTokens(savedProfile(profileId)));
+        const catalog = await fetchCatalog(tokens);
+        if (mode === 'stop') await requestHandoff('stop', id);
+
+        let timer;
+        try {
+          await Promise.race([
+            Promise.all(inFlight.map(entry => entry.finished)),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(subscriptionError(
+                'Codex is still finishing a request. Wait for it to finish or choose Stop all and switch.',
+              )), HANDOFF_DRAIN_MS);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+
+        if (mode === 'resume') {
+          if (observedUsage.get(profileId)?.pausedUntil > Date.now()) {
+            throw subscriptionError('The selected account is temporarily rate limited. Choose it after the limit clears.');
+          }
+          const availableModels = new Set(catalog.map(model => model.id));
+          const requiredModels = [...new Set([...handoff.models, ...inFlight.map(entry => entry.model)].filter(Boolean))];
+          const unavailableModel = requiredModels.find(model => !availableModels.has(model));
+          if (unavailableModel) {
+            throw subscriptionError(`The selected account cannot resume work using ${unavailableModel}. Choose an account with access or stop the runs first.`);
+          }
+        }
+        await serialize(async () => {
+          if (!bridgeReady || !hasPlanAccess(savedProfile(profileId).tokens)) {
+            throw subscriptionError('The selected ChatGPT account could not be activated.');
+          }
+          await save({ ...record, activeProfileId: profileId });
+          changeAccount({ resume: mode === 'resume', catalog });
+        });
+      } finally {
+        bridgeHold = undefined;
+        hold.resolve();
+        try {
+          await requestHandoff('release', id);
+        } catch {
+          await requestHandoff('release', id).catch(() => log('[subscription] The work pause will release automatically.'));
+        }
+      }
+    });
+    return { state: next, activeWork };
+  }
+
+  function removeAccount(profileId) {
+    return runProfileAction('removing', profileId, () => serialize(async () => {
+      const profile = savedProfile(profileId);
+      if (profile.tokens) throw subscriptionError('Sign out of this ChatGPT account before removing it.');
+      const selected = profile.id === record.activeProfileId;
+      await save({
+        ...record,
+        activeProfileId: selected ? null : record.activeProfileId,
+        profiles: record.profiles.filter(entry => entry.id !== profileId),
+      });
+      refreshFailureUntil.delete(profileId);
+      observedUsage.delete(profileId);
+      if (selected) changeAccount();
+    }));
+  }
+
+  async function revokeSession(profile, endpoint) {
+    const { refreshToken, accessToken } = profile.tokens;
+    if (!refreshToken && !accessToken) return true;
+    if (!endpoint) return false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await fetchRemote(endpoint, {
+          ...oauthForm({
+            client_id: profile.clientId, token: refreshToken || accessToken,
+            token_type_hint: refreshToken ? 'refresh_token' : 'access_token',
+          }),
           redirect: 'error', signal: AbortSignal.timeout(10_000),
         });
         await response.body?.cancel().catch(() => {});
-        if (!response.ok) throw new Error();
-      }
-    } catch (error) {
-      if (record?.tokens && error?.status) signInError = error.message;
-      else if (!record?.tokens) revokedWarning = 'Disconnected in EterX. You can remove the connection in ChatGPT settings.';
+        if (response.ok) return true;
+        if (response.status < 500) return false;
+      } catch { /* Retry an unreachable provider once before clearing credentials. */ }
+      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 300));
     }
-    publish();
+    return false;
+  }
+
+  function disconnectProfiles(profileId, clearAll) {
+    return runProfileAction('disconnecting', profileId, async () => {
+      const targets = await serialize(() => {
+        const accounts = clearAll ? record?.profiles ?? [] : [savedProfile(profileId)];
+        return accounts.filter(profile => profile.tokens);
+      });
+      if (!targets.length) return;
+      const ids = new Set(targets.map(profile => profile.id));
+      if (ids.has(record.activeProfileId)) {
+        changeAccount();
+        publish();
+      }
+      const endpoints = await discover().catch(() => null);
+      const revoked = await Promise.all(targets.map(profile => revokeSession(profile, endpoints?.revocation_endpoint)));
+
+      await serialize(async () => {
+        const next = { ...record, profiles: record.profiles.map(profile => ids.has(profile.id) ? { ...profile, tokens: null } : profile) };
+        try {
+          await save(next);
+        } catch {
+          record = next;
+          throw subscriptionError('Signed out for this session. EterX could not update secure storage.');
+        }
+        for (const id of ids) refreshFailureUntil.delete(id);
+      });
+      if (revoked.some(ok => !ok)) {
+        signInError = 'Signed out in EterX. OpenAI didn’t confirm revocation. You can remove the connection in ChatGPT settings.';
+      }
+    }, { cancelSignIn: clearAll });
+  }
+
+  async function disconnectAll() {
+    while (profileAction) await profileAction.promise;
+    return disconnectProfiles(null, true);
+  }
+
+  async function dismissPlanWelcome() {
+    await serialize(async () => {
+      if (record?.planWelcome !== 'pending') return;
+      const next = { ...record, planWelcome: 'dismissed' };
+      try {
+        await save(next);
+      } catch {
+        record = next;
+        signInError = 'Could not save the ChatGPT welcome preference.';
+      }
+      publish();
+    });
     return state();
   }
 
-  function disconnect() {
-    if (disconnectRequest) return disconnectRequest;
-    disconnectRequest = disconnectAccount().finally(() => {
-      disconnectRequest = undefined;
-      publish();
-    });
+  function recordUsage(profileId, lease, status, upstream) {
+    if (!bridgeReady || lease !== connection || lease.controller.signal.aborted || isDisconnecting(profileId)) return;
+    const now = Date.now();
+    const previous = observedUsage.get(profileId);
+    const limited = status === 'plan-limit' || status === 'rate-limited';
+    // A concurrent success cannot clear an already reported limit.
+    if (status === 'completed' && previous?.pausedUntil > now) return;
+    const pausedUntil = limited
+      ? Math.max(previous?.pausedUntil || 0, retryAfterTime(upstream.headers, now))
+      : previous?.pausedUntil || 0;
+    let pauseCode = previous?.pauseCode;
+    if (status === 'plan-limit') pauseCode = PLAN_LIMIT_CODE;
+    else if (status === 'rate-limited' && !(previous?.pausedUntil > now)) pauseCode = 'rate_limit_exceeded';
+    observedUsage.set(profileId, { status, observedAt: now, pausedUntil, pauseCode });
     publish();
-    return disconnectRequest;
   }
 
   async function proxyResponse(request, response) {
     const abort = new AbortController();
     response.once('close', () => abort.abort());
+    const completion = Promise.withResolvers();
+    const entry = { finished: completion.promise, model: null };
     try {
+      while (bridgeHold) {
+        const hold = bridgeHold;
+        await new Promise((resolve, reject) => {
+          abort.signal.throwIfAborted();
+          const stopWaiting = () => reject(abort.signal.reason);
+          abort.signal.addEventListener('abort', stopWaiting, { once: true });
+          void hold.promise.then(() => {
+            abort.signal.removeEventListener('abort', stopWaiting);
+            resolve();
+          });
+        });
+      }
+      if (!bridgeReady) throw subscriptionError('The ChatGPT connection is closing.');
+      streamingRequests.add(entry);
+      const expectedConnection = request.headers['x-eterx-codex-connection'] ?? connection.id;
       const content = [];
       let bytes = 0;
       for await (const chunk of request) {
@@ -664,27 +1002,48 @@ function createChatGptSubscription({
         content.push(chunk);
       }
       const body = JSON.parse(Buffer.concat(content).toString('utf8'));
-      if (!body.model || body.store !== false || body.stream !== true || !Array.isArray(body.input)) {
+      if (typeof body.model !== 'string' || !body.model || body.store !== false || body.stream !== true || !Array.isArray(body.input)) {
         throw subscriptionError('Invalid ChatGPT Responses request.', 'chatgpt_invalid_request', 400);
       }
-      const tokens = await requireTokens(request.headers['x-eterx-codex-connection']);
-      const signal = AbortSignal.any([abort.signal, accountAbort.signal]);
-      if (record?.tokens?.id !== tokens.id) throw subscriptionError('The ChatGPT connection changed.', 'chatgpt_connection_changed', 409);
+      entry.model = body.model;
+      const { tokens, lease, profileId } = await requireTokens(expectedConnection, true);
+      if (lease !== connection || isDisconnecting(profileId)) {
+        throw subscriptionError('The ChatGPT connection changed.', 'chatgpt_connection_changed', 409);
+      }
+      if (body.service_tier !== undefined) {
+        // Fast is authorized for a specific saved account. Work resumed on a
+        // different account uses its normal speed until the user opts in there.
+        if (request.headers['x-eterx-codex-fast-profile'] !== profileId) {
+          delete body.service_tier;
+        } else if (body.service_tier !== 'priority' || !models.some(model => model.id === body.model && model.fast)) {
+          throw subscriptionError('Fast is unavailable for this ChatGPT model. Turn it off or refresh the account’s models.', 'chatgpt_fast_unavailable', 400);
+        }
+      }
+      const signal = AbortSignal.any([abort.signal, lease.controller.signal]);
       const upstream = await fetchRemote(`${RESOURCE}/responses`, {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${tokens.accessToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const headers = { 'Cache-Control': 'no-store', 'x-eterx-codex-connection': tokens.id };
+      const headers = { 'Cache-Control': 'no-store', 'x-eterx-codex-connection': lease.id };
       for (const name of ['content-type', 'retry-after', 'retry-after-ms', 'x-request-id']) {
         const value = upstream.headers.get(name);
         if (value) headers[name] = value;
       }
+      const observer = observeChatGptUsage(upstream, status => recordUsage(profileId, lease, status, upstream));
       response.writeHead(upstream.status, headers);
-      if (upstream.body) await pipeline(Readable.fromWeb(upstream.body), response, { signal });
-      else response.end();
+      if (!upstream.body) {
+        response.end();
+      } else {
+        const stream = Readable.fromWeb(upstream.body);
+        if (observer) await pipeline(stream, observer, response, { signal });
+        else await pipeline(stream, response, { signal });
+      }
     } catch (error) {
       sendBridgeError(response, error);
+    } finally {
+      streamingRequests.delete(entry);
+      completion.resolve();
     }
   }
 
@@ -714,17 +1073,19 @@ function createChatGptSubscription({
   }
 
   function stop() {
-    finishFlow();
-    accountAbort.abort();
     bridgeReady = false;
+    bridgeHold?.resolve();
+    bridgeHold = undefined;
+    finishFlow();
+    connection.controller.abort();
     bridge?.close();
     bridge?.closeAllConnections();
   }
 
   return {
-    start, stop, state, signIn, refreshModels, disconnect,
+    start, stop, state, signIn, refreshModels, switchAccount, removeAccount, disconnectAll, dismissPlanWelcome,
+    disconnect: profileId => disconnectProfiles(profileId, false),
     cancelSignIn: () => { if (!activeFlow?.committing) finishFlow(); return state(); },
-    openUsage: () => openBrowser(USAGE_URL),
   };
 }
 

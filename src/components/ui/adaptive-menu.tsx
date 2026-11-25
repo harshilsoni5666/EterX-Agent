@@ -3,6 +3,7 @@
 import React, { useCallback, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, type MotionProps } from 'framer-motion';
+import { useWorkspacePaneVisible } from './workspace-pane-visibility';
 
 type AdaptiveMenuProps = Omit<React.HTMLAttributes<HTMLDivElement>, 'onDrag' | 'onDragStart' | 'onDragEnd' | 'onAnimationStart'> & {
   preferredSide?: 'top' | 'bottom';
@@ -17,6 +18,7 @@ type AdaptiveMenuProps = Omit<React.HTMLAttributes<HTMLDivElement>, 'onDrag' | '
 /** Fits menus to their pane by default. An explicit portal anchor lets a menu
  * use the viewport and escape clipping and stacking contexts in either chat. */
 export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allowFlip = true, matchAnchorWidth = false, portalAnchorRef, menuRef, motionProps, ...props }: AdaptiveMenuProps) {
+  const workspaceVisible = useWorkspacePaneVisible();
   const ref = useRef<HTMLDivElement>(null);
   const setMenuRef = useCallback((menu: HTMLDivElement | null) => {
     ref.current = menu;
@@ -24,6 +26,7 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
   }, [menuRef]);
 
   useLayoutEffect(() => {
+    if (portalAnchorRef && !workspaceVisible) return;
     const menu = ref.current;
     const anchor = portalAnchorRef ? portalAnchorRef.current : menu?.parentElement;
     if (!menu || !anchor) return;
@@ -87,8 +90,8 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
       if (matchAnchorWidth) set('width', `${(portalAnchorRef ? snapToPixel(trigger.width) : trigger.width) / scaleX}px`);
       // Measure hidden list content without temporarily expanding the menu:
       // expanding a scroll area can clamp its scrollTop back to zero.
-      const scrollRegion = menu.querySelector<HTMLElement>('[data-menu-scroll-region]');
-      const hiddenListHeight = scrollRegion ? Math.max(0, scrollRegion.scrollHeight - scrollRegion.clientHeight) : 0;
+      const scrollRegions = menu.querySelectorAll<HTMLElement>('[data-menu-scroll-region]');
+      const hiddenListHeight = Math.max(0, ...Array.from(scrollRegions, region => region.scrollHeight - region.clientHeight));
       const desiredHeight = Math.min(menu.scrollHeight + hiddenListHeight + 2, heightLimit) * scaleY;
       const above = Math.max(0, Math.min(bottomEdge, trigger.top - 8) - topEdge);
       const below = Math.max(0, bottomEdge - Math.max(topEdge, trigger.bottom + 8));
@@ -170,7 +173,7 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
   });
 
   useLayoutEffect(() => {
-    if (!portalAnchorRef) return;
+    if (!portalAnchorRef || !workspaceVisible) return;
     const menu = ref.current;
     const anchor = portalAnchorRef.current;
     if (!menu || !anchor) return;
@@ -180,18 +183,18 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
       menu.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled), [tabindex="0"]')?.focus({ preventScroll: true });
     }
     return () => {
-      if (anchor.isConnected && menu.contains(document.activeElement)) {
+      if (anchor.isConnected && !anchor.closest('[inert]') && menu.contains(document.activeElement)) {
         anchor.querySelector<HTMLElement>('button, [tabindex="0"]')?.focus({ preventScroll: true });
       }
     };
-  }, [portalAnchorRef]);
+  }, [portalAnchorRef, workspaceVisible]);
 
   const menu = motionProps
     ? <motion.div {...props} {...motionProps} ref={setMenuRef} data-adaptive-menu="true" />
     : <div {...props} ref={setMenuRef} data-adaptive-menu="true" />;
 
   if (!portalAnchorRef) return menu;
-  if (typeof document === 'undefined') return null;
+  if (!workspaceVisible || typeof document === 'undefined') return null;
   return createPortal(
     <div className="eterx-composer-shell eterx-composer-menu-portal">{menu}</div>,
     document.body,

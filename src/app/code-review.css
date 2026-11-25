@@ -88,9 +88,8 @@
   --eterx-md-inline-code-bg: #2D2D2D;
 }
 
-/* Preserve the Recents surface beneath its translucent gradient. */
 :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents {
-  background-color: var(--sidebar-surface-bg) !important;
+  background: linear-gradient(180deg, rgba(32, 34, 39, 0.76), rgba(18, 20, 23, 0.42)) !important;
 }
 
 :root[data-theme="light"] {

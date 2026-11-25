@@ -4,6 +4,7 @@ import { Anthropic, OpenAI } from './model-clients';
 import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode, type MainAgentProvider } from './model-routing';
 import { getProviderBaseURL, isLocalModelProvider } from './provider-runtime';
 import { getRuntimeApiKey, type RuntimeApiKeyProvider } from './runtime-api-keys';
+import { meterModelResponse } from '../usage/ledger';
 import { createCodexSubscriptionClient } from './codex-subscription-runtime';
 import { createProviderChatStream } from './provider-stream-adapter';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
@@ -728,7 +729,7 @@ export class TaskPlannerClient {
       if (provider === 'gemini') {
         const gemini = this.getGeminiClient();
         if (!gemini) throw new Error('Gemini planning requires a configured Gemini API key.');
-        const response = await this.withTimeout(
+        const { response } = await meterModelResponse(provider, modelName, () => this.withTimeout(
           gemini.models.generateContent({
             model: modelName,
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -738,18 +739,18 @@ export class TaskPlannerClient {
             },
           }),
           MODEL_REQUEST_TIMEOUT_MS,
-        );
+        ), result => ({ usage: result.usageMetadata, responseModel: result.modelVersion }));
         rawText = response.text || '';
       } else if (provider === 'anthropic') {
         const apiKey = getRuntimeApiKey('anthropic');
         if (!apiKey) throw new Error('Anthropic planning requires a configured Anthropic API key.');
         const client = new Anthropic({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
-        const response: any = await this.withTimeout(client.messages.create({
+        const { response } = await meterModelResponse(provider, modelName, () => this.withTimeout(client.messages.create({
           model: modelName,
           max_tokens: 5000,
           system: PLANNER_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: prompt }],
-        }), MODEL_REQUEST_TIMEOUT_MS);
+        }), MODEL_REQUEST_TIMEOUT_MS), result => ({ usage: result.usage, responseModel: result.model }));
         rawText = (response.content || []).filter((part: any) => part?.type === 'text').map((part: any) => part.text || '').join('');
       } else if (provider === 'codex') {
         const client = createCodexSubscriptionClient();
@@ -767,13 +768,13 @@ export class TaskPlannerClient {
         const apiKey = getRuntimeApiKey(provider as RuntimeApiKeyProvider) || (isLocalModelProvider(provider) ? 'local-provider' : '');
         if (!apiKey) throw new Error(`${provider} planning requires a configured API key.`);
         const client = new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey, baseURL, maxRetries: 0 });
-        const response: any = await this.withTimeout(client.chat.completions.create({
+        const { response } = await meterModelResponse(provider, modelName, () => this.withTimeout(client.chat.completions.create({
           model: modelName,
           messages: [
             { role: 'system', content: PLANNER_SYSTEM_PROMPT },
             { role: 'user', content: prompt },
           ],
-        } as any), MODEL_REQUEST_TIMEOUT_MS);
+        } as any), MODEL_REQUEST_TIMEOUT_MS), result => ({ usage: result.usage, responseModel: result.model }));
         rawText = String(response.choices?.[0]?.message?.content || '');
       }
 

@@ -95,11 +95,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-clear'),
   chatGptSubscription: {
     getState: () => ipcRenderer.invoke('chatgpt-subscription-state'),
-    signIn: differentAccount => ipcRenderer.invoke('chatgpt-subscription-sign-in', differentAccount === true),
+    signIn: profileId => ipcRenderer.invoke('chatgpt-subscription-sign-in', profileId ?? null),
     cancel: () => ipcRenderer.invoke('chatgpt-subscription-cancel'),
     refreshModels: () => ipcRenderer.invoke('chatgpt-subscription-refresh'),
-    disconnect: () => ipcRenderer.invoke('chatgpt-subscription-disconnect'),
-    openUsage: () => ipcRenderer.invoke('chatgpt-subscription-usage'),
+    switchAccount: (profileId, mode = 'idle') => ipcRenderer.invoke('chatgpt-subscription-switch-account', { id: profileId, mode }),
+    removeAccount: profileId => ipcRenderer.invoke('chatgpt-subscription-remove-account', profileId),
+    disconnect: profileId => ipcRenderer.invoke('chatgpt-subscription-disconnect', profileId),
+    disconnectAll: () => ipcRenderer.invoke('chatgpt-subscription-disconnect-all'),
+    dismissPlanWelcome: () => ipcRenderer.invoke('chatgpt-subscription-dismiss-plan-welcome'),
     onChange: callback => {
       const listener = (_event, state) => callback(state);
       ipcRenderer.on('chatgpt-subscription-changed', listener);

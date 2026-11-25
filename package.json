@@ -1,6 +1,6 @@
 {
   "name": "eterx",
-  "version": "0.1.52",
+  "version": "0.1.53",
   "description": "EterX autonomous AI agent desktop application",
   "author": {
     "name": "Harshil Soni",
@@ -332,6 +332,7 @@
     }
   },
   "devDependencies": {
+    "@electron/asar": "4.3.3",
     "@tailwindcss/postcss": "^4.3.4",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^26",

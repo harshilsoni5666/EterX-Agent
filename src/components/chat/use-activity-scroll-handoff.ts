@@ -2,7 +2,7 @@
 
 import { useEffect, type RefObject } from 'react';
 
-const ACTIVITY_SURFACES = '.eterx-activity-panel, .eterx-thought-block, .eterx-terminal-trace, .eterx-file-change-trace, .eterx-action-group';
+const SCROLL_HANDOFF_SURFACES = '.eterx-activity-panel, .eterx-thought-block, .eterx-terminal-trace, .eterx-file-change-trace, .eterx-action-group, .eterx-markdown-table-wrap';
 
 function scrollRange(element: HTMLElement) {
   const max = element.scrollHeight - element.clientHeight;
@@ -22,7 +22,7 @@ export function useActivityScrollHandoff(feedRef: RefObject<HTMLDivElement | nul
       if (event.defaultPrevented || !event.cancelable || event.ctrlKey || event.metaKey || event.shiftKey ||
           !Number.isFinite(event.deltaY) || event.deltaY === 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
       const target = event.target;
-      if (!(target instanceof Element) || target.closest('.eterx-chat-feed-scroll') !== feed || !target.closest(ACTIVITY_SURFACES)) return;
+      if (!(target instanceof Element) || target.closest('.eterx-chat-feed-scroll') !== feed || !target.closest(SCROLL_HANDOFF_SURFACES)) return;
 
       let child: HTMLElement | null = null;
       let childRange: ReturnType<typeof scrollRange> = null;

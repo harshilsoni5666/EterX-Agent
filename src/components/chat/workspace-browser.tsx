@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, ArrowUpRight, ScanLine, Check, Globe, Loader2, RotateCw, Search, X } from 'lucide-react';
 import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { Tooltip } from '../ui/tooltip';
+import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { BROWSER_HISTORY_KEY, clearBrowserHistory, loadBrowserHistory, readBrowserHistory, type BrowserHistoryItem } from '../../lib/browser-history';
 import { FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
@@ -25,6 +26,7 @@ export function BrowserFavicon({ url }: { url?: string }) {
   return url && /^https?:\/\//i.test(url) && !failed ? <img className="eterx-workspace-favicon" src={url} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : <Globe size={16} />;
 }
 export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: string; tab: WorkspaceTab; occluded: boolean; onCapture: (capture: BrowserCapture, tabId: string) => Promise<void> }) {
+  const workspaceVisible = useWorkspacePaneVisible();
   const api = typeof window !== 'undefined' ? (window as any).electronAPI : undefined;
   const [state, setState] = useState<BrowserState>(initial);
   const [value, setValue] = useState(tab.url || '');
@@ -101,6 +103,10 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   const hasSuggestions = suggestions && (keywords.length > 0 || history.some(item => !value || value === state.url || (item.title + ' ' + item.url).toLowerCase().includes(value.toLowerCase())));
   viewportFlags.current = { url: state.url, error: state.error, overlay: occluded || hasSuggestions };
   useLayoutEffect(() => {
+    if (!workspaceVisible) {
+      setPageFrame(null);
+      return;
+    }
     if (!ready || !viewport.current || !api) return;
     let frame = 0, captureRevision = 0;
     let previewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -153,7 +159,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
       scheduleViewport.current = undefined; frameReady.current = undefined;
       api.workspaceBrowserBounds(tab.id, null);
     };
-  }, [ready, tab.id]);
+  }, [ready, tab.id, workspaceVisible]);
   useLayoutEffect(() => { scheduleViewport.current?.(); }, [state.url, state.error, occluded, hasSuggestions]);
   const command = async (action: string, payload?: string) => {
     try { const result = await api.workspaceBrowserCommand(tab.id, action, payload); setState(result); } catch (error) { setState(previous => ({ ...previous, error: String(error) })); }

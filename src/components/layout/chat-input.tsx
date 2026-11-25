@@ -1,12 +1,13 @@
 'use client';
 
-import { codexCatalogPending, codexModelLabel, codexThinkingCatalog, getDesktopSubscription, withCodexSubscriptionModels } from '../../lib/chatgpt-subscription-client';
+import { codexCatalogPending, codexModelLabel, codexThinkingCatalog, withCodexSubscriptionModels } from '../../lib/chatgpt-subscription-client';
+import { getModelFastMode, setModelFastMode } from '../../lib/model-fast-preferences';
 
 import { planStepLabels, planTitle, type PlanImplementation, type TaskTrackerState } from '../../lib/task-plan-trace';
 import { openPlanInWorkspace, PlanPanelOwner } from '../chat/task-plan-card';
 import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
 import { CHAT_PLAN_MODE_CHANGED, readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, type summarizeChatUsage } from '../../lib/chat-command-state';
-import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
+import { formatModelName } from '../../lib/agent/model-presentation';
 import { PASTED_TEXT_MIME, shouldAttachPaste } from '../../lib/pasted-text';
 import { AttachmentTextPreviewHost } from '../chat/attachment-text-preview';
 import { QueuedMessageAttachments, type QueuedMessageAttachment } from '../chat/queued-message-attachments';
@@ -19,14 +20,16 @@ import { CODING_MODES, getCodingMode, type CodingAgentId } from '../../lib/code/
 import { CodingModeDetails } from './coding-mode-details';
 import { ComposerPermissionSelector, ComposerToolApprovals } from './composer-permissions';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
+import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { ProviderIconAsset } from '../ui/provider-icon';
 import { Tooltip } from '../ui/tooltip';
+import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { DictationButton } from '../ui/dictation-button';
 import type { DictationPhase } from '../../lib/microphone';
 import { Shimmer } from '../ui/shimmer';
 import { AdaptiveMenu } from '../ui/adaptive-menu';
+import { ChatModelPicker } from './chat-model-picker';
 import { safeCopyPngToClipboard, safeCopyTextToClipboard, safeReadImageFromClipboard, safeReadTextFromClipboard } from '../ui/copy-button';
 import { ConnectorsModal } from './connectors-modal';
 import { AgentFace } from '../chat/agent-face';
@@ -1124,6 +1127,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   showScrollBottom = false,
   onScrollToBottom = () => { },
 }) => {
+  const workspaceVisible = useWorkspacePaneVisible();
   const isAgentBuilder = Boolean(buildingAgentId || activeChatId?.startsWith('agent_builder_') || activeChatId?.includes('agent_builder'));
   const isLiveActive = liveState !== 'idle' && liveState !== 'error';
   const isAgentRunning = isThinking || canStop;
@@ -1136,8 +1140,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const textareaResizeFrameRef = useRef<number | null>(null);
   const slashDragFrameRef = useRef<number | null>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
-  const modelMenuRef = useRef<HTMLDivElement>(null);
-  const modelListRef = useRef<HTMLDivElement>(null);
   const initialFocusAppliedRef = useRef(false);
   // Attachment preparation may outlive a chat switch. Scope the deferred send
   // to the composer that requested it instead of letting it fire in whichever
@@ -1155,11 +1157,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const activeComposerChatKey = activeChatId || 'new_chat';
   const isStopping = stoppingChatIds.has(activeComposerChatKey);
   const [showModelMenu, setShowModelMenu] = useState(false);
-  const [modelSearch, setModelSearch] = useState('');
-  const [thinkingMenuModelKey, setThinkingMenuModelKey] = useState<string | null>(null);
-  const [thinkingMenuPosition, setThinkingMenuPosition] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
-  const thinkingMenuAnchorRef = useRef<HTMLElement | null>(null);
-  const thinkingMenuPortalRef = useRef<HTMLDivElement | null>(null);
+  const [modelPickerInstance, setModelPickerInstance] = useState(0);
+  const closeModelPicker = useCallback(() => setShowModelMenu(false), []);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [codingDetails, setCodingDetails] = useState<CodingAgentId | null>(null);
   const [showContextUsagePanel, setShowContextUsagePanel] = useState(false);
@@ -1183,9 +1182,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     queueActionsRef.current.delete(key);
     setSendingQueuedFollowUpIds(new Set(queueActionsRef.current));
   };
-  const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, MainAgentThinkingLevel>>(readModelThinkingLevels);
-  const thinkingTimeoutRef = useRef<any>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewImages, setPreviewImages] = useState<string[]>([]);
   const [failedPreviewImage, setFailedPreviewImage] = useState<string | null>(null);
@@ -1356,59 +1353,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     };
   }, []);
 
-  const handleThinkingMouseEnter = () => {
-    if (thinkingTimeoutRef.current) {
-      clearTimeout(thinkingTimeoutRef.current);
-      thinkingTimeoutRef.current = null;
-    }
-    setShowThinkingLevels(true);
-  };
-
-  const handleThinkingMouseLeave = () => {
-    if (thinkingTimeoutRef.current) {
-      clearTimeout(thinkingTimeoutRef.current);
-    }
-    thinkingTimeoutRef.current = setTimeout(() => {
-      setShowThinkingLevels(false);
-    }, 200);
-  };
-
-  const updateThinkingMenuPosition = useCallback((anchor: HTMLElement, optionCount: number) => {
-    if (typeof window === 'undefined') return;
-    const margin = 12;
-    const gap = 8;
-    const viewport = window.visualViewport;
-    const leftEdge = (viewport?.offsetLeft ?? 0) + margin;
-    const rightEdge = leftEdge + (viewport?.width ?? document.documentElement.clientWidth) - margin * 2;
-    const topEdge = (viewport?.offsetTop ?? 0) + margin;
-    const bottomEdge = topEdge + (viewport?.height ?? document.documentElement.clientHeight) - margin * 2;
-    const menuWidth = Math.max(0, Math.min(168, rightEdge - leftEdge));
-    const menuHeight = Math.max(0, Math.min(optionCount * 34 + 10, bottomEdge - topEdge));
-    const rect = anchor.getBoundingClientRect();
-    const canOpenRight = rect.right + gap + menuWidth <= rightEdge;
-    const left = canOpenRight
-      ? rect.right + gap
-      : Math.max(leftEdge, Math.min(rect.left - gap - menuWidth, rightEdge - menuWidth));
-    const top = Math.max(
-      topEdge,
-      Math.min(rect.bottom - menuHeight, bottomEdge - menuHeight),
-    );
-    setThinkingMenuPosition(previous =>
-      previous?.top === top && previous.left === left && previous.width === menuWidth && previous.maxHeight === menuHeight
-        ? previous
-        : { top, left, width: menuWidth, maxHeight: menuHeight }
-    );
-  }, []);
-
-  const openThinkingMenuForRow = (optionKey: string, anchor: HTMLElement, optionCount: number) => {
-    thinkingMenuAnchorRef.current = anchor;
-    updateThinkingMenuPosition(anchor, optionCount);
-    setThinkingMenuModelKey(optionKey);
-    handleThinkingMouseEnter();
-  };
   const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [slashPanel, setSlashPanel] = useState<SlashPanel>(null);
+
+  React.useLayoutEffect(() => {
+    if (workspaceVisible) return;
+    setShowModelMenu(false);
+    setShowAgentMenu(false);
+    setShowPinMenu(false);
+    setOpenPillDrop(null);
+    setOpenStatusMenu(null);
+    setShowContextUsagePanel(false);
+    setSlashTrigger(null);
+    setSlashPanel(null);
+  }, [workspaceVisible]);
   const [storedAgents, setStoredAgents] = useState<SavedAgentSummary[]>([]);
   const [goalDraft, setGoalDraft] = useState('');
   const [slashPanelOffset, setSlashPanelOffset] = useState({ x: 0, y: 0 });
@@ -1787,23 +1746,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [showContextUsagePanel]);
 
   useEffect(() => {
-    if (isModelLocked) {
-      setShowModelMenu(false);
-      setShowThinkingLevels(false);
-    }
+    if (isModelLocked) setShowModelMenu(false);
   }, [isModelLocked]);
   useEffect(() => {
     if (executionContextLocked) setShowAgentMenu(false);
   }, [executionContextLocked]);
-  useEffect(() => {
-    if (!showModelMenu) {
-      setShowThinkingLevels(false);
-      setThinkingMenuModelKey(null);
-      setThinkingMenuPosition(null);
-      thinkingMenuAnchorRef.current = null;
-    }
-  }, [showModelMenu]);
-
   useEffect(() => {
     if (initialFocusAppliedRef.current) return;
     initialFocusAppliedRef.current = true;
@@ -1822,36 +1769,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
     return () => window.clearTimeout(focusTimer);
   }, []); // Focus only once when the input first mounts.
-  useEffect(() => {
-    if (!showModelMenu) return;
-
-    const handlePointerDown = (event: PointerEvent) => {
-      const selector = modelSelectorRef.current;
-      const menu = modelMenuRef.current;
-      const thinkingMenu = thinkingMenuPortalRef.current;
-      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-      const target = event.target as Node | null;
-      if (selector && (selector.contains(target) || path.includes(selector))) return;
-      if (menu && (menu.contains(target) || path.includes(menu))) return;
-      if (thinkingMenu && (thinkingMenu.contains(target) || path.includes(thinkingMenu))) return;
-      setShowModelMenu(false);
-      setShowThinkingLevels(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setShowModelMenu(false);
-        setShowThinkingLevels(false);
-        modelSelectorRef.current?.querySelector<HTMLButtonElement>('.eterx-model-button')?.focus({ preventScroll: true });
-      }
-    };
-
-    document.addEventListener('pointerdown', handlePointerDown, true);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown, true);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [showModelMenu]);
   const [logoHoverText, setLogoHoverText] = useState('');
 
   const logoHoverPhrases = [
@@ -2739,7 +2656,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         };
       });
   }, [storedModelSettings.apiKeys, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
-  const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
   // Only show models that came from the persisted model directory/settings.
   // The static agent mode config is for request routing; it is not a real
   // selectable model and must never be rendered as one by the composer.
@@ -2759,7 +2675,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       : [];
   }, [getThinkingTarget]);
 
-  const allModelOptions = modelOptions;
   const activeThinkingOptions = useMemo(() => getThinkingLevelOptions(selectedModel), [selectedModel, getThinkingLevelOptions]);
   const getEffectiveThinkingLevel = useCallback((option: ChatModelOption | null) => {
     if (!option) return null;
@@ -2798,7 +2713,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       : undefined;
   }, [activeThinkingOptions, normalizedActiveThinkingLevel]);
   const modelDisplayLabel = selectedModel
-    ? getModelOptionLabel(selectedModel)
+    ? selectedModel.label
     : modelOptions.length > 0
       ? 'Select a model'
       : 'Set up models';
@@ -2835,45 +2750,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     });
   }, [getThinkingTarget, onThinkingLevelChange, selectedModel?.optionKey]);
 
-  useEffect(() => {
-    if (!showModelMenu || !showThinkingLevels || !thinkingMenuModelKey) return;
-    let frame = 0;
-    let lastAnchorRect: DOMRect | null = null;
-    const updatePosition = () => {
-      const anchor = thinkingMenuAnchorRef.current;
-      if (!anchor?.isConnected || window.getComputedStyle(anchor).visibility !== 'visible') {
-        setShowThinkingLevels(false);
-        return;
-      }
-      lastAnchorRect = anchor.getBoundingClientRect();
-      const option = allModelOptions.find(item => item.optionKey === thinkingMenuModelKey) || null;
-      const optionCount = getThinkingLevelOptions(option).length;
-      if (optionCount > 0) updateThinkingMenuPosition(anchor, optionCount);
-    };
-    updatePosition();
-    const followAnchor = () => {
-      const anchor = thinkingMenuAnchorRef.current;
-      const rect = anchor?.getBoundingClientRect();
-      if (!rect || !lastAnchorRect || rect.left !== lastAnchorRect.left || rect.top !== lastAnchorRect.top
-        || rect.width !== lastAnchorRect.width || rect.height !== lastAnchorRect.height
-        || (anchor && window.getComputedStyle(anchor).visibility !== 'visible')) {
-        updatePosition();
-      }
-      frame = requestAnimationFrame(followAnchor);
-    };
-    frame = requestAnimationFrame(followAnchor);
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    window.visualViewport?.addEventListener('resize', updatePosition);
-    window.visualViewport?.addEventListener('scroll', updatePosition);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-      window.visualViewport?.removeEventListener('resize', updatePosition);
-      window.visualViewport?.removeEventListener('scroll', updatePosition);
-    };
-  }, [allModelOptions, getThinkingLevelOptions, showModelMenu, showThinkingLevels, thinkingMenuModelKey, updateThinkingMenuPosition]);
+  const handleModelFastChange = useCallback((option: ChatModelOption, enabled: boolean) => {
+    if (!setModelFastMode(option.optionKey, enabled)) return;
+    setStoredModelSettings(readStoredModelSettings());
+    emitModelSettingsUpdate({ type: 'model-fast-mode-updated', modelKey: option.optionKey });
+  }, []);
 
   useEffect(() => {
     const el = composerShellRef.current;
@@ -2970,9 +2851,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     if (modelSelectionScope === 'surface') {
       setShowModelMenu(false);
-      setModelSearch('');
-      setShowThinkingLevels(false);
-      setThinkingMenuModelKey(null);
       return;
     }
     const nextOverrides = { ...storedModelSettings.modelOverrides, [option.provider]: option.modelId || option.modelName };
@@ -3004,9 +2882,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     syncRuntimeModelOverrides(nextOverrides);
     onModeChange(option.id);
     setShowModelMenu(false);
-    setModelSearch('');
-    setShowThinkingLevels(false);
-    setThinkingMenuModelKey(null);
   }, [getEffectiveThinkingLevel, onThinkingLevelChange, modelSelectionScope, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
   useEffect(() => {
     if (isModelLocked) return;
@@ -3030,9 +2905,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const controlPopoutVerticalClass = 'bottom-[calc(100%+8px)]';
   const pillPopoutVerticalClass = isEmptyHome ? 'bottom-full mb-2' : 'bottom-[calc(100%+72px)] mb-0';
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle';
-  const thinkingMenuOption = allModelOptions.find(option => option.optionKey === thinkingMenuModelKey) || null;
-  const thinkingMenuOptions = getThinkingLevelOptions(thinkingMenuOption);
-  const thinkingMenuSelectedId = getEffectiveThinkingLevel(thinkingMenuOption);
   const contextUsageBreakdown = (contextUsage?.breakdownSource === 'serialized_payload' || contextUsage?.breakdown) && contextUsage?.breakdown
     ? normalizeContextUsageBreakdown(contextUsage.breakdown, contextUsage.usedTokens)
     : null;
@@ -4439,7 +4311,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </div>
               )}
 
-              {showComposerControls && !isAgentBuilder && (!chatMode || approvalRunActive) && <ComposerPermissionSelector key={activeComposerChatKey} chatId={activeChatId} onOpenSettingsTab={onOpenSettingsTab} />}
+              {showComposerControls && !isAgentBuilder && (!chatMode || approvalRunActive) && <ComposerPermissionSelector key={activeComposerChatKey} chatId={activeChatId} />}
 
               {/* The Agent Builder uses the same turn-scoped model selection as every
                   other agent chat. Keeping this control mounted lets a builder chat
@@ -4449,19 +4321,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   type="button"
                   disabled={isModelLocked}
                   onClick={() => {
-                    if (allModelOptions.length === 0) {
+                    if (modelOptions.length === 0) {
                       setShowModelMenu(false);
                       onOpenSettingsTab?.('api');
                       return;
                     }
-                    setShowModelMenu(prev => !prev);
-                    setModelSearch('');
+                    if (!showModelMenu) setModelPickerInstance(instance => instance + 1);
+                    setShowModelMenu(!showModelMenu);
                   }}
                   data-open={showModelMenu ? 'true' : undefined}
                   aria-expanded={showModelMenu}
                   aria-haspopup="dialog"
                   aria-label={isModelLocked ? 'Model selection is locked while the agent is running' : `Selected model: ${modelDisplayLabel}`}
-                  title={modelDisplayLabel}
                   className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] pl-2.5 pr-1' : 'mr-1 pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer disabled:cursor-not-allowed disabled:opacity-55 ${ showModelMenu ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
                 >
                   <div className="flex min-w-0 items-center gap-1.5"
@@ -4504,191 +4375,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   </span>
                 </button>
 
-                <AnimatePresence initial={false}>
-                {showModelMenu && (
-                  <AdaptiveMenu key="model-selector-menu" motionProps={{
-                    initial: { opacity: 0 },
-                    animate: { opacity: 1 },
-                    exit: { opacity: 0 },
-                    transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
-                  }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome}
-                    portalAnchorRef={modelSelectorRef}
-                    menuRef={modelMenuRef}
-                    className={`eterx-composer-popout eterx-model-menu-popout fixed flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.10] bg-[#202020] p-1.5 text-[#F4F1EA] shadow-none`}
-                    role="dialog"
-                    aria-label="Model and thinking settings"
-                  >
-                    <div className="eterx-model-menu-title">Model</div>
-                    {(
-                      <div className="eterx-model-search relative mb-1.5 shrink-0 px-0.5 pt-0.5">
-                        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/45" />
-                        <input
-                          autoFocus
-                          value={modelSearch}
-                          onChange={event => {
-                            setModelSearch(event.target.value);
-                            if (modelListRef.current) modelListRef.current.scrollTop = 0;
-                            setShowThinkingLevels(false);
-                            setThinkingMenuPosition(null);
-                          }}
-                          onKeyDown={event => {
-                            if (event.key === 'Escape') setShowModelMenu(false);
-                          }}
-                          onClick={event => event.stopPropagation()}
-                          aria-label="Search models"
-                          placeholder="Search models"
-                          className="h-10 w-full rounded-[12px] border border-white/[0.10] bg-[#171717] pl-9 pr-3 text-[12.5px] font-medium text-[#F4F1EA] outline-hidden placeholder:text-white/35 focus:border-white/[0.22] focus:bg-[#191919]"
-                        />
-                      </div>
-                    )}
-                    <div
-                      ref={modelListRef}
-                      data-menu-scroll-region
-                      className="eterx-model-menu-list eterx-scrollbar space-y-0.5"
-                      onScroll={() => {
-                        setShowThinkingLevels(false);
-                        setThinkingMenuPosition(null);
-                      }}
-                    >
-                      {groupModelsByProvider(allModelOptions.filter(option => {
-                        const query = modelSearch.trim().toLowerCase();
-                        return !query || `${option.label} ${MODEL_PROVIDER_LABEL[option.provider]} ${option.modelName}`.toLowerCase().includes(query);
-                      })).map(group => (
-                        <section key={group.provider} aria-label={(MODEL_PROVIDER_LABEL[group.provider] || group.provider)} className="eterx-model-provider-group">
-                          <div className="eterx-model-provider-heading flex items-center justify-between gap-2">
-                            {MODEL_PROVIDER_LABEL[group.provider] || group.provider}
-                            {group.provider === 'codex' && (
-                              <button type="button" className="text-[10px] normal-case tracking-normal hover:underline" onClick={() => {
-                                void getDesktopSubscription()?.openUsage().catch(() => showComposerNotice('Could not open ChatGPT usage', 'Try again from Settings → Subscription.'));
-                              }}>Manage usage ↗</button>
-                            )}
-                          </div>
-                          {group.models.map(option => {
-                            const selected = option.optionKey === selectedModel?.optionKey;
-                            const optionLabel = getModelOptionLabel(option);
-                            const optionThinkingOptions = getThinkingLevelOptions(option);
-                            const optionSelectedThinkingId = getEffectiveThinkingLevel(option);
-                            const optionThinkingLabel =
-                              optionThinkingOptions.find(item => item.id === optionSelectedThinkingId)?.label || null;
-                            const thinkingMenuOpen = thinkingMenuModelKey === option.optionKey && showThinkingLevels;
-                            return (
-                              <div
-                                key={option.optionKey}
-                                className="eterx-model-option-row relative w-full"
-                                data-thinking-open={thinkingMenuOpen ? 'true' : undefined}
-                                onMouseEnter={(event) => {
-                                  if (!optionThinkingOptions.length) return;
-                                  openThinkingMenuForRow(option.optionKey, event.currentTarget, optionThinkingOptions.length);
-                                }}
-                                onMouseLeave={handleThinkingMouseLeave}
-                                onFocus={(event) => {
-                                  if (!optionThinkingOptions.length) return;
-                                  openThinkingMenuForRow(option.optionKey, event.currentTarget, optionThinkingOptions.length);
-                                }}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => selectChatModelOption(option)}
-                                  className={`group flex h-full w-full items-center gap-2 rounded-[9px] border px-2 py-1 text-left transition-colors duration-150 ${ selected ? 'border-white/[0.08] bg-white/[0.10] text-white font-medium shadow-none' : 'border-transparent text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.10] font-normal' }`}
-                                  aria-pressed={selected}
-                                >
-                                  <ProviderIconAsset provider={option.provider} className="eterx-model-provider-icon size-[15px]" />
-                                  <span className="eterx-model-option-content flex min-w-0 flex-1 items-center">
-                                    <span className="eterx-model-option-name min-w-0 truncate text-[12.5px] font-semibold leading-4 tracking-normal">
-                                      {optionLabel}
-                                    </span>
-                                    {optionThinkingLabel && (
-                                      <span className="eterx-model-thinking-label shrink-0 truncate text-[11px] font-medium leading-4 text-white/48">
-                                        {optionThinkingLabel}
-                                      </span>
-                                    )}
-                                  </span>
-                                  {optionThinkingOptions.length > 0 && (
-                                    <span
-                                      role="button"
-                                      tabIndex={0}
-                                      className={`eterx-model-thinking-trigger flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-white/45 transition-colors duration-100 hover:text-white focus-visible:text-white focus-visible:outline-hidden ${ thinkingMenuOpen ? 'text-white' : '' }`}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        const row = (event.currentTarget as HTMLElement).closest('.eterx-model-option-row') as HTMLElement | null;
-                                        if (row) openThinkingMenuForRow(option.optionKey, row, optionThinkingOptions.length);
-                                      }}
-                                      onKeyDown={(event) => {
-                                        if (event.key !== 'Enter' && event.key !== ' ') return;
-                                        event.preventDefault();
-                                        event.stopPropagation();
-                                        const row = (event.currentTarget as HTMLElement).closest('.eterx-model-option-row') as HTMLElement | null;
-                                        if (row) openThinkingMenuForRow(option.optionKey, row, optionThinkingOptions.length);
-                                      }}
-                                      aria-label={`Choose thinking level for ${optionLabel}`}
-                                      aria-haspopup="menu"
-                                      aria-expanded={thinkingMenuOpen}
-                                    >
-                                      <ChevronRight className="h-3.5 w-3.5" strokeWidth={2.1} />
-                                    </span>
-                                  )}
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </section>
-                      ))}
-                      {allModelOptions.length > 0 && allModelOptions.filter(option => {
-                        const query = modelSearch.trim().toLowerCase();
-                        return !query || `${getModelOptionLabel(option)} ${MODEL_PROVIDER_LABEL[option.provider]} ${option.modelName}`.toLowerCase().includes(query);
-                      }).length === 0 && (
-                        <div className="px-2.5 py-4 text-center text-[11.5px] text-[#A3A19E]">
-                          No matching models
-                        </div>
-                      )}
-                      {allModelOptions.length === 0 && (
-                        <div className="px-2.5 py-4 text-center text-[11.5px] text-[#A3A19E]">
-                          Connect ChatGPT in Settings → Subscription or add a provider key in Settings → API.
-                        </div>
-                      )}
-                    </div>
-
-                  </AdaptiveMenu>
-                )}
-                </AnimatePresence>
+                {workspaceVisible && <AnimatePresence initial={false}>
+                  {showModelMenu && (
+                    <ChatModelPicker
+                      key={modelPickerInstance}
+                      anchorRef={modelSelectorRef}
+                      openBelow={isNewChatHome}
+                      models={modelOptions}
+                      selectedModel={selectedModel}
+                      providerLabels={MODEL_PROVIDER_LABEL}
+                      getThinkingOptions={getThinkingLevelOptions}
+                      getThinkingLevel={getEffectiveThinkingLevel}
+                      getFastMode={model => getModelFastMode(model.optionKey)}
+                      onSelectModel={selectChatModelOption}
+                      onSelectThinking={handleModelThinkingChange}
+                      onChangeFastMode={handleModelFastChange}
+                      onClose={closeModelPicker}
+                    />
+                  )}
+                </AnimatePresence>}
               </div>
-
-              {showModelMenu && showThinkingLevels && thinkingMenuOption && thinkingMenuOptions.length > 0 && thinkingMenuPosition && typeof window !== 'undefined' && createPortal(
-                <div
-                  ref={thinkingMenuPortalRef}
-                  className="eterx-model-thinking-popout eterx-composer-popout fixed z-[10000] overflow-hidden"
-                  style={{ top: thinkingMenuPosition.top, left: thinkingMenuPosition.left, width: thinkingMenuPosition.width, maxHeight: thinkingMenuPosition.maxHeight, overflowY: 'auto', zIndex: 2147483000 }}
-                  onMouseEnter={handleThinkingMouseEnter}
-                  onMouseLeave={handleThinkingMouseLeave}
-                  role="menu"
-                  aria-label={`Thinking level for ${getModelOptionLabel(thinkingMenuOption)}`}
-                >
-                  {thinkingMenuOptions.map(thinkingOption => {
-                    const thinkingSelected = thinkingOption.id === thinkingMenuSelectedId;
-                    return (
-                      <button
-                        key={thinkingOption.id}
-                        type="button"
-                        onClick={() => {
-                          handleModelThinkingChange(thinkingMenuOption, thinkingOption.id);
-                          setThinkingMenuModelKey(null);
-                          setThinkingMenuPosition(null);
-                          setShowThinkingLevels(false);
-                        }}
-                        className={`flex items-center gap-2 text-left transition-colors duration-100 ${ thinkingSelected ? 'bg-white/[0.10] text-white' : 'text-[#F4F1EA] hover:bg-white/[0.055]' }`}
-                        role="menuitemradio"
-                        aria-checked={thinkingSelected}
-                      >
-                        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
-                          {thinkingOption.label}
-                        </span>
-                        {thinkingSelected && <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={2.1} />}
-                      </button>
-                    );
-                  })}
-                </div>,
-                document.body,
-              )}
 
               {showVoiceControls && <DictationButton phase={dictationPhase} onClick={toggleSpeech} />}
 
@@ -4821,16 +4527,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         )}
       </div>
 
-      <AttachmentTextPreviewHost />
-      <ConnectorsModal
+      {workspaceVisible && <AttachmentTextPreviewHost />}
+      {workspaceVisible && <ConnectorsModal
         open={connectors.open}
         onClose={() => connectors.setOpen(false)}
         connectedApps={connectors.connectedApps}
         onConnect={connectors.handleConnect}
         onDisconnect={connectors.handleDisconnect}
-      />
+      />}
       {/* Lightbox Preview Modal */}
-      {composerNotice && typeof window !== 'undefined' && createPortal(
+      {workspaceVisible && composerNotice && typeof window !== 'undefined' && createPortal(
         <div className={`pointer-events-none inset-x-0 top-3 z-[11000] flex justify-center px-4 ${composerNoticeTarget ? 'absolute' : 'fixed'}`}>
         <motion.div
           initial={{ opacity: 0, y: -12, scale: 0.97 }}
@@ -4860,7 +4566,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         composerNoticeTarget || document.body,
       )}
 
-      {previewImage && typeof window !== 'undefined' && createPortal(
+      {workspaceVisible && previewImage && typeof window !== 'undefined' && createPortal(
         <div
           onClick={() => {
             setPreviewImage(null);
@@ -5109,7 +4815,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         document.body
       )}
 
-      {previewVideo && typeof window !== 'undefined' && createPortal(
+      {workspaceVisible && previewVideo && typeof window !== 'undefined' && createPortal(
         <div
           onClick={() => setPreviewVideo(null)}
           className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 p-5 backdrop-blur-md"
@@ -5126,7 +4832,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       )}
 
       {/* Global Document Preview Modal */}
-      {previewDocPath && typeof window !== 'undefined' && createPortal(
+      {workspaceVisible && previewDocPath && typeof window !== 'undefined' && createPortal(
         <div
           onClick={() => {
             setPreviewDocPath(null);

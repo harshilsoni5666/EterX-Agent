@@ -8,10 +8,11 @@ import { openChatImage } from './image-gallery';
 import { ChatMediaContext, ChatMediaOwnerContext, ChatMediaItem, findChatMedia } from './chat-media';
 import { PASTED_TEXT_MIME } from '../../lib/pasted-text';
 import { openLocalFilePath } from './local-file-link';
-import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
+import { ThinkingProcess, ProfessionalThought, ShowThinkingInContainerContext } from '../chat/thought-sequence';
 import { getTextPlaybackId, TextPlaybackScope } from './use-paced-text';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
+import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { Shimmer } from '../ui/shimmer';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
@@ -1804,6 +1805,7 @@ const EMPTY_LIVE_SEQUENCE_LOGS: any[] = [];
 const ThoughtSequence = ({
   logs, liveLogs = EMPTY_LIVE_SEQUENCE_LOGS, isThinking, isLast, hasAnswer, showLiveIndicator = false, showStartupIndicator = false, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes, isTurnNavigationWorkNote = false
 }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number>, isTurnNavigationWorkNote?: boolean }) => {
+  const showThinkingInContainer = React.useContext(ShowThinkingInContainerContext);
   // The trace stream is more precise than the briefly stale global running
   // flag. Scan the whole turn: terminal events are often followed by late
   // cleanup traces, and a final answer itself conclusively ends work timing.
@@ -1868,8 +1870,9 @@ const ThoughtSequence = ({
   const isOpen = open;
   const hasRealActions = stepCount > 0 && turnLogs.some(isMainStreamActionLog);
   const showTimeline = isOpen || !hasRealActions;
-  const hasNarrativeWork = hasVisibleNarrative(turnLogs);
-  const hasRenderableTimelineWork = turnLogs.some(log =>
+  const visibleWorkLogs = showThinkingInContainer ? turnLogs : turnLogs.filter(log => log?.type !== 'thought_stream');
+  const hasNarrativeWork = hasVisibleNarrative(visibleWorkLogs);
+  const hasRenderableTimelineWork = visibleWorkLogs.some(log =>
     isInternalStatusThought(log) || (
       RENDERABLE_TIMELINE_TYPES.has(String(log?.type || '')) &&
       (log?.type !== 'thought_stream' || shouldRenderThoughtStream(log))
@@ -1879,9 +1882,7 @@ const ThoughtSequence = ({
   const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, turnLogs, turnEndedAt, turnStartedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
-  // The container disappears only when the turn has never produced anything
-  // renderable. Once a Thought, note, status, or action was shown, settling an
-  // answer must not erase it from the transcript.
+  // Keep the sequence after the turn settles if it still has visible work.
   if (!isLiveThinking && !hasRealActions && !hasNarrativeWork && !hasRenderableTimelineWork) return null;
 
   return (
@@ -1933,6 +1934,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'importedFrom', 'importPresentationVersion', 'importRevision', 'historical',
   'timestamp', 'startTime', 'endTime', 'streamStartedAt', 'isStreaming', 'isLiveTyping',
   'wasStreaming', 'isLive', 'streamState', 'final', 'done', 'answerId', 'spokenText', 'noteId', 'thoughtId',
+  'thinkingTitle', 'reasoningTitle', 'heading', 'statusText', 'label',
   'subAgent', 'subAgentId', 'subAgentChatId', 'parentAgentId', 'parentAgentName', 'depth', 'isSubAgent', 'agentRole', 'terminalTask', 'agentName', 'status', 'state', 'finishReason', 'finish_reason', 'progress', 'error',
   'question', 'mode', 'options', 'questions', 'context', 'defaultValue',
   'urgent', 'responseKey', 'answeredWith', 'answeredAt', 'attachments',
@@ -2716,25 +2718,29 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
   const previewRestoreFocusRef = useRef<HTMLElement | null>(null);
   const previewTitleId = React.useId();
   const [showTokenCount, setShowTokenCount] = useState(false);
+  const [showThinkingInContainer, setShowThinkingInContainer] = useState(true);
 
-  useEffect(() => {
-    const refreshTokenCountPreference = () => {
+  // Apply a loaded preference before paint when the feed mounts.
+  React.useLayoutEffect(() => {
+    const refreshChatDisplayPreferences = () => {
       try {
         const saved = JSON.parse(appStorage.getItem('eterx_settings') || '{}');
         setShowTokenCount(saved?.showTokenCount === true);
+        setShowThinkingInContainer(saved?.showThinkingInContainer !== false);
       } catch {
         setShowTokenCount(false);
+        setShowThinkingInContainer(true);
       }
     };
-    refreshTokenCountPreference();
-    void appStorageReady.then(refreshTokenCountPreference);
-    window.addEventListener('eterx-settings-updated', refreshTokenCountPreference);
-    window.addEventListener('eterx-folder-storage-updated', refreshTokenCountPreference);
-    window.addEventListener(FOLDER_STORAGE_READY_EVENT, refreshTokenCountPreference);
+    refreshChatDisplayPreferences();
+    void appStorageReady.then(refreshChatDisplayPreferences);
+    window.addEventListener('eterx-settings-updated', refreshChatDisplayPreferences);
+    window.addEventListener('eterx-folder-storage-updated', refreshChatDisplayPreferences);
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, refreshChatDisplayPreferences);
     return () => {
-      window.removeEventListener('eterx-settings-updated', refreshTokenCountPreference);
-      window.removeEventListener('eterx-folder-storage-updated', refreshTokenCountPreference);
-      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, refreshTokenCountPreference);
+      window.removeEventListener('eterx-settings-updated', refreshChatDisplayPreferences);
+      window.removeEventListener('eterx-folder-storage-updated', refreshChatDisplayPreferences);
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, refreshChatDisplayPreferences);
     };
   }, []);
 
@@ -3027,6 +3033,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
   const scrollRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [previewUserMessage, setPreviewUserMessage] = useState<{ text: string; index: number } | null>(null);
+  const workspaceVisible = useWorkspacePaneVisible();
   const [hoveredTurn, setHoveredTurn] = useState<{ turn: any; rect: DOMRect } | null>(null);
   const hoveredTurnHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showHoveredTurn = useCallback((next: { turn: any; rect: DOMRect }) => {
@@ -3137,9 +3144,13 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
     }, 90);
   }, [conversationIdentity, scheduleAutoFollow]);
 
-  useEffect(() => () => {
-    if (hoveredTurnHideTimeoutRef.current !== null) clearTimeout(hoveredTurnHideTimeoutRef.current);
-  }, []);
+  useEffect(() => {
+    if (!workspaceVisible) setHoveredTurn(null);
+    return () => {
+      if (hoveredTurnHideTimeoutRef.current !== null) clearTimeout(hoveredTurnHideTimeoutRef.current);
+      hoveredTurnHideTimeoutRef.current = null;
+    };
+  }, [workspaceVisible]);
 
   useEffect(() => {
     if (!previewUserMessage) return;
@@ -3358,10 +3369,10 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
     : 90;
 
   return (
-    <>
+    <ShowThinkingInContainerContext.Provider value={showThinkingInContainer}>
       <style dangerouslySetInnerHTML={{ __html: `${ liveMotionStyles }\n${ chatFeedSurfaceStyles }` }} />
       <div className="relative flex-1 min-h-0 w-full flex flex-col">
-        {hoveredTurn && typeof document !== 'undefined' && createPortal(
+        {workspaceVisible && hoveredTurn && typeof document !== 'undefined' && createPortal(
           <div
             role="tooltip"
             className="eterx-chat-turn-preview pointer-events-none fixed z-[10000] -translate-y-1/2"
@@ -3654,7 +3665,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
           </motion.div>
         )}
       </AnimatePresence>
-    </>
+    </ShowThinkingInContainerContext.Provider>
   );
 });
 

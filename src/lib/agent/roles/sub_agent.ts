@@ -17,6 +17,7 @@ import { rebaseContextCompactionWindow } from '../model-context-window';
 import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../swarm-coordinator';
 import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from '../sub-agent-model-guidance';
 import { PREFERRED_SUB_AGENT_NAME_LENGTH, SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
+import { withTelemetryScope } from '../../telemetry/runtime';
 
 type SubAgentRuntimeState = {
   cancelFlags: Map<string, boolean>;
@@ -123,6 +124,7 @@ export type SubAgentTaskSpec = SwarmContract & {
   mode?: MainAgentMode;
   provider?: MainAgentProvider;
   model?: string;
+  modelWireCapabilities?: string[];
   thinkingLevel?: MainAgentThinkingLevel;
 };
 type SubAgentWorkerOptions = Pick<SubAgentTaskSpec, 'mode' | 'provider' | 'model' | 'thinkingLevel' | 'resources'>;
@@ -757,6 +759,7 @@ interface SubAgentInstance {
     requestedModelSelection?: string;
     requestedModelProvider?: string;
     requestedModelName?: string;
+    requestedModelWireCapabilities?: string[];
     requestedMode?: MainAgentMode;
     requestedThinkingLevel?: MainAgentThinkingLevel;
   }>;
@@ -1349,6 +1352,7 @@ export class SubAgentSpawner {
         }
         subAgentContext.selectedModelProvider = modelOverride.provider;
         subAgentContext.selectedModelName = modelOverride.model;
+        if (modelOverride.modelWireCapabilities) subAgentContext.modelWireCapabilities = modelOverride.modelWireCapabilities;
         (subAgentContext as any).contextCompaction = rebaseContextCompactionWindow(
           (subAgentContext as any).contextCompaction, modelOverride.provider, modelOverride.model,
         );
@@ -1444,7 +1448,7 @@ export class SubAgentSpawner {
         const subAgentClient = createIsolatedClient(lease?.apiKey || '', modelSelection.mode, (context as any).runtimeSettings);
         instance.setLeasedKey = apiKey => subAgentClient.setLeasedKey(apiKey);
 
-        const result = await subAgentClient.executeMessageLoop(
+        const result = await withTelemetryScope({ role: 'child', effort: subAgentContext.selectedThinkingLevel }, () => subAgentClient.executeMessageLoop(
           subAgentContext,
           deepBrief,
           [],
@@ -1511,7 +1515,7 @@ export class SubAgentSpawner {
               });
             }
           }
-        );
+        ));
 
         const unfinishedChildren = swarmCoordinator.descendants(agentId).filter(child => !swarmCoordinator.isTerminal(child.id));
         if (unfinishedChildren.length && !abortController.signal.aborted) {
@@ -2187,7 +2191,11 @@ export class SubAgentSpawner {
     const requestedProvider = String(nextMessage.requestedModelProvider || '').trim() as MainAgentProvider;
     const requestedModel = String(nextMessage.requestedModelName || '').trim();
     const modelOverride: Omit<SubAgentTaskSpec, 'task' | 'name'> = {
-      ...(requestedProvider && requestedModel ? { provider: requestedProvider, model: requestedModel } : {}),
+      ...(requestedProvider && requestedModel ? {
+        provider: requestedProvider,
+        model: requestedModel,
+        modelWireCapabilities: nextMessage.requestedModelWireCapabilities,
+      } : {}),
       ...(nextMessage.requestedMode ? { mode: nextMessage.requestedMode } : {}),
       ...(nextMessage.requestedThinkingLevel ? { thinkingLevel: nextMessage.requestedThinkingLevel } : {}),
     };
@@ -2330,6 +2338,9 @@ export class SubAgentSpawner {
       }
       (matchingInstance.originContext as any).selectedModelProvider = requestedProvider;
       (matchingInstance.originContext as any).selectedModelName = requestedModel;
+      if (message.requestedModelWireCapabilities) {
+        (matchingInstance.originContext as any).modelWireCapabilities = message.requestedModelWireCapabilities;
+      }
       (matchingInstance.originContext as any).strictModelSelection = true;
     }
     if (message.requestedMode) {

@@ -15,6 +15,7 @@ import { MicrophoneSettings } from './microphone-settings';
 import { SettingsProfile } from './settings-profile';
 import { SubscriptionSettings } from './subscription-settings';
 import { codexCatalogPending, codexModelIsAvailable, getDesktopSubscription } from '../../lib/chatgpt-subscription-client';
+import { MODEL_FAST_PREFERENCES_KEY } from '../../lib/model-fast-preferences';
 import { TokenUsageRowsSkeleton } from './settings-usage-skeleton';
 import { ImportSettings } from './import-settings';
 import { SettingsSearch, type SettingsSearchTabInfo } from './settings-search';
@@ -359,6 +360,7 @@ export interface AppSettings {
   selfImprovementEnabled: boolean;
   requireCtrlEnter: boolean;
   followUpBehavior: 'queue' | 'steer';
+  showThinkingInContainer: boolean;
   codeReviewMode: 'inline' | 'detached';
   defaultProjectlessChat: boolean;
   completionNotifications: 'always' | 'important' | 'never';
@@ -441,6 +443,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   selfImprovementEnabled: true,
   requireCtrlEnter: false,
   followUpBehavior: 'steer',
+  showThinkingInContainer: true,
   codeReviewMode: 'inline',
   defaultProjectlessChat: false,
   completionNotifications: 'always',
@@ -540,6 +543,7 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
   next.autoOpenWorkPanelOnSubAgentSpawn = stored.autoOpenWorkPanelOnSubAgentSpawn !== false;
   next.alwaysFullAccess = stored.alwaysFullAccess === true;
   next.showTokenCount = stored.showTokenCount !== false;
+  next.showThinkingInContainer = stored.showThinkingInContainer !== false;
   next.contextWindowSizeSelection = resolveSavedContextBudget(stored);
   next.contextWindowSizeSelectionTouched = next.contextWindowSizeSelection !== 'model_max';
   return next;
@@ -1009,15 +1013,15 @@ const SettingsStackRow: React.FC<{
   tall?: boolean;
   info?: string;
 }> = ({ title, searchTarget = title, description, children, tall, info }) => (
-  <div data-settings-search-target={searchTarget} tabIndex={-1} className={`eterx-settings-stack-row flex ${tall ? 'flex-col items-start gap-3' : 'items-center justify-between gap-6'} border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-4' : 'py-3.5'}`}>
-    <div className={`min-w-0 ${tall ? 'w-full' : 'flex-1'}`}>
+  <div data-settings-search-target={searchTarget} tabIndex={-1} className={`eterx-settings-stack-row flex ${tall ? 'flex-col items-start gap-3' : 'flex-wrap items-center justify-between gap-x-6 gap-y-3'} border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-4' : 'py-3.5'}`}>
+    <div className={`min-w-0 ${tall ? 'w-full' : 'flex-[1_1_8rem]'}`}>
       <div className="eterx-setting-label flex items-center gap-2 text-[13px] font-medium leading-tight text-[#F1F1F1]">
         <span>{title}</span>
         {info && <InfoHint text={info} />}
       </div>
-      {description && <div className="eterx-setting-description mt-1 max-w-full text-[12px] leading-relaxed text-[#A7A7A7]">{description}</div>}
+      {description && <div className="eterx-setting-description mt-1 max-w-full text-[12px] leading-relaxed text-[#A7A7A7] [overflow-wrap:anywhere]">{description}</div>}
     </div>
-    {children && <div className={`flex ${tall ? 'w-full' : 'shrink-0'} items-center justify-end gap-2`}>{children}</div>}
+    {children && <div className={`flex min-w-0 max-w-full flex-wrap ${tall ? 'w-full' : 'shrink-0'} items-center justify-end gap-2 [&>*]:max-w-full`}>{children}</div>}
   </div>
 );
 
@@ -1026,9 +1030,10 @@ const SelectControl: React.FC<{
   onChange: (value: string) => void;
   options: Array<{ value: string; label: string }>;
   width?: string;
-}> = ({ value, onChange, options, width = 'w-[240px]' }) => (
+  openUp?: boolean;
+}> = ({ value, onChange, options, width = 'w-[240px]', openUp = false }) => (
   <div className={`relative ${width} shrink-0`}>
-    <ModernSelect value={value} onChange={onChange} options={options} />
+    <ModernSelect value={value} onChange={onChange} options={options} openUp={openUp} />
   </div>
 );
 
@@ -1341,9 +1346,9 @@ const ApiKeyPoolEditor: React.FC<{
   const hasScroll = rows.length > 3;
 
   return (
-    <div className="w-[520px] max-w-[52vw] space-y-3">
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#171717] px-3 py-2">
-        <div className="min-w-0">
+    <div className="w-full max-w-[520px] space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#171717] px-3 py-2">
+        <div className="min-w-0 flex-[1_1_10rem]">
           <div className="text-[12px] font-semibold text-[#F1F1F1]">
             <span className="truncate">{providerLabel} pool</span>
           </div>
@@ -1351,7 +1356,7 @@ const ApiKeyPoolEditor: React.FC<{
             Drag rows to set priority. Valid keys sync to the local gateway in real time.
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
           {scopeControl}
           <span className="rounded-full border border-white/[0.08] bg-white/[0.045] px-2 py-1 text-[11px] font-medium text-[#D8D8D8]">
             {acceptedCount || configuredCount} active
@@ -1367,7 +1372,7 @@ const ApiKeyPoolEditor: React.FC<{
         </div>
       </div>
 
-      <div className={`${hasScroll ? 'max-h-[360px] overflow-y-auto pr-1 eterx-scrollbar' : ''} space-y-2`}>
+      <div className={`${hasScroll ? 'max-h-[360px] overflow-x-hidden overflow-y-auto pr-1 eterx-scrollbar' : ''} space-y-2`}>
         {rows.map((row, index) => {
           const keyValue = row.trim();
           const duplicate = Boolean(keyValue) && cleanRows.findIndex(key => key === keyValue) !== index;
@@ -1418,13 +1423,13 @@ const ApiKeyPoolEditor: React.FC<{
                   rowStatus === 'Ready'
                     ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
                     : rowStatus === 'Check' || rowStatus === 'Duplicate'
-                      ? 'border-amber-500/20 bg-amber-500/10 text-amber-300'
+                      ? 'border-[var(--border)] bg-[var(--secondary)] text-[var(--foreground)]'
                       : 'border-white/[0.08] bg-white/[0.035] text-[#777]'
                 }`}>
                   {sentenceCaseLabel(rowStatus)}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <input
                   value={row}
                   onChange={(event) => updateRow(index, event.target.value)}
@@ -1433,7 +1438,7 @@ const ApiKeyPoolEditor: React.FC<{
                   type={isVisible ? 'text' : 'password'}
                   spellCheck={false}
                   placeholder={index === 0 ? 'Paste provider API key' : 'Paste another key'}
-                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                  className="h-9 min-w-0 flex-[1_1_8rem] rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                 />
                 {showTest && <button
                   type="button"
@@ -1669,6 +1674,59 @@ const UserManualOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   );
 };
 
+function observeSettingsScrollEdges(viewport: HTMLElement | null) {
+  const frame = viewport?.parentElement;
+  if (!viewport || !frame) return;
+
+  let scrollsVertically = false;
+  let scrollsHorizontally = false;
+  const updateEdges = () => {
+    const { clientHeight, clientWidth, scrollHeight, scrollWidth, scrollTop, scrollLeft } = viewport;
+    const remainingY = scrollHeight - clientHeight - scrollTop;
+    const remainingX = scrollWidth - clientWidth - scrollLeft;
+    frame.toggleAttribute('data-fade-top', scrollsVertically && scrollTop > 1);
+    frame.toggleAttribute('data-fade-bottom', scrollsVertically && remainingY > 1);
+    frame.toggleAttribute('data-fade-left', scrollsHorizontally && scrollLeft > 1);
+    frame.toggleAttribute('data-fade-right', scrollsHorizontally && remainingX > 1);
+  };
+  const updateLayout = () => {
+    const { overflowX, overflowY } = getComputedStyle(viewport);
+    scrollsVertically = overflowY === 'auto' || overflowY === 'scroll';
+    scrollsHorizontally = overflowX === 'auto' || overflowX === 'scroll';
+    frame.style.setProperty('--settings-scrollbar-width', `${viewport.offsetWidth - viewport.clientWidth}px`);
+    frame.style.setProperty('--settings-scrollbar-height', `${viewport.offsetHeight - viewport.clientHeight}px`);
+    updateEdges();
+  };
+
+  updateLayout();
+  viewport.addEventListener('scroll', updateEdges, { passive: true });
+  const observer = new ResizeObserver(updateLayout);
+  observer.observe(viewport);
+  if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
+  return () => {
+    observer.disconnect();
+    viewport.removeEventListener('scroll', updateEdges);
+  };
+}
+
+function SettingsScrollList({ children, className, frameClassName = '', enabled = true }: {
+  children: React.ReactNode;
+  className: string;
+  frameClassName?: string;
+  enabled?: boolean;
+}) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => observeSettingsScrollEdges(viewportRef.current), [enabled]);
+
+  return (
+    <div className={`eterx-settings-scroll-frame relative flex min-h-0 ${frameClassName}`}>
+      <div ref={viewportRef} className={`min-w-0 flex-1 ${enabled ? 'overflow-y-auto eterx-scrollbar' : 'overflow-hidden'} ${className}`}>
+        <div className="flow-root">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 const SETTINGS_DROPDOWN_OPEN_EVENT = 'eterx-settings-dropdown-open';
 
 const ModernSelect: React.FC<{
@@ -1677,7 +1735,8 @@ const ModernSelect: React.FC<{
   options: Array<{ value: string; label: string; tag?: string; description?: string }>;
   placeholder?: string;
   className?: string;
-}> = ({ value, onChange, options, placeholder = 'Select', className = '' }) => {
+  openUp?: boolean;
+}> = ({ value, onChange, options, placeholder = 'Select', className = '', openUp = false }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1719,7 +1778,7 @@ const ModernSelect: React.FC<{
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
       </button>
       {open && (
-        <div className="eterx-settings-select-menu absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[240px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1 shadow-none text-neutral-900 dark:text-neutral-100">
+        <div className={`eterx-settings-select-menu absolute right-0 z-50 ${openUp ? 'bottom-full mb-2' : 'mt-2'} flex max-h-72 w-full flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1 shadow-none text-neutral-900 dark:text-neutral-100`}>
           {searchable && (
             <div className="relative mb-1 shrink-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
@@ -3769,30 +3828,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   }, [persistDesktopRuntimeSettings]);
 
   useLayoutEffect(() => {
-    const nav = settingsNavRef.current;
-    const frame = nav?.parentElement;
-    if (!isOpen || !nav || !frame) return;
-
-    const updateFades = () => {
-      const { clientHeight, scrollHeight, scrollTop } = nav;
-      const maxScrollTop = scrollHeight - clientHeight;
-      frame.toggleAttribute('data-fade-top', maxScrollTop > 1 && scrollTop > 1);
-      frame.toggleAttribute('data-fade-bottom', maxScrollTop - scrollTop > 1);
-    };
-    const updateLayout = () => {
-      frame.style.setProperty('--settings-nav-scrollbar-width', `${nav.offsetWidth - nav.clientWidth}px`);
-      updateFades();
-    };
-
-    updateLayout();
-    nav.addEventListener('scroll', updateFades, { passive: true });
-    const observer = new ResizeObserver(updateLayout);
-    observer.observe(nav);
-    return () => {
-      observer.disconnect();
-      nav.removeEventListener('scroll', updateFades);
-    };
+    if (isOpen) return observeSettingsScrollEdges(settingsNavRef.current);
   }, [isOpen]);
+
+  useLayoutEffect(() => {
+    if (isOpen) return observeSettingsScrollEdges(settingsBodyRef.current);
+  }, [isOpen, activeTab]);
 
   useLayoutEffect(() => {
     if (!isOpen || !searchDestination || searchDestination.tab !== activeTab || manualOpen) return;
@@ -3829,7 +3870,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   // Close on escape
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.isComposing && !e.defaultPrevented && !document.querySelector('[data-import-dialog]')) handleClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.isComposing && !e.defaultPrevented
+        && !document.querySelector('[data-import-dialog], [data-subscription-dialog]')) handleClose();
+    };
     if (isOpen) window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen, handleClose]);
@@ -3846,7 +3890,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     });
     const handleTab = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') return;
-      if (document.querySelector('[data-import-dialog]')) return;
+      if (document.querySelector('[data-import-dialog], [data-subscription-dialog]')) return;
       const focusable = Array.from(settingsDialogRef.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
       ) || []).filter(element => element.offsetParent !== null);
@@ -4400,7 +4444,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                     <span className="text-[13px] font-medium leading-none">Back to app</span>
                   </button>
                 </div>
-                <div className="eterx-settings-nav-frame relative flex min-h-0 sm:flex-1">
+                <div className="eterx-settings-scroll-frame eterx-settings-nav-frame relative flex min-h-0 sm:flex-1">
                   <nav ref={settingsNavRef} className="eterx-scrollbar flex w-full min-w-0 gap-1 overflow-x-auto px-2 pb-2 pt-1.5 sm:block sm:space-y-1 sm:overflow-y-auto sm:overflow-x-hidden sm:pt-2">
                     {SETTINGS_TABS.map(tab => (
                       <button
@@ -4432,7 +4476,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                 <SettingsSearch tabs={SETTINGS_TABS} activeTab={activeTab} onSelect={openSearchResult} />
 
                 {/* Scrollable Body */}
-                <div ref={settingsBodyRef} className={`${searchStyles.body} min-h-0 flex-1 eterx-scrollbar px-6 ${activeTab === 'tokens' ? 'overflow-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
+                <div className="eterx-settings-scroll-frame relative flex min-h-0 flex-1">
+                  <div ref={settingsBodyRef} className={`${searchStyles.body} min-h-0 min-w-0 flex-1 overflow-x-hidden eterx-scrollbar px-4 sm:px-6 ${activeTab === 'tokens' ? 'overflow-y-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
                   <div className={`mx-auto w-full ${manualOpen || activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : activeTab === 'agents' ? 'max-w-[860px]' : 'max-w-[560px]'} pb-8`}>
                       <div className="mb-6 flex items-center justify-between gap-4">
                         <h3 data-settings-search-target={SETTINGS_TAB_HEADING} tabIndex={-1} className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">
@@ -4624,6 +4669,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 ]}
                               />
                             </SettingsStackRow>
+                            <SettingsStackRow title="Show thinking in container" description="Display a separate expandable card for thinking details in chat.">
+                              <Toggle label="Show thinking in container" enabled={settings.showThinkingInContainer} onChange={value => updateSetting('showThinkingInContainer', value)} />
+                            </SettingsStackRow>
                             <SettingsStackRow title="Code review" description="Start review in the current chat when possible or launch a separate review chat.">
                               <SegmentedControl
                                 value={settings.codeReviewMode}
@@ -4669,6 +4717,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               <SelectControl
                                 value={settings.completionNotifications}
                                 onChange={(value) => updateSetting('completionNotifications', value as AppSettings['completionNotifications'])}
+                                openUp
                                 options={[
                                   { value: 'always', label: 'Always' },
                                   { value: 'important', label: 'Important only' },
@@ -4882,7 +4931,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               const loading = tokenUsageStatus.tokens === 'loading';
                               const loadFailed = tokenUsageStatus.tokens === 'error';
                               const selected = tokenChats.find(chat => chat.id === selectedTokenChatId) || tokenChats[0];
-                              const listClassName = `min-h-0 flex-1 pr-1 ${loading ? 'overflow-hidden' : 'overflow-y-auto eterx-scrollbar'}`;
                               const hoverChat = (
                                 event: React.MouseEvent,
                                 value: number,
@@ -4908,9 +4956,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               return <>
                               <span className="sr-only" role="status">{loading ? 'Loading token usage…' : ''}</span>
                               <div aria-busy={loading} className="mt-4 flex h-[calc(100vh-230px)] min-h-[340px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
-                                <div data-settings-search-target="chat-token-usage" tabIndex={-1} className="flex min-h-0 flex-1 flex-col border-b border-white/[0.08] p-2">
+                                <div data-settings-search-target="chat-token-usage" tabIndex={-1} className="eterx-settings-token-list flex min-h-0 flex-1 flex-col border-b border-white/[0.08] p-2">
                                   <div className="px-3 py-2 text-[11px] font-medium tracking-[0.02em] text-[#777]">All chats</div>
-                                  <div className={listClassName}>
+                                  <SettingsScrollList className="pr-1" frameClassName="flex-1" enabled={!loading}>
                                     {loading ? <TokenUsageRowsSkeleton showCounts={settings.showTokenCount} />
                                       : loadFailed ? <div role="status" className="px-3 py-8 text-center text-[13px] text-[#777]">Unable to load token usage. Retrying automatically…</div>
                                       : tokenChats.length > 0 ? tokenChats.map(chat => (
@@ -4919,11 +4967,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                         {settings.showTokenCount && <span className="shrink-0 inline-flex items-center gap-2 text-[11px] text-[#888]" title="Provider-reported input and output tokens"><span>Input {formatTokenMetric(chat.promptTokens)}</span><span className="text-[#555]" aria-hidden="true">|</span><span>Output {formatTokenMetric(chat.outputTokens)}</span></span>}
                                       </button>
                                     )) : <div className="px-3 py-8 text-center text-[13px] text-[#777]">No saved chats yet.</div>}
-                                  </div>
+                                  </SettingsScrollList>
                                 </div>
-                                <div data-settings-search-target="action-token-usage" tabIndex={-1} className="flex min-h-0 flex-1 flex-col p-2">
+                                <div data-settings-search-target="action-token-usage" tabIndex={-1} className="eterx-settings-token-list flex min-h-0 flex-1 flex-col p-2">
                                   <div className="flex min-h-[34px] items-center justify-between px-3 py-2"><span className="text-[11px] font-medium tracking-[0.02em] text-[#777]">Action usage</span>{!loading && !loadFailed && <span className="max-w-[55%] truncate text-[12px] text-[#888]">{selected?.title || 'Choose a chat'}</span>}</div>
-                                  <div className={listClassName}>
+                                  <SettingsScrollList className="pr-1" frameClassName="flex-1" enabled={!loading}>
                                     {loading ? <TokenUsageRowsSkeleton actions showCounts={settings.showTokenCount} />
                                       : loadFailed ? null
                                       : selected?.actions?.length ? selected.actions.slice().reverse().map(action => (
@@ -4932,7 +4980,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                         {settings.showTokenCount && <span className="shrink-0 inline-flex items-center gap-2 text-[11px] text-[#888]" title="Provider-reported input and output tokens"><span>Input {formatTokenMetric(action.promptTokens)}</span><span className="text-[#555]" aria-hidden="true">|</span><span>Output {formatTokenMetric(action.outputTokens)}</span></span>}
                                       </button>
                                     )) : <div className="px-3 py-8 text-center text-[13px] text-[#777]">No recorded actions for this chat.</div>}
-                                  </div>
+                                  </SettingsScrollList>
                                 </div>
                               </div>
                               {!loading && !loadFailed && hoveredToken?.model && <div role="tooltip" className="pointer-events-none fixed z-[10000] w-max max-w-[240px] rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-[12px] text-[var(--foreground)]" style={{ left: Math.max(8, Math.min(hoveredToken.x + 10, window.innerWidth - 256)), top: Math.max(8, hoveredToken.y - 180) }}>
@@ -5135,7 +5183,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     Add a model ID or choose one from provider discovery to make it available in chat.
                                   </div>
                                 ) : (
-                                  <div className="max-h-[280px] overflow-y-auto pr-1 eterx-scrollbar">
+                                  <SettingsScrollList className="max-h-[280px] pr-1">
                                     {groupModelsByProvider(modelEntries).map(group => (
                                       <section key={group.provider} aria-label={(PROVIDER_LABEL[group.provider] || group.provider)}>
                                         <div className="px-2 pb-1 pt-3 text-[11px] font-semibold text-[#8F8F8F]">{(PROVIDER_LABEL[group.provider] || group.provider)}</div>
@@ -5171,7 +5219,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                         })}
                                       </section>
                                     ))}
-                                  </div>
+                                  </SettingsScrollList>
                                 )}
                               </div>
                             </SettingsStackRow>
@@ -5369,7 +5417,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   value={settings.liveConvoModel === 'auto' ? '' : settings.liveConvoModel || ''}
                                   onChange={event => updateSetting('liveConvoModel', event.target.value.trim() || 'auto')}
                                   placeholder="Provider model ID"
-                                  className="h-9 w-[340px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 font-mono text-[12px] text-[#F1F1F1] outline-hidden focus:border-white/[0.20]"
+                                  className="h-9 w-[340px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[13px] text-[#F1F1F1] outline-hidden focus:border-white/[0.20]"
                                 />
                               </SettingsStackRow>
                             )}
@@ -5398,7 +5446,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   value={settings.liveConvoAgentId || ''}
                                   onChange={(event) => updateSetting('liveConvoAgentId', event.target.value.trim())}
                                   placeholder="agent_…"
-                                  className="h-9 w-[340px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 font-mono text-[12px] text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                  className="h-9 w-[340px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[13px] text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                                 />
                               </SettingsStackRow>
                             )}
@@ -5406,16 +5454,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow
                               title="Provider catalog status"
                               description="Live model and voice catalogs are refreshed whenever the provider, model, or key changes."
+                              tall
                             >
-                              <div className={`flex min-w-[340px] items-center justify-end gap-2 text-[12px] ${
-                                liveCatalogStatus === 'ready'
-                                  ? 'text-emerald-300'
-                                  : liveCatalogStatus === 'error'
-                                    ? 'text-amber-300'
-                                    : 'text-[#A5A5A5]'
-                              }`}>
-                                {liveCatalogStatus === 'loading' && <Spinner className="h-3.5 w-3.5" />}
-                                <span>{liveCatalogMessage}</span>
+                              <div className="flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-[var(--border)] bg-[#171717] px-3 py-2">
+                                <div role="status" className="flex min-w-0 flex-[1_1_12rem] items-start gap-2 text-[12px] leading-relaxed text-[var(--foreground)]">
+                                  {liveCatalogStatus === 'loading' && <Spinner className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+                                  <span className="min-w-0 [overflow-wrap:anywhere]">{liveCatalogMessage}</span>
+                                </div>
                                 <SoftButton onClick={() => setLiveCatalogRefresh(value => value + 1)}>Refresh</SoftButton>
                               </div>
                             </SettingsStackRow>
@@ -5438,7 +5483,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               title="Audio Modalities"
                               description="Control live microphone input capture and speaker output."
                             >
-                              <div className="flex items-center gap-6">
+                              <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
                                 <label data-settings-search-target="mic-input" tabIndex={-1} className="flex items-center gap-2 text-[13px] text-[#E0E0E0] cursor-pointer">
                                   <Toggle
                                     enabled={settings.liveConvoAudioInput ?? true}
@@ -5468,7 +5513,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             value={settings.liveConvoSystemInstruction || ''}
                             onChange={(e) => updateSetting('liveConvoSystemInstruction', e.target.value)}
                             placeholder="e.g. You are a fast, concise live voice coding assistant. Speak directly, avoid long intros, and answer code questions immediately."
-                            className="min-h-[120px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
+                            className="min-h-[120px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 text-[13px] leading-6 text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
                           />
                           </>}
 
@@ -5982,6 +6027,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     appStorage.removeItem(MODEL_CATALOG_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_SELECTOR_STORAGE_KEY);
                                     appStorage.removeItem(CHAT_MODEL_SELECTION_STORAGE_KEY);
+                                    appStorage.removeItem(MODEL_FAST_PREFERENCES_KEY);
                                     appStorage.removeItem(MODEL_API_KEYS_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
@@ -6024,7 +6070,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                       try {
                                         await Promise.all([
                                           (window as any)?.electronAPI?.clearSecureRuntimeSettings?.(),
-                                          getDesktopSubscription()?.disconnect(),
+                                          getDesktopSubscription()?.disconnectAll?.(),
                                         ]);
                                         await fetch('/api/settings/runtime', { method: 'DELETE' });
                                         await fetch('/api/settings/keys', {
@@ -6244,6 +6290,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         </div>
                       )}
 
+                    </div>
                   </div>
                 </div>
 

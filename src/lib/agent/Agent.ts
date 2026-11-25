@@ -164,7 +164,10 @@ import {
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { getAgentConversationScope } from './context-scope';
 import { createProviderChatStream } from './provider-stream-adapter';
+import { meterModelResponse, meterModelStream, recordModelFailure } from '../usage/ledger';
 import { createCodexSubscriptionClient } from './codex-subscription-runtime';
+import { waitForSubscriptionHandoff } from './subscription-handoff';
+import { withFastRequestTags } from './model-fast-mode';
 import { formatUnknownError } from './error-format';
 
 const closeThoughtStream = (
@@ -211,7 +214,7 @@ const createProviderUsageTrace = (
   const timestamp = Date.now();
   return {
     type: 'model_usage',
-    usageId: `usage_${provider}_${timestamp}_${Math.random().toString(36).slice(2, 9)}`,
+    usageId: usage?.eterxUsageId || `usage_${provider}_${timestamp}_${Math.random().toString(36).slice(2, 9)}`,
     source: 'provider',
     provider,
     model,
@@ -249,8 +252,9 @@ function isRunCancelled(context: any): boolean {
 
 const activeSubAgentToolBatches = new WeakSet<object>();
 
-/** Honor worker pause/close at provider and tool-batch boundaries. */
+/** Hold agent work at safe boundaries during a user-approved account change. */
 async function awaitSubAgentControlBoundary(context: any): Promise<void> {
+  await waitForSubscriptionHandoff(context?.abortSignal);
   if (!context?.isSubAgent) return;
   const projectId = String(context?.projectId || context?.chatId || '').trim();
   const agentName = String(context?.agentName || context?.subAgentName || '').trim();
@@ -810,7 +814,7 @@ export class GeminiAgentClient {
         }, 150);
         // Fast mode changes reasoning depth, not how long a valid response
         // is allowed to take. Cancellation still reaches the provider.
-        const response = await this.ai.models.generateContent({
+        const { response, usageId } = await meterModelResponse('gemini', this.modelName, () => this.ai.models.generateContent({
             model: this.modelName,
             contents,
             config: {
@@ -821,8 +825,8 @@ export class GeminiAgentClient {
                 return thinkingConfig ? { thinkingConfig } : {};
               })(),
             },
-          }).finally(() => clearInterval(cancellationPoll));
-
+          }).finally(() => clearInterval(cancellationPoll)),
+        result => ({ usage: result.usageMetadata, responseModel: result.modelVersion }), responseController.signal);
         if ((response as any)?.usageMetadata) {
           const u = (response as any).usageMetadata;
           const inputTokens = Number(normalizeProviderCacheUsage('gemini', u).promptTokens || 0);
@@ -834,7 +838,7 @@ export class GeminiAgentClient {
             cacheMode: resolveProviderPromptCacheMode('gemini', process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1'),
             thinkingLevel: getModelThinkingOptions('gemini', this.modelName).length > 0
               ? normalizeThinkingLevelForModel('minimal', 'gemini', this.modelName) : undefined,
-            phase: 'telegram_fast', contextRequestId: fastContextRequestId,
+            phase: 'telegram_fast', usageId, contextRequestId: fastContextRequestId,
             contextEstimatedTokens: fastRequestEstimatedTokens,
             contextLocalEstimatedTokens: fastRequestLocalTokens,
           });
@@ -1552,6 +1556,9 @@ export class GeminiAgentClient {
             const metadata = readStoredModelMetadata(this.activeProvider, requestedModel);
             (context as any).modelThinkingCapability = metadata.thinking;
             (context as any).modelWireCapabilities = metadata.wire;
+          }
+          if (Array.isArray(requestedRuntime.requestedModelWireCapabilities)) {
+            (context as any).modelWireCapabilities = requestedRuntime.requestedModelWireCapabilities;
           }
           (context as any).selectedModelProvider = requestedProvider;
           (context as any).selectedModelName = requestedModel;
@@ -3043,6 +3050,7 @@ ${ message.text }
       const configuredRetries = this.getConfiguredApiRetries(context);
       const maxApiAttempts = usesCodexSubscription ? 1 : this.getProviderKeyCount(this.activeProvider) * (configuredRetries + 1);
       while (apiAttempts < maxApiAttempts) {
+        await waitForSubscriptionHandoff((context as any).abortSignal);
         let accumulatedReasoning = '';
         let thoughtPhaseText = '';
         let accumulatedReasoningDetails: unknown[] = [];
@@ -3103,7 +3111,7 @@ ${ message.text }
             this.activeProvider,
             params,
             (context as any).abortSignal,
-            modelWireCapabilities,
+            withFastRequestTags(modelWireCapabilities, (context as any).modelWireCapabilities),
             conversationScopeId,
           );
 
@@ -3994,6 +4002,7 @@ ${ message.text }
       const configuredRetries = this.getConfiguredApiRetries(context);
       const maxApiAttempts = this.getProviderKeyCount('anthropic') * (configuredRetries + 1);
       while (apiAttempts < maxApiAttempts) {
+        await waitForSubscriptionHandoff((context as any).abortSignal);
         let accumulatedThought = '';
         let thoughtId = '';
         let thoughtStartTime = 0;
@@ -4054,7 +4063,8 @@ ${ message.text }
           });
           const readContent = createAnthropicContentStreamReader();
 
-          for await (const event of runner) {
+          const usageId = desktopRunUUID();
+          for await (const event of meterModelStream('anthropic', this.mistralModelName, runner, 'anthropic', usageId, requestOptions)) {
             if (isRunCancelled(context)) {
               throw new Error('CANCELLED_BY_USER');
             }
@@ -4119,6 +4129,7 @@ ${ message.text }
               lastObservedContextLocalTokens = requestContextLocalTokens;
             }
             const usageTrace = createProviderUsageTrace('anthropic', this.mistralModelName, response.usage, {
+              usageId,
               cacheDiagnostics: cacheObservation?.report,
               contextRequestId: activeContextRequestId,
               contextEstimatedTokens: requestContextEstimatedTokens,
@@ -7092,6 +7103,7 @@ OUTPUT CONTRACT
       let cacheFallbackAttempted = false;
       let lastStreamError = '';
       let activeStreamAbortController: AbortController | null = null;
+      let streamStartedAt: number | undefined;
       let accumulatedThought = '';
       let thoughtStartTime = 0;
       let thoughtId = '';
@@ -7143,6 +7155,7 @@ OUTPUT CONTRACT
       };
 
       while (streamAttempts < maxStreamAttempts) {
+        await waitForSubscriptionHandoff((context as any).abortSignal);
         streamAttempts++;
         if (onTrace && lightweightTelegramMode && streamAttempts === 1) {
           onTrace({ type: 'progress', text: interactions === 1 ? 'Contacting model' : 'Continuing task' });
@@ -7155,6 +7168,7 @@ OUTPUT CONTRACT
 
         const _cleanupRef = { cleanup: null as null | (() => void) };
         const attemptAbortController = new AbortController();
+        let connectionStartedAt: number | undefined;
         try {
           const thoughtRequestIdentityAt = Date.now();
           thoughtStartTime = 0;
@@ -7208,6 +7222,7 @@ OUTPUT CONTRACT
               ? (attemptConfig as any).tools.length
               : 0,
           });
+          connectionStartedAt = performance.now();
           stream = await Promise.race([
             this.ai.models.generateContentStream({
               model: currentModel,
@@ -7220,12 +7235,16 @@ OUTPUT CONTRACT
           console.log(`[GeminiClient] 🟢 Live connection working! Streaming started successfully for model: ${ currentModel }`);
           recordProvenModel(this.activeMode, currentModel);
           activeStreamAbortController = attemptAbortController;
+          streamStartedAt = connectionStartedAt;
           if (onTrace && lightweightTelegramMode && streamAttempts > 1) {
             onTrace({ type: 'progress', text: 'Connected; continuing' });
           }
           break; // Success â€” exit retry loop
         } catch (streamErr: any) {
           _cleanupRef.cleanup?.(); // ALWAYS cleanup interval to prevent leaks on 429 retries
+          if (connectionStartedAt !== undefined) recordModelFailure('gemini', currentModel, streamErr, {
+            startedAt: connectionStartedAt, signal: attemptAbortController.signal,
+          });
           const errMsg = streamErr.message || '';
           closeActiveThought();
 
@@ -7392,7 +7411,9 @@ OUTPUT CONTRACT
       let geminiFinishReason: unknown;
       let geminiPromptFeedback: any = null;
 
-      const streamIterator = stream[Symbol.asyncIterator]();
+      const streamIterator = meterModelStream('gemini', currentModel, stream, 'gemini', undefined, {
+        startedAt: streamStartedAt, signal: activeStreamAbortController?.signal,
+      })[Symbol.asyncIterator]();
       try {
         while (true) {
           const next = await nextStreamChunk(streamIterator, activeStreamAbortController);
@@ -7478,9 +7499,12 @@ OUTPUT CONTRACT
         cancelProvisionalAnswer();
         activeStreamAbortController?.abort();
         activeStreamAbortController = null;
+        const closingStream = streamIterator.return(undefined).catch(() => {});
         if (errMsg === 'CANCELLED_BY_USER' || errMsg.toLowerCase().includes('cancelled_by_user')) {
+          void closingStream;
           throw streamReadErr;
         }
+        await closingStream;
         if (onTrace && lightweightTelegramMode) {
           onTrace({
             type: 'progress',
@@ -7490,7 +7514,6 @@ OUTPUT CONTRACT
               : 'Stream interrupted; retrying',
           });
         }
-        await streamIterator.return?.().catch?.(() => { });
         const retryErr: any = new Error(errMsg);
         // Partial text/function arguments are not a completed model turn.
         // Preserve only prior completed work; no tool from this stream ran.

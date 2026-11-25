@@ -185,7 +185,7 @@
 }
 
 :root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-recents {
-  background: var(--light-canvas) !important;
+  background: linear-gradient(180deg, var(--light-canvas), #F6F7F9) !important;
   border-color: var(--light-line) !important;
 }
 

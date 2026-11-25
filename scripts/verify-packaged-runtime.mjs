@@ -1,10 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { createRequire } from 'node:module';
+import { extractFile, listPackage } from '@electron/asar';
 
-const require = createRequire(import.meta.url);
-const { extractFile, listPackage } = require('@electron/asar');
 const searchRoot = path.resolve(process.argv[2] || 'dist');
 
 function findArchives(root) {
@@ -63,6 +61,7 @@ const forbiddenPrefixes = [
   'runtime/docs/',
   'runtime/node_modules/',
 ];
+const forbiddenDependency = /(?:^|\/)(?:\.bin|node_modules\/node-pty)(?:\/|$)/;
 
 for (const archive of archives) {
   const entries = new Set(
@@ -85,12 +84,18 @@ for (const archive of archives) {
   const dependencyEntries = new Set(
     listPackage(dependencyArchive).map((entry) => entry.replaceAll('\\', '/').replace(/^\/+/, '')),
   );
+  const excludedEntry = [...dependencyEntries].find(entry =>
+    entry === 'node_modules/.package-lock.json' || forbiddenDependency.test(entry),
+  );
+  if (excludedEntry) {
+    throw new Error(`${dependencyArchive} contains an excluded dependency entry: ${excludedEntry}`);
+  }
   for (const required of requiredDependencies) {
     if (!dependencyEntries.has(required)) {
       throw new Error(`${dependencyArchive} is missing required dependency entry: ${required}`);
     }
   }
-  const launcherSource = extractFile(archive, 'runtime/server-launcher.js').toString('utf8');
+  const launcherSource = extractFile(archive, path.join('runtime', 'server-launcher.js')).toString('utf8');
   for (const contractToken of ['ETERX_RUNTIME_MODULES', 'Module._initPaths()', "require.resolve('next/package.json')"]) {
     if (!launcherSource.includes(contractToken)) {
       throw new Error(`${archive} has an invalid packaged runtime launcher; missing ${contractToken}.`);

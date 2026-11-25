@@ -5,6 +5,7 @@ import { formatUnknownError } from '../../../lib/agent/error-format';
 import { hydrateServerRuntimeSettings } from '../../../lib/agent/server-runtime-hydration';
 import { buildScopedRuntimeSettings } from '../../../lib/agent/runtime-api-keys';
 import { isModelProvider } from '../../../lib/agent/model-selector-store';
+import { withTelemetryScope } from '../../../lib/telemetry/runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,11 +30,11 @@ export async function POST(req: NextRequest) {
 
     const provider = String(selectedModel?.provider || '').trim();
     const model = String(selectedModel?.modelId || selectedModel?.modelName || '').trim();
-    const results = await webSearchTool.execute(parsed.data, {
+    const results = await withTelemetryScope({ origin: 'interactive' }, () => webSearchTool.execute(parsed.data, {
       source: 'api_search', allowNetwork: true, networkPolicy: 'allow',
       runtimeSettings: buildScopedRuntimeSettings(), abortSignal: req.signal,
       ...(isModelProvider(provider) && model ? { selectedModelProvider: provider, selectedModelName: model } : {}),
-    });
+    }));
 
     return NextResponse.json({ results }, { status: results?.error ? 502 : 200 });
   } catch (error: any) {

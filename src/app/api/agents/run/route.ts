@@ -21,6 +21,7 @@ import { normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../../../../lib/agent/self-improvement/engine';
 import { runWithToolApprovals } from '../../../../lib/agent/tool-approval-runtime';
 import { isChatPermissionMode, normalizeChatPermissionMode } from '../../../../lib/chat-permissions';
+import { beginTelemetryTurn } from '../../../../lib/telemetry/runtime';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -126,10 +127,13 @@ export async function POST(req: NextRequest) {
 
     // Stream events back
     const encoder = new TextEncoder();
+    const telemetry = beginTelemetryTurn(crypto.randomUUID(), {
+      mode: 'agent', origin: 'interactive', provider: 'gemini', model: safeModel, permissions: normalizeChatPermissionMode(permissionMode),
+    });
     const stream = new ReadableStream({
       start: controller => runWithToolApprovals({
         chatId, sessionId: agentSessionId, mode: normalizeChatPermissionMode(permissionMode), signal: req.signal,
-      }, async () => {
+      }, () => telemetry.run(async () => {
         let closed = false;
         const startedAt = Date.now();
         const experienceTrace: any[] = [];
@@ -185,6 +189,7 @@ export async function POST(req: NextRequest) {
             timestamp: Date.now(),
           });
         } finally {
+          telemetry.finish(req.signal.aborted || closed ? 'cancelled' : runFailed ? 'failed' : 'succeeded');
           if (!req.signal.aborted && resolveSelfImprovementEnabled(pinnedContext?.selfImprovementEnabled)) {
             const lastUserMessage = [...normalized.messages!].reverse().find(item => item.role === 'user')?.content || '';
             await adaptiveExperience.queueReflection({
@@ -209,7 +214,7 @@ export async function POST(req: NextRequest) {
           closed = true;
           try { controller.close(); } catch { }
         }
-      }),
+      })),
     });
 
     return attachAgentApiSessionCookie(new Response(stream, {
