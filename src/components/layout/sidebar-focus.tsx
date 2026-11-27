@@ -3,17 +3,17 @@ import { useIsPresent, usePresenceData } from 'framer-motion';
 import { AlarmClock, CircleAlert, CircleCheck, CirclePause, CircleStop, Clock3, GitBranch, GitCommitHorizontal, LoaderCircle, MessageCircleQuestionMark } from 'lucide-react';
 import { parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
 import { appStorage } from '../../lib/client-storage';
-import { updateScheduledTaskFocus } from '../../lib/scheduled-task-sync';
+import { runScheduledTaskNow, updateScheduledTaskFocus } from '../../lib/scheduled-task-sync';
 import { chatMatchesScope, type ChatScope } from '../../lib/chat-scope';
 import { mergeChatCommitReceipts, readChatCommitTraces, type ChatCommitReceipt } from '../../lib/git/chat-commits';
 import { canSettleFocusItem, readFocusTrace, resolveFocusModel, type ChatFocusDisposition, type FocusGroup, type FocusStatus } from '../../lib/chat-focus';
 import { useLiveChats, type LiveChatLedger } from '../../lib/live-chat-ledger';
-import { SCHEDULED_TASKS_STORAGE_KEY, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
+import { canRunTaskFromFocus, isScheduledTaskDue, SCHEDULED_TASKS_STORAGE_KEY, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
 import type { IdentityAvatarDescriptor } from '../ui/identity-avatar';
 import { assignWorkspaceAvatars, useWorkspaceIcon, WorkspaceAvatar, workspaceIdentity, type WorkspaceIdentity, type WorkspaceSource } from '../ui/workspace-avatar';
 import { ProviderIconAsset } from '../ui/provider-icon';
 import { modelLabel, providerLabel } from '../usage/usage-format';
-import { FocusScheduleActions } from './sidebar-focus-actions';
+import { FocusRowActions } from './sidebar-focus-actions';
 import { FocusChatHover } from './sidebar-focus-hover';
 
 const scheduleStatuses: Partial<Record<ScheduledTaskRecord['status'], FocusStatus>> = {
@@ -57,7 +57,7 @@ function scheduledTaskFocus(task: ScheduledTaskRecord, clock: number): {
   attentionStatus?: FocusStatus;
   activityAt: number;
 } {
-  const due = (task.status === 'scheduled' || task.status === 'queued') && task.scheduledTimestamp <= clock;
+  const due = isScheduledTaskDue(task, clock);
   const lastRun = task.history?.at(-1);
   const activityAt = Math.max(
     task.updatedAt || task.createdAt || 0,
@@ -66,7 +66,7 @@ function scheduledTaskFocus(task: ScheduledTaskRecord, clock: number): {
     lastRun?.completedAt || 0,
     due ? task.scheduledTimestamp : 0,
   );
-  const attentionStatus = due ? 'woke' : scheduleStatuses[task.status];
+  const attentionStatus = task.runNowRequestedAt ? 'queued' : due ? 'woke' : scheduleStatuses[task.status];
   if (task.status === 'running') return { group: 'working', status: 'working', attentionStatus, activityAt };
 
   // A due occurrence can be settled too. Only newer activity wakes it again.
@@ -418,12 +418,10 @@ export function FocusTaskRow({ task, workspace, status, onOpen }: {
           metadata={formatFocusDate(eventAt)}
           model={model}
           actions={canSettleFocusItem(status) && (
-            <FocusScheduleActions
+            <FocusRowActions
               title={task.title}
-              task
               settled={status === 'settled'}
-              scheduledAt={upcoming ? task.scheduledTimestamp : undefined}
-              onSchedule={at => updateScheduledTaskFocus(task.id, { action: 'reschedule', at })}
+              onRunNow={canRunTaskFromFocus(task, status === 'settled') ? () => runScheduledTaskNow(task.id) : undefined}
               onSettle={() => updateScheduledTaskFocus(task.id, { action: status === 'settled' ? 'restore' : 'settle' })}
             />
           )}

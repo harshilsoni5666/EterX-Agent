@@ -4,21 +4,26 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { Shimmer } from '../ui/shimmer';
 
-type PendingMode = 'startup' | 'waiting' | 'group';
+export type TurnPendingMode = 'startup' | 'thinking';
+type PendingMode = TurnPendingMode | 'waiting' | 'group';
 type PendingLabel = 'Starting your task' | 'Thinking' | 'Working' | null;
 
 const randomDelay = (min: number, max: number) => min + Math.random() * (max - min);
-const initialLabel = (mode: PendingMode): PendingLabel =>
-  mode === 'startup' ? 'Starting your task' : mode === 'waiting' ? null : 'Working';
+const initialLabels: Record<PendingMode, PendingLabel> = {
+  startup: 'Starting your task',
+  thinking: 'Thinking',
+  waiting: null,
+  group: 'Working',
+};
 
 /** Presentation-only timers; real activity always owns whether this is active. */
 export function useLiveFallbackLabel(active: boolean, mode: PendingMode, activityVersion = '') {
-  const [label, setLabel] = useState<PendingLabel>(() => initialLabel(mode));
+  const [label, setLabel] = useState<PendingLabel>(() => initialLabels[mode]);
   const startupHasReachedThinking = useRef(false);
 
   useLayoutEffect(() => {
-    if (!active) {
-      setLabel(null);
+    if (!active || mode === 'thinking') {
+      setLabel(active ? initialLabels[mode] : null);
       return;
     }
 
@@ -26,7 +31,7 @@ export function useLiveFallbackLabel(active: boolean, mode: PendingMode, activit
       ? 'Thinking' as PendingLabel
       : mode === 'group'
       ? (Math.random() < 0.5 ? 'Thinking' : 'Working') as PendingLabel
-      : initialLabel(mode);
+      : initialLabels[mode];
     setLabel(current);
     let remaining = mode === 'group'
       ? randomDelay(6000, 12000)
@@ -77,7 +82,7 @@ export function useLiveFallbackLabel(active: boolean, mode: PendingMode, activit
 }
 
 export function LivePendingIndicator({ mode, activityVersion, className = '' }: {
-  mode: 'startup' | 'waiting';
+  mode: TurnPendingMode | 'waiting';
   activityVersion?: string;
   className?: string;
 }) {

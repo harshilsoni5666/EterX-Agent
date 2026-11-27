@@ -3,7 +3,7 @@ import { operateBotRoutine } from '../../telegram-bot-routines';
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { mutateScheduledTasks, loadScheduledTaskSnapshot } from '../../../scheduled-task-store';
-import { computeNextScheduledRun, normalizeScheduledTask, type ScheduledTaskRecord } from '../../../scheduled-tasks';
+import { computeNextScheduledRun, normalizeScheduledTask, queueScheduledTaskRunNow, type ScheduledTaskRecord } from '../../../scheduled-tasks';
 import { isModelProvider, modelEntryKey, parseModelEntryKey } from '../../model-selector-store';
 import { getModelThinkingOptions, normalizeThinkingLevelForModel } from '../../model-routing';
 import { readStoredModelMetadata } from '../../stored-model-metadata';
@@ -149,13 +149,11 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
         task.title = title;
         message = `Renamed task to "${title}".`;
       } else if (input.operation === 'run_now') {
-        task.status = 'queued';
-        task.scheduledTimestamp = Date.now();
-        Object.assign(task, scheduleFields(task.scheduledTimestamp));
-        task.lastError = undefined;
+        queueScheduledTaskRunNow(task);
         message = `Queued "${task.title}" to run now.`;
       } else if (input.operation === 'pause') {
         task.status = 'paused';
+        task.runNowRequestedAt = undefined;
         message = `Paused "${task.title}".`;
       } else if (input.operation === 'resume') {
         task.status = task.scheduledTimestamp <= Date.now() ? 'queued' : 'scheduled';
@@ -175,6 +173,7 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
           task.scheduledTimestamp = parseScheduledAt(input.scheduledAt);
           Object.assign(task, scheduleFields(task.scheduledTimestamp));
           task.status = task.scheduledTimestamp <= Date.now() ? 'queued' : 'scheduled';
+          task.runNowRequestedAt = undefined;
         }
         if (input.recurrence !== undefined) {
           const recurrence = String(input.recurrence).trim().toLowerCase();

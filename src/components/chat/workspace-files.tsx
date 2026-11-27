@@ -7,6 +7,7 @@ import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { addWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { createTerminal, showTerminal } from '../../lib/chat-terminal-store';
 import { watchWorkspaceFolder } from '../../lib/workspace-file-events';
+import { listWorkspaceFolderChildren, type WorkspaceFolderEntry as Entry } from '../../lib/workspace-folder-list';
 import { WorkspaceFileIcon } from './workspace-file-icon';
 import { Tooltip } from '../ui/tooltip';
 import { highlightWorkspaceCode, workspaceLanguage, type WorkspaceTokens } from '../../lib/workspace-syntax';
@@ -21,7 +22,6 @@ import { isMarkdownDocument, WorkspaceMarkdownPreview } from './workspace-markdo
 import { useWorkspaceReadingPosition } from './use-workspace-reading-position';
 import { revealInWorkspaceScroller } from './workspace-scroll';
 
-type Entry = { name: string; path: string; type: 'file' | 'directory' };
 type FlattenedEntry = Entry & {
   terminalPath?: string;
   segments?: { name: string; path: string }[];
@@ -43,16 +43,6 @@ const api = () => typeof window === 'undefined' ? undefined : (window as any).el
 const FileActivity = createContext(true);
 const Empty = ({ children }: { children: React.ReactNode }) => <div className="eterx-workspace-empty">{children}</div>;
 
-async function fetchFolderChildren(dirPath: string, showHidden: boolean): Promise<Entry[]> {
-  if (api()?.workspaceFolderList) {
-    const result = await api().workspaceFolderList(dirPath, 0, showHidden);
-    return result?.entries || [];
-  }
-  const response = await fetch('/api/code/files?path=' + encodeURIComponent(dirPath) + '&depth=1');
-  const result = await response.json();
-  return result?.tree || [];
-}
-
 async function resolveFlattenedChains(
   rawEntries: Entry[],
   showHidden: boolean,
@@ -66,7 +56,7 @@ async function resolveFlattenedChains(
       let currentPath = entry.path;
       for (let depth = 0; depth < 8; depth++) {
         try {
-          const children = await fetchFolderChildren(currentPath, showHidden);
+          const children = await listWorkspaceFolderChildren(currentPath, showHidden);
           if (children.length === 1 && children[0].type === 'directory') {
             const onlyChild = children[0];
             segments.push({ name: onlyChild.name, path: onlyChild.path });
@@ -370,7 +360,7 @@ function FilesRootFolder({ directory, rootsLength, filter, showHidden, compact =
       let currentPath = directory;
       for (let depth = 0; depth < 8; depth++) {
         try {
-          const children = await fetchFolderChildren(currentPath, showHidden);
+          const children = await listWorkspaceFolderChildren(currentPath, showHidden);
           if (children.length === 1 && children[0].type === 'directory') {
             const onlyChild = children[0];
             segments.push({ name: onlyChild.name, path: onlyChild.path });

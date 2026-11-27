@@ -1,43 +1,83 @@
+.backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(8 10 14 / 58%);
+  backdrop-filter: blur(4px);
+}
+
+:global(:root[data-theme='light']) .backdrop {
+  background: rgb(29 36 49 / 32%);
+}
+
 .dialog {
-  --settings-canvas: #151515;
-  --settings-sidebar: #1b1b1b;
-  --settings-surface: #1d1d1d;
-  --settings-surface-hover: #252525;
-  --settings-selected: #292929;
-  --settings-border: rgba(255, 255, 255, 0.09);
-  --settings-text: #f1f1f1;
-  --settings-muted: #a6a6a6;
-  --settings-toggle-on: #777;
-  --settings-toggle-off: #444;
-  background-color: var(--settings-canvas) !important;
+  --settings-canvas: #15171b;
+  --settings-sidebar: #101215;
+  --settings-sidebar-top: #1d2533;
+  --settings-header: #171a1f;
+  --settings-surface: #1a1d22;
+  --settings-surface-hover: #272b32;
+  --settings-control: #1c2026;
+  --settings-menu: #1c1f25;
+  --settings-selected: #283140;
+  --settings-border: #2d323b;
+  --settings-control-border: #373e49;
+  --settings-control-border-hover: #586275;
+  --settings-text: #eef1f6;
+  --settings-muted: #a6afbd;
+  --settings-accent: #a6bef6;
+  --settings-toggle-on: #3478e8;
+  --settings-toggle-on-hover: #4287f5;
+  --settings-toggle-off: #3b424e;
+  --settings-toggle-off-hover: #4a5463;
+  --settings-modal-shadow: 0 24px 76px rgb(0 0 0 / 48%), 0 4px 16px rgb(0 0 0 / 26%);
+  --settings-menu-shadow: 0 10px 28px rgb(0 0 0 / 40%), 0 2px 5px rgb(0 0 0 / 26%);
+  background-color: var(--settings-canvas);
   color: var(--settings-text);
 }
 
 :global(:root[data-theme='light']) .dialog {
-  --settings-canvas: #fafaf8;
-  --settings-sidebar: #f2f2ef;
+  --settings-canvas: #fafbfd;
+  --settings-sidebar: #f0f2f6;
+  --settings-sidebar-top: #e6edf8;
+  --settings-header: #f7f8fb;
   --settings-surface: #fff;
-  --settings-surface-hover: #f1f1ee;
-  --settings-selected: #e8e8e4;
-  --settings-border: rgba(31, 31, 29, 0.11);
-  --settings-text: #242422;
-  --settings-muted: #686862;
-  --settings-toggle-on: #65655f;
-  --settings-toggle-off: #d4d4cf;
+  --settings-surface-hover: #eaf0f7;
+  --settings-control: #f8fafc;
+  --settings-menu: #fff;
+  --settings-selected: #e4ecf9;
+  --settings-border: #dfe4ed;
+  --settings-control-border: #d6dfe9;
+  --settings-control-border-hover: #a6b5c9;
+  --settings-text: #222b38;
+  --settings-muted: #5e6979;
+  --settings-accent: #315fad;
+  --settings-toggle-on: #2766d1;
+  --settings-toggle-on-hover: #2259b5;
+  --settings-toggle-off: #c3cad3;
+  --settings-toggle-off-hover: #aeb8c5;
+  --settings-modal-shadow: 0 24px 70px rgb(25 36 56 / 20%), 0 3px 12px rgb(25 36 56 / 12%);
+  --settings-menu-shadow: 0 10px 28px rgb(25 36 56 / 14%), 0 2px 5px rgb(25 36 56 / 8%);
 }
 
-.dialog > :global(.absolute) {
-  background-color: var(--settings-canvas) !important;
+.dialog[data-standalone='false'] {
+  border: 1px solid var(--settings-control-border);
+  border-radius: 14px;
+  box-shadow: var(--settings-modal-shadow);
 }
 
 .sidebar {
-  background-color: var(--settings-sidebar) !important;
-  border-color: var(--settings-border) !important;
+  background-color: var(--settings-sidebar);
+  border-color: var(--settings-border);
+}
+
+.sidebarHeader {
+  background-image: linear-gradient(105deg, var(--settings-sidebar-top), transparent);
+  border-color: var(--settings-border);
 }
 
 .content {
-  background-color: var(--settings-canvas) !important;
-  border-color: var(--settings-border) !important;
+  background-color: var(--settings-canvas);
+  border-color: var(--settings-border);
 }
 
 .title {
@@ -47,33 +87,230 @@
   letter-spacing: -0.025em;
 }
 
-.dialog :global(.eterx-settings-back-button) {
-  color: var(--settings-muted) !important;
+.dialog :global(.eterx-settings-back-button),
+.dialog :global(.eterx-settings-tab) {
+  border-radius: 7px;
+  color: var(--settings-muted);
 }
 
 .dialog :global(.eterx-settings-tab) {
-  box-sizing: border-box;
   height: 36px;
-  border-left: 2px solid transparent;
-  border-radius: 7px;
-  color: var(--settings-muted) !important;
 }
 
+.dialog :global(.eterx-settings-back-button:hover),
 .dialog :global(.eterx-settings-tab:hover) {
-  background-color: var(--settings-surface-hover) !important;
-  color: var(--settings-text) !important;
+  background-color: var(--settings-surface-hover);
+  color: var(--settings-text);
 }
 
 .dialog :global(.eterx-settings-tab[data-active='true']) {
-  border-left-color: #999;
-  background-color: var(--settings-selected) !important;
-  color: var(--settings-text) !important;
+  background-color: var(--settings-selected);
+  color: var(--settings-text);
+  box-shadow: inset 2px 0 var(--settings-accent);
 }
 
 .dialog :global(.eterx-settings-tab:focus-visible),
-.dialog :global(.eterx-settings-back-button:focus-visible) {
-  outline: 2px solid currentColor;
+.dialog :global(.eterx-settings-back-button:focus-visible),
+.selectTrigger:focus-visible,
+.selectOption:focus-visible {
+  outline: 2px solid var(--settings-accent);
+  outline-offset: -2px;
+}
+
+.selectTrigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding-inline: 10px;
+  border: 1px solid var(--settings-control-border);
+  border-radius: 8px;
+  background-color: var(--settings-control);
+  color: var(--settings-text);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: start;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.selectTrigger:is(:hover, [aria-expanded='true']) {
+  background-color: var(--settings-surface-hover);
+  border-color: var(--settings-control-border-hover);
+}
+
+.selectChevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--settings-muted);
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.selectTrigger[aria-expanded='true'] .selectChevron {
+  color: var(--settings-text);
+  transform: rotate(-90deg);
+}
+
+.menuSurface {
+  border: 1px solid var(--settings-control-border);
+  border-radius: 10px;
+  background-color: var(--settings-menu);
+  color: var(--settings-text);
+  box-shadow: var(--settings-menu-shadow);
+}
+
+.selectMenu {
+  position: absolute;
+  inset-block-start: calc(100% + 4px);
+  inset-inline-end: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: min(18rem, 58dvh);
+  padding: 4px;
+}
+
+.selectMenu[data-open-up='true'] {
+  inset-block: auto calc(100% + 4px);
+}
+
+.selectSearch {
+  position: relative;
+  flex-shrink: 0;
+  margin-block-end: 4px;
+}
+
+.selectSearchIcon {
+  position: absolute;
+  inset-inline-start: 8px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-50%);
+  color: var(--settings-muted);
+  pointer-events: none;
+}
+
+.selectSearchInput {
+  width: 100%;
+  min-height: 32px;
+  padding-inline: 28px 8px;
+  border: 1px solid var(--settings-control-border);
+  border-radius: 6px;
+  background-color: var(--settings-control);
+  color: var(--settings-text);
+  font-size: 12px;
+}
+
+.selectSearchInput:focus-visible {
+  outline: 1px solid var(--settings-accent);
+  outline-offset: -1px;
+}
+
+.selectOption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--settings-text);
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: start;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.selectOption:is(:hover, :focus-visible) {
+  background-color: var(--settings-surface-hover);
+}
+
+.selectOption[data-active='true'] {
+  background-color: var(--settings-selected);
+  font-weight: 600;
+}
+
+.selectCheck {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--settings-accent);
+}
+
+.selectDescription,
+.selectSearchInput::placeholder,
+.selectEmpty {
+  color: var(--settings-muted);
+}
+
+.selectDescription {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selectEmpty {
+  padding: 12px 8px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.toggle {
+  position: relative;
+  flex-shrink: 0;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--settings-accent);
   outline-offset: 2px;
+}
+
+.toggleThumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background-color: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 22%);
+  transition: transform 140ms ease;
+}
+
+.toggle[aria-checked='true'] .toggleThumb {
+  transform: translateX(18px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .selectTrigger,
+  .selectChevron,
+  .selectOption,
+  .toggle,
+  .toggleThumb {
+    transition: none;
+  }
 }
 
 .dialog :global(.eterx-setting-row),
@@ -103,6 +340,14 @@
 
 .dialog :global(button[role='switch'][aria-checked='false']) {
   background-color: var(--settings-toggle-off) !important;
+}
+
+.dialog :global(button[role='switch'][aria-checked='true']:not(:disabled):hover) {
+  background-color: var(--settings-toggle-on-hover) !important;
+}
+
+.dialog :global(button[role='switch'][aria-checked='false']:not(:disabled):hover) {
+  background-color: var(--settings-toggle-off-hover) !important;
 }
 
 .dialog :global([data-settings-search-target='work-mode'] > button) {

@@ -54,7 +54,7 @@ export type SideChatActions = {
   openMain: (id: string) => void;
   send: (id: string, text: string, attachments: any[], settings: SideChatSettings, pinnedItems: any[], planImplementation?: PlanImplementation) => Promise<boolean | void>;
   stop: (id: string) => Promise<boolean>;
-  answer: (id: string, timestamp: number, answer: string, responseKey?: string) => void;
+  answer: (id: string, timestamp: number, answer: string | null, responseKey?: string) => void;
   read: (id: string) => void;
   startLive?: (id: string, settings: SideChatSettings) => void;
 };
@@ -160,7 +160,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
       actionsRef.current.saveDraft(id, latest.current);
     }, 180);
   }, [id, dictation.reset, saveDraft]);
-  const answerQuestion = useCallback((timestamp: number, answer: string, responseKey?: string) => {
+  const answerQuestion = useCallback((timestamp: number, answer: string | null, responseKey?: string) => {
     actionsRef.current.answer(id, timestamp, answer, responseKey);
   }, [id]);
   useEffect(() => {

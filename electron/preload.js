@@ -143,7 +143,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('gateway-status', listener);
   },
   getUpdateState: () => ipcRenderer.invoke('desktop-update-get-state'),
-  markUpdateViewed: () => ipcRenderer.invoke('desktop-update-mark-viewed'),
+  markUpdateViewed: (successfulInstallCompletedAt) => ipcRenderer.invoke('desktop-update-mark-viewed', successfulInstallCompletedAt),
   checkForUpdates: () => ipcRenderer.invoke('desktop-update-check'),
   notifyUpdateNetworkOnline: () => ipcRenderer.send('desktop-update-network-online'),
   downloadUpdate: () => ipcRenderer.invoke('desktop-update-download'),

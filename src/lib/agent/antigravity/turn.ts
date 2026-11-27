@@ -125,7 +125,7 @@ async function permission(params: any, turn: Turn, signal: AbortSignal) {
   const selected = (optionId: string) => ({ outcome: { outcome: 'selected', optionId } });
   if (String(call?.toolCallId || '').startsWith('interaction_')) {
     if (!options.length) return CANCELLED;
-    const result = await askUserTool.execute({ question: title, mode: 'choice', options: options.slice(0, 8).map(option => ({
+    const result = await askUserTool.execute({ question: title, mode: 'choice', options: options.map(option => ({
       label: option.name.slice(0, 160), value: option.optionId,
     })) }, { ...agent.context, chatId: turn.chatId, abortSignal: signal, _onTrace: agent.trace });
     const choice = options.find(option => option.optionId === (result.selectedOption?.value || result.answer));
@@ -223,7 +223,7 @@ export async function runAntigravityTurn(turn: Turn) {
         return readAntigravityTurnUsage(file);
       }, usage => ({ usage }), signal);
       recordAntigravityUsage(accountId, turn.model, usage, !turn.auxiliary);
-      if (!text.trim()) throw new Error('Antigravity ended the turn without a text response.');
+      if (!text.trim() && !context?.askUserInbox?.hasWork) throw new Error('Antigravity ended the turn without a text response.');
       return { text: text.trim(), usage: usage ? { ...usage, eterxUsageId: usageId } : undefined };
     });
   } finally {

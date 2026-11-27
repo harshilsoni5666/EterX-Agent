@@ -119,10 +119,6 @@ export function ModelProviderIconAsset({ provider, className = 'h-4 w-4' }: {
   provider: string;
   className?: string;
 }) {
-  if (provider !== 'openai') return <ProviderIconAsset provider={provider} className={className} />;
-  return (
-    <span aria-hidden="true" className={`eterx-openai-api-icon-shell inline-flex shrink-0 items-center justify-center ${className}`}>
-      <ProviderIconAsset provider={provider} className="size-3" color="#FFFFFF" />
-    </span>
-  );
+  const modelIconClass = provider === 'openai' ? `${className} eterx-openai-model-provider-icon` : className;
+  return <ProviderIconAsset provider={provider} className={modelIconClass} color={provider === 'openai' ? 'currentColor' : undefined} />;
 }

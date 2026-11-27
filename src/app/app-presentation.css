@@ -6,19 +6,41 @@
   white-space: nowrap;
 }
 .eterx-model-badge {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
   max-inline-size: 92px;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--foreground) 15%, transparent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--foreground) 5%, transparent);
-  color: color-mix(in srgb, var(--foreground) 74%, var(--background));
-  font-size: 9.5px;
-  font-weight: 620;
-  line-height: 14px;
-  letter-spacing: .01em;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--foreground) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+  color: color-mix(in srgb, var(--foreground) 90%, var(--background));
+  font-size: 10px;
+  font-weight: 640;
+  line-height: 15px;
+  letter-spacing: .012em;
+}
+.eterx-model-badge[data-badge="new"] {
+  gap: 4px;
+  border-color: color-mix(in srgb, var(--success) 36%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--success);
+  font-weight: 660;
+}
+.eterx-model-badge[data-badge="recommended"] {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  color: var(--accent);
+  font-weight: 660;
+}
+.eterx-model-badge[data-badge="new"]::before {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
 }
 .eterx-model-name-with-badges {
   display: inline-flex;
@@ -52,6 +74,7 @@
   --announcement-text: color-mix(in srgb, var(--foreground) 83%, var(--background));
   --announcement-line: color-mix(in srgb, var(--foreground) 15%, transparent);
 }
+:root[data-theme="dark"] .eterx-announcement { background: #2E2E2E; }
 .eterx-announcement::backdrop { background: rgba(8, 9, 10, .36); }
 .eterx-announcement[open] { animation: eterx-announcement-in 140ms ease-out; }
 .eterx-announcement-frame { display: flex; flex-direction: column; max-height: min(82dvh, 860px); }

@@ -469,11 +469,15 @@
 
 .eterx-model-picker-fast[aria-pressed="true"] {
   background: color-mix(in srgb, currentColor 12%, transparent);
-  color: #edb55e;
 }
 
-:root[data-theme="light"] .eterx-model-picker-fast[aria-pressed="true"] {
-  color: #875500;
+.eterx-model-picker-fast[aria-pressed="true"],
+.eterx-model-fast-indicator {
+  color: #fff;
+}
+
+:root[data-theme="light"] :is(.eterx-model-picker-fast[aria-pressed="true"], .eterx-model-fast-indicator) {
+  color: var(--composer-menu-ink);
 }
 
 .eterx-model-picker-fast[aria-pressed="true"] svg {
@@ -585,17 +589,12 @@
   --provider-icon-neutral: currentColor;
 }
 
-:root[data-theme="light"] .eterx-openai-api-icon-shell {
-  border-radius: 50%;
-  background: #292929;
+:root .eterx-composer-shell .eterx-openai-model-provider-icon {
+  color: var(--composer-menu-ink) !important;
 }
 
-.eterx-model-fast-indicator {
-  color: #edb55e;
-}
-
-:root[data-theme="light"] .eterx-model-fast-indicator {
-  color: #875500;
+:root[data-theme="dark"] .eterx-composer-shell .eterx-openai-model-provider-icon {
+  color: #fff !important;
 }
 
 :root .eterx-composer-shell .eterx-agent-popout button:not(:disabled):is(:hover, [aria-pressed="true"]) {

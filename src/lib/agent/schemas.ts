@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AskUserInbox } from './ask-user-inbox';
 
 // ==========================================
 // 1. TOOL SCHEMA
@@ -62,7 +63,7 @@ export const ProjectContextSchema = z.object({
   maxSubAgents: z.number().int().min(1).max(20).optional(),
   maxRetries: z.number().int().min(0).max(5).optional(),
 });
-export type ProjectContext = z.infer<typeof ProjectContextSchema>;
+export type ProjectContext = z.infer<typeof ProjectContextSchema> & { askUserInbox?: AskUserInbox };
 
 // ==========================================
 // 3. TASK SCHEMA

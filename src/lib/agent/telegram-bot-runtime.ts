@@ -188,7 +188,7 @@ class TelegramBotRuntime {
         await this.send(event, `Choose option numbers from 1 to ${options.length}, or reply in your own words.`, event.id);
         await this.ack(event); return { status: 'needs-answer' };
       }
-      const option = event.metadata?.selectedOption || (numberSelections.length ? numberSelections.map(index => options[index - 1]) : options.find((item: any) => [item.label, item.value].some(value => String(value).toLowerCase() === text.toLowerCase())) || (/^[1-8]$/.test(text) ? options[Number(text) - 1] : null));
+      const option = event.metadata?.selectedOption || (numberSelections.length ? numberSelections.map(index => options[index - 1]) : options.find((item: any) => [item.label, item.value].some(value => String(value).toLowerCase() === text.toLowerCase())) || (/^\d+$/.test(text) ? options[Number(text) - 1] : null));
       const answers = question.questions?.length ? text.split('\n').filter(Boolean) : [];
       if (question.questions?.length && answers.length !== question.questions.length) {
         await this.send(event, `Please reply with ${question.questions.length} answers, one per line.`, event.id);
@@ -200,6 +200,7 @@ class TelegramBotRuntime {
       }
       Object.assign(question, { status: 'answered', answer: Array.isArray(option) ? option.map(item => item.value || item.label).join(', ') : String(option?.value || text || 'See the files attached to my reply.'), selectedOption: option,
         answers: question.questions?.length ? question.questions.map((item: any, index: number) => ({ id: item.id, question: item.question, answer: answers[index] })) : null, answeredAt: Date.now() });
+      question.notify?.();
       context.history.push({ role: 'user', parts: [{ text: `In reply to “${question.question || 'the requested details'}”: ${text}` }], contextTurnId: event.id });
       void callGateway('bot_question_resolved', { target: event.replyTarget, response_key: questionEntry[0] }).catch(() => undefined);
       await this.ack(event); return { status: 'answered' };
@@ -214,7 +215,10 @@ class TelegramBotRuntime {
       if (accepted) {
         if (event.metadata?.forceSteering) {
           for (const [responseKey, question] of matches as Array<[string, any]>) {
-            question.status = 'interrupted';
+            if (question.status === 'pending') {
+              question.status = 'interrupted';
+              question.notify?.();
+            }
             void callGateway('bot_question_resolved', { target: event.replyTarget, response_key: responseKey }).catch(() => undefined);
           }
         }

@@ -1,6 +1,7 @@
+import { requestAskUser } from '../core/ask_user';
+
 const OUTBOUND_SEND_ENV = 'ETERX_ALLOW_UNSAFE_COMMUNICATION_SEND';
 const APPROVAL_WAIT_MS = 5 * 60 * 1000;
-const APPROVAL_POLL_MS = 500;
 
 type OutboundApprovalFailure = {
   success: false;
@@ -98,68 +99,21 @@ async function askUserForOutboundApproval(
   summary: string | undefined,
   context: any,
 ): Promise<boolean | null> {
-  if (!context?._onTrace || typeof globalThis === 'undefined') return null;
-
-  const timestamp = Date.now();
-  const responseKey = `ask_user_${timestamp}_${Math.random().toString(36).slice(2, 10)}`;
-  const chatId = String(context?.projectId || context?.chatId || '').slice(0, 160);
-  const sessionId = String(context?.agentSessionId || '').slice(0, 160);
+  if (!context?._onTrace) return null;
   const safeTarget = String(target || 'the selected recipient').slice(0, 300);
   const safeSummary = String(summary || `${platform} ${action}`).slice(0, 1000);
-
-  const question = `Approve ${platform} ${action}?`;
-  const askEvent = {
-    type: 'ask_user',
-    question,
-    mode: 'confirm',
-    options: [],
-    questions: [],
-    context: `Target: ${safeTarget}\nSummary: ${safeSummary}`,
-    defaultValue: 'no',
-    urgent: true,
-    responseKey,
-    chatId,
-    timestamp,
-  };
-
-  (globalThis as any).__pendingAskUser = (globalThis as any).__pendingAskUser || {};
-  (globalThis as any).__pendingAskUser[responseKey] = {
-    question,
-    mode: 'confirm',
-    options: [],
-    questions: [],
-    context: askEvent.context,
-    defaultValue: 'no',
-    urgent: true,
-    chatId,
-    sessionId,
-    status: 'pending',
-    answer: null,
-    selectedOption: null,
-    answers: null,
-    createdAt: timestamp,
-  };
-
-  context._onTrace(askEvent);
-
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < APPROVAL_WAIT_MS) {
-    const pending = (globalThis as any).__pendingAskUser?.[responseKey];
-    if (pending?.status === 'interrupted' || context?.abortSignal?.aborted || context?.signal?.aborted) {
-      delete (globalThis as any).__pendingAskUser[responseKey];
-      return false;
-    }
-    if (pending?.status === 'answered' && pending?.answer !== null) {
-      delete (globalThis as any).__pendingAskUser[responseKey];
-      return isPositiveApproval(pending.answer, pending.selectedOption);
-    }
-    await new Promise(resolve => setTimeout(resolve, APPROVAL_POLL_MS));
+  try {
+    const result = await requestAskUser({
+      question: `Approve ${platform} ${action}?`,
+      mode: 'confirm',
+      context: `Target: ${safeTarget}\nSummary: ${safeSummary}`,
+      urgent: true,
+    }, context, APPROVAL_WAIT_MS);
+    return result.success && 'selectedOption' in result && isPositiveApproval(result.answer, result.selectedOption);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'CANCELLED_BY_USER') return false;
+    throw error;
   }
-
-  if ((globalThis as any).__pendingAskUser?.[responseKey]) {
-    delete (globalThis as any).__pendingAskUser[responseKey];
-  }
-  return false;
 }
 
 function isPositiveApproval(answer: unknown, selectedOption: unknown): boolean {

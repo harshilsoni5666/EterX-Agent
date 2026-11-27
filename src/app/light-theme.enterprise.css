@@ -2227,16 +2227,6 @@
   color: #706F6C !important;
 }
 
-/* Settings Back to App Button Light Theme Override */
-:root[data-theme="light"] .eterx-settings-back-button {
-  color: #605E5B !important;
-}
-
-:root[data-theme="light"] .eterx-settings-back-button:hover {
-  background-color: rgba(31, 31, 29, 0.045) !important;
-  color: #1F1F1D !important;
-}
-
 /* Settings Coming Soon Label Light Theme Override */
 :root[data-theme="light"] .eterx-settings-coming-soon {
   color: #98938A !important;

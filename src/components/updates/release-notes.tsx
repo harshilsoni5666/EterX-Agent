@@ -1,5 +1,6 @@
 'use client';
 
+import { Sparkles } from 'lucide-react';
 import type { DesktopReleaseNotes, DesktopUpdateState } from '../../lib/desktop-updates';
 
 const sectionLabels: Record<DesktopReleaseNotes['sections'][number]['kind'], string> = {
@@ -9,29 +10,23 @@ const sectionLabels: Record<DesktopReleaseNotes['sections'][number]['kind'], str
   security: 'Security',
 };
 
-export function ReleaseNotesContent({ notes, compact = false }: { notes: DesktopReleaseNotes | null; compact?: boolean }) {
-  if (!notes) {
-    return (
-      <p className="eterx-release-muted text-[12px] leading-relaxed">
-        Release notes are unavailable for this version.
-      </p>
-    );
-  }
-
+function ReleaseNotesContent({ notes }: { notes: DesktopReleaseNotes }) {
   return (
-    <div className={compact ? 'space-y-4' : 'space-y-6'}>
-      <p className={`eterx-release-muted break-words [overflow-wrap:anywhere] ${compact ? 'text-[12px] leading-[1.65]' : 'text-[13px] leading-6'}`}>
+    <div className="space-y-6">
+      <p className="break-words [overflow-wrap:anywhere] eterx-release-summary text-[13px] leading-relaxed">
         {notes.summary}
       </p>
       {notes.sections.map(section => (
         <div key={section.kind}>
-          <span className="eterx-release-category" data-kind={section.kind}>{sectionLabels[section.kind]}</span>
-          <ul className={compact ? 'mt-2.5 space-y-3' : 'mt-3 space-y-4'}>
+          <h4 className="eterx-release-category-heading">
+            <span className="eterx-release-category" data-kind={section.kind}>{sectionLabels[section.kind]}</span>
+          </h4>
+          <ul className="mt-3 space-y-4">
             {section.items.map((item, index) => (
               <li key={`${section.kind}-${index}`} className="min-w-0 break-words [overflow-wrap:anywhere]">
-                <p className={`font-medium ${compact ? 'text-[12px] leading-5' : 'text-[13px] leading-5'}`}>{item.title}</p>
+                <p className="leading-5 text-[13px] font-semibold">{item.title}</p>
                 {item.description && (
-                  <p className={`eterx-release-muted mt-1 ${compact ? 'text-[11.5px] leading-[1.65]' : 'text-[12.5px] leading-[1.75]'}`}>
+                  <p className="eterx-release-muted mt-1 text-[12.5px] leading-[1.75]">
                     {item.description}
                   </p>
                 )}
@@ -55,23 +50,30 @@ export function UpdateWhatsNew({ state }: { state: DesktopUpdateState }) {
   if (!notes) return null;
 
   return (
-    <section className="eterx-release-highlights mt-7 rounded-xl border p-5" aria-label="What’s New">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-[15px] font-semibold tracking-[-0.01em]">What’s New</h3>
-          {version !== 'development' && (
-            <p className="eterx-release-muted mt-1.5 text-[11px]">
-              EterX {version}{dateLabel ? ` · ${dateLabel}` : ''}
-            </p>
-          )}
+    <section className="eterx-release-highlights mt-7 min-w-0 overflow-hidden rounded-xl border" aria-label="What’s New">
+      <header className="eterx-release-header flex flex-wrap items-center justify-between gap-3 border-b px-4 py-4 sm:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="eterx-release-icon flex size-9 shrink-0 items-center justify-center rounded-lg" aria-hidden="true">
+            <Sparkles size={18} />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-[19px] font-semibold leading-tight tracking-[-0.025em]">What’s New</h3>
+            {version !== 'development' && (
+              <p className="eterx-release-muted mt-1 text-[11.5px] leading-4 [overflow-wrap:anywhere]">
+                EterX {version}{dateLabel ? ` · ${dateLabel}` : ''}
+              </p>
+            )}
+          </div>
         </div>
         {version !== 'development' && (
-          <span className="eterx-release-version rounded-full border px-2.5 py-1 text-[10.5px] font-medium">
+          <span className="eterx-release-version rounded-full border px-2.5 py-1 text-[11px] font-medium" data-available={Boolean(state.availableVersion)}>
             {state.availableVersion ? 'New release' : 'Installed version'}
           </span>
         )}
+      </header>
+      <div className="px-4 py-5 sm:px-5">
+        <ReleaseNotesContent notes={notes} />
       </div>
-      <ReleaseNotesContent notes={notes} />
     </section>
   );
 }

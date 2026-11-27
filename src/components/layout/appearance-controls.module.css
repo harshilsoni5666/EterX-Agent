@@ -31,7 +31,7 @@
 
 .folderRow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, var(--appearance-control-width));
+  grid-template-columns: minmax(0, 1fr) minmax(0, 49%);
   align-items: center;
   gap: 14px;
 }
@@ -49,7 +49,7 @@
 }
 
 .iconHeader .settingText {
-  flex: 1 1 115px;
+  flex: 1 1 110px;
 }
 
 .title {
@@ -70,7 +70,7 @@
   overflow-wrap: anywhere;
 }
 
-:is(.folderButton, .action, .sourceOption, .iconOption, .paletteOption) {
+:is(.folderButton, .action, .paletteOption) {
   border: 1px solid var(--appearance-border);
   border-radius: 10px;
   background: var(--appearance-fill);
@@ -79,33 +79,19 @@
   transition: background-color 150ms ease, border-color 150ms ease;
 }
 
-.folderButton,
-.sourceOption {
+.folderButton {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   min-width: 0;
-  padding: 7px 9px;
+  width: 100%;
+  min-height: 42px;
+  padding: 6px 10px;
   text-align: start;
 }
 
-.folderButton {
-  width: 100%;
-  min-height: 45px;
-}
-
-.controlIcon {
-  display: grid;
-  flex: none;
-  width: 28px;
-  aspect-ratio: 1;
-  place-items: center;
-  border-radius: 7px;
-  background: var(--appearance-active-fill);
-  color: var(--appearance-active);
-}
-
+.folderSymbol,
 .folderChevron {
   color: var(--appearance-muted);
 }
@@ -164,43 +150,44 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 30px;
+  min-height: 31px;
   padding: 4px 9px;
+  border-radius: 8px;
   font-size: 12px;
   font-weight: 550;
 }
 
-.iconSources,
-.iconGrid,
-.paletteGrid {
+.currentIcon {
   display: grid;
-  gap: 8px;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--appearance-border);
+  border-radius: 9px;
+  background: var(--appearance-fill);
+  color: var(--foreground);
 }
 
-.iconSources {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 12px;
+.iconActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.sourceOption {
-  min-height: 42px;
+.iconStatus {
+  margin-top: 8px;
+  color: var(--appearance-muted);
   font-size: 12px;
-  font-weight: 550;
-  line-height: 1.3;
 }
 
-.generatedPanel {
-  margin-top: 12px;
-  padding: 8px 10px 10px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--background) 28%, transparent);
+.suggestions {
+  margin-top: 14px;
 }
 
 .iconToolbar {
   justify-content: space-between;
-  padding-inline-start: 2px;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
   color: var(--foreground);
   font-size: 12px;
   font-weight: 600;
@@ -213,23 +200,49 @@
 }
 
 .iconGrid {
+  display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--appearance-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--background) 35%, transparent);
+}
+
+.iconGrid.iconLoading {
+  display: flex;
+  min-height: 60px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--appearance-muted);
+  font-size: 12px;
 }
 
 .iconOption {
   position: relative;
   display: flex;
   min-width: 0;
-  min-height: 66px;
+  min-height: 52px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  padding: 6px 3px;
+  gap: 4px;
+  padding: 4px 3px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--appearance-muted);
   font-size: 11px;
-  font-weight: 550;
+  font-weight: 500;
+  line-height: 1.15;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
 }
+
+.suggestedIcon { color: var(--foreground); }
+
+.iconOption[aria-pressed='true'] { color: var(--foreground); }
+.iconOption[aria-pressed='true'] .suggestedIcon { color: var(--appearance-active); }
 
 .selectionIcon,
 .tileCheck {
@@ -311,6 +324,8 @@
 }
 
 .paletteGrid {
+  display: grid;
+  gap: 8px;
   width: 100%;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -379,22 +394,22 @@
   line-height: 1.25;
 }
 
-:is(.folderButton, .action, .sourceOption, .iconOption, .paletteOption):hover:where(:not(:disabled)) {
+:is(.folderButton, .action, .iconOption, .paletteOption):hover:where(:not(:disabled)) {
   border-color: var(--appearance-hover-border);
   background: var(--appearance-hover-fill);
 }
 
-:is(.folderButton[aria-expanded='true'], .sourceOption[aria-pressed='true'], .iconOption[aria-pressed='true'], .paletteOption[aria-pressed='true']) {
+:is(.folderButton[aria-expanded='true'], .action[aria-pressed='true'], .iconOption[aria-pressed='true'], .paletteOption[aria-pressed='true']) {
   border-color: var(--appearance-active-border);
   background: var(--appearance-active-fill);
 }
 
-:is(.folderButton, .action, .sourceOption, .iconOption, .paletteOption, .contrastControl input):focus-visible {
+:is(.folderButton, .action, .iconOption, .paletteOption, .contrastControl input):focus-visible {
   outline: 2px solid var(--appearance-active);
   outline-offset: 2px;
 }
 
-:is(.action, .sourceOption, .iconOption):disabled {
+:is(.action, .iconOption):disabled {
   opacity: 0.6;
   cursor: default;
 }
@@ -415,9 +430,9 @@
 }
 
 @container appearance (max-width: 315px) {
-  .iconSources { grid-template-columns: minmax(0, 1fr); }
+  .iconActions { flex-basis: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :is(.folderButton, .action, .sourceOption, .iconOption, .paletteOption) { transition: none; }
+  :is(.folderButton, .action, .iconOption, .paletteOption) { transition: none; }
 }

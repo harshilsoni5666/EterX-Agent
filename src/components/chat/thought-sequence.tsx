@@ -11,7 +11,7 @@ import { getActionSummary } from './action-summary';
 import { extractWebSources, getToolMedia, getWebActivity, hasDesignedToolPreview, parseToolResult, toolResultFailed } from '../../lib/tool-result-presentation';
 import { WebSourceActivity, WebSourceChips } from './web-source-activity';
 import { getTextPlaybackId, usePacedText } from './use-paced-text';
-import { LivePendingIndicator, useLiveFallbackLabel } from './live-pending-indicator';
+import { LivePendingIndicator, useLiveFallbackLabel, type TurnPendingMode } from './live-pending-indicator';
 import { createPortal } from 'react-dom';
 import { InlineRunNotice } from './inline-run-notice';
 import { useFilePanelActions } from '../../contexts/FilePanelContext';
@@ -4696,7 +4696,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, showStartupIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes, renderContextCompaction, workbenchOnly = false }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes, renderContextCompaction?: (log: any) => React.ReactNode, workbenchOnly?: boolean }) => {
+export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, pendingIndicatorMode, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes, renderContextCompaction, workbenchOnly = false }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, pendingIndicatorMode?: TurnPendingMode, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes, renderContextCompaction?: (log: any) => React.ReactNode, workbenchOnly?: boolean }) => {
   const containerRef = useLiveFeedFlow(isThinking && isLast);
   const isFlowLog = (l: any) => {
     if (workbenchOnly && !isWorkbenchTrace(l)) return false;
@@ -5033,8 +5033,8 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
         const groupKey = `g-${ getActionIdentity(seg.logs[0], firstIdx) }`;
         return <JoinedActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === displaySegs.length - 1} keepOpenWhileRunning={isThinking && isLast} allLogs={timelineLogs} />;
       })}
-      {showLiveIndicator && showStartupIndicator && isThinking && isLast && displaySegs.length === 0 && timelineLogs.length === 0 && (
-        <LivePendingIndicator key="task-startup" mode="startup" />
+      {showLiveIndicator && pendingIndicatorMode && isThinking && isLast && displaySegs.length === 0 && timelineLogs.length === 0 && (
+        <LivePendingIndicator key="task-pending" mode={pendingIndicatorMode} />
       )}
     </div>
   );

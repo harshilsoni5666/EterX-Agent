@@ -80,6 +80,8 @@ export class ToolResultCompactor {
    */
   compact(toolName: string, args: Record<string, any>, result: any): any {
     if (result === null || result === undefined) return result;
+    // Ask User replies are user input. Preserve every answer and selection.
+    if (toolName === 'ask_user') return result;
     if (toolName === 'workspace_run_command') {
       result = structuredTerminalBatch(result);
       if (this.isStructuredTerminalBatch(result)) {
@@ -158,7 +160,7 @@ export class ToolResultCompactor {
   compactBatch(toolNames: string[], argsList: Record<string, any>[], results: any[], contextWindow?: number): any[] {
     if (results.length === 0) return results;
     const reads = results.map((result, index) => isSourceRead(toolNames[index], argsList[index] || {}, result));
-    const sizes = results.map(result => this.estimateSize(result));
+    const sizes = results.map((result, index) => toolNames[index] === 'ask_user' ? 0 : this.estimateSize(result));
     const total = sizes.reduce((sum, size) => sum + size, 0);
     const batchBudget = Math.min(reads.some(Boolean) ? 48_000 : MAX_TOOL_BATCH_SIZE,
       terminalOutputPageChars(48_000, contextWindow));

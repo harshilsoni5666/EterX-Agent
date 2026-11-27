@@ -11,7 +11,7 @@ import { PremiumSend } from '../ui/premium-icons';
 import { ModelBadges, usePausedProviders } from '../updates/model-badges';
 import { Shimmer } from '../ui/shimmer';
 import { normalizeScheduledTask, scheduledTaskSection, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
-import { pendingScheduledTaskWriteAt, persistScheduledTasks } from '../../lib/scheduled-task-sync';
+import { pendingScheduledTaskWriteAt, persistScheduledTasks, readLocalScheduledTasks, runScheduledTaskNow } from '../../lib/scheduled-task-sync';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { isModelCatalogStorageKey, PROVIDER_BASE_URLS_STORAGE_KEY, readAvailableModelEntries, refreshSavedModelCatalog } from '../../lib/model-catalog-client';
 import { requestJson } from '../../lib/request-json';
@@ -236,6 +236,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   });
 
   // Scheduled tasks storage state
+  const [runTaskError, setRunTaskError] = useState('');
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskItem[]>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -252,7 +253,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     if (!focusTaskRequest) return;
     const task = scheduledTasks.find(item => item.id === focusTaskRequest.id);
     if (!task) return;
-    const section = scheduledTaskSection(task.status);
+    const section = scheduledTaskSection(task);
     if (selectedSection !== section) {
       setSelectedSection(section);
       return;
@@ -321,10 +322,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       const pendingLocalWriteAt = pendingScheduledTaskWriteAt();
         if (pendingLocalWriteAt && Date.now() - pendingLocalWriteAt < 15_000) return;
       if (pendingLocalWriteAt) appStorage.removeItem('eterx_scheduled_tasks_sync_pending');
+        const beforeFetch = appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY);
         const response = await requestJson('/api/scheduled-tasks', { cache: 'no-store', signal: controller.signal }, 15_000);
         if (!response.ok) return;
         const snapshot = await response.json();
-        if (disposed || pendingScheduledTaskWriteAt()) return;
+        if (disposed || pendingScheduledTaskWriteAt() || appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) !== beforeFetch) return;
         const durable = Array.isArray(snapshot?.tasks) ? snapshot.tasks.map(normalizeScheduledTask) : [];
       const local = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
         if (durable.length === 0 && Number(snapshot?.savedAt || 0) <= 0 && Array.isArray(local) && local.length > 0) {
@@ -412,24 +414,24 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   // Task lists filtered & sorted per specification
   const myListTasks = useMemo(() => {
     return scheduledTasks
-      .filter(t => t.status === 'scheduled' || t.status === 'paused')
+      .filter(t => scheduledTaskSection(t) === 'my-list')
       .sort((a, b) => b.createdAt - a.createdAt);
   }, [scheduledTasks]);
 
   const queueTasks = useMemo(() => {
     const priorityWeight: Record<string, number> = { high: 3, medium: 2, low: 1 };
     return scheduledTasks
-      .filter(t => t.status === 'queued' || t.status === 'running')
+      .filter(t => scheduledTaskSection(t) === 'queue')
       .sort((a, b) => {
         const weightDiff = (priorityWeight[b.priority] || 1) - (priorityWeight[a.priority] || 1);
         if (weightDiff !== 0) return weightDiff;
-        return a.scheduledTimestamp - b.scheduledTimestamp;
+        return (a.runNowRequestedAt ?? a.scheduledTimestamp) - (b.runNowRequestedAt ?? b.scheduledTimestamp);
       });
   }, [scheduledTasks]);
 
   const completedTasks = useMemo(() => {
     return scheduledTasks
-      .filter(t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled')
+      .filter(t => scheduledTaskSection(t) === 'completed')
       .sort((a, b) => (b.executedAt || b.createdAt) - (a.executedAt || a.createdAt));
   }, [scheduledTasks]);
 
@@ -499,6 +501,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       updatedAt: Date.now(),
       scheduledTimestamp: scheduledTs,
       status: 'scheduled',
+      runNowRequestedAt: undefined,
     });
 
     saveTasksState(previous
@@ -549,27 +552,36 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   }, [saveTasksState, scheduledTasks]);
 
   const handleRunTaskNow = useCallback((id: string) => {
-    const updated = scheduledTasks.map(t => {
-      if (t.id === id) {
-        return {
-          ...t,
-          status: 'queued' as const,
-          scheduledTimestamp: Date.now(),
-        };
-      }
-      return t;
-    });
-    saveTasksState(updated);
-    const target = updated.find(t => t.id === id);
-    if (target) {
-      window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task: target } }));
+    setRunTaskError('');
+    try {
+      runScheduledTaskNow(id);
+      setSelectedSection('queue');
+    } catch (error) {
+      setRunTaskError(error instanceof Error ? error.message : 'Could not start this scheduled task.');
     }
-    setSelectedSection('queue');
-  }, [saveTasksState, scheduledTasks, setSelectedSection]);
+  }, [setSelectedSection]);
+
+  const handleCancelQueuedRun = useCallback((id: string) => {
+    setRunTaskError('');
+    try {
+      const tasks = readLocalScheduledTasks();
+      const task = tasks.find(item => item.id === id);
+      if (!task || task.status === 'running') return;
+      if (task.runNowRequestedAt) task.runNowRequestedAt = undefined;
+      else if (task.status === 'queued') task.status = 'paused';
+      else return;
+
+      task.updatedAt = Date.now();
+      saveTasksState(tasks);
+      setSelectedSection(scheduledTaskSection(task));
+    } catch {
+      setRunTaskError('Could not cancel this scheduled task run.');
+    }
+  }, [saveTasksState, setSelectedSection]);
 
   const handlePauseTask = useCallback((id: string) => {
     saveTasksState(scheduledTasks.map(task => task.id === id && task.status !== 'running'
-      ? { ...task, status: 'paused' as const, updatedAt: Date.now() }
+      ? { ...task, status: 'paused' as const, runNowRequestedAt: undefined, updatedAt: Date.now() }
       : task));
     setSelectedSection('my-list');
   }, [saveTasksState, scheduledTasks, setSelectedSection]);
@@ -1006,6 +1018,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   return (
     <div className="eterx-agents-view flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent select-none">
+      {runTaskError && <p role="alert" className="mb-2 text-sm text-rose-400">{runTaskError}</p>}
       <input type="file" multiple ref={sourceFileInputRef} onChange={handleBrowserSourceSelection} className="hidden" />
       <input
         type="file"
@@ -2061,7 +2074,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                             </span>
                           )}
                           <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
-                            Execution Time: {formatScheduledTimeLabel(t)}
+                            Execution Time: {t.runNowRequestedAt || (t.status === 'running' && t.history?.at(-1)?.scheduleStatusAfterRun !== undefined)
+                              ? 'Now' : formatScheduledTimeLabel(t)}
                           </span>
                         </div>
 
@@ -2072,8 +2086,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                             </button>
                           )}
                           {t.status !== 'running' && (
-                            <button type="button" onClick={() => handlePauseTask(t.id)} className="px-2.5 py-1 bg-white/5 hover:bg-amber-500/15 text-white/50 hover:text-amber-200 rounded-lg text-[11.5px] transition-colors cursor-pointer">
-                              Cancel run
+                            <button type="button" onClick={() => handleCancelQueuedRun(t.id)} className="px-2.5 py-1 bg-white/5 hover:bg-amber-500/15 text-white/50 hover:text-amber-200 rounded-lg text-[11.5px] transition-colors cursor-pointer">
+                              {t.runNowRequestedAt ? 'Cancel extra run' : 'Cancel run'}
                             </button>
                           )}
                         </div>

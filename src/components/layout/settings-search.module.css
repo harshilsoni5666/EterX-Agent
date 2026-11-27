@@ -1,12 +1,4 @@
 .header {
-  --search-field: #1c1c1c;
-  --search-field-focus: #262626;
-  --search-menu: #202020;
-  --search-line: rgb(255 255 255 / 12%);
-  --search-text: #eee;
-  --search-muted: #a5a5a5;
-  --search-hover: rgb(255 255 255 / 7%);
-  --search-shadow: 0 12px 32px rgb(0 0 0 / 36%), 0 2px 8px rgb(0 0 0 / 24%);
   position: relative;
   z-index: 40;
   display: flex;
@@ -14,18 +6,8 @@
   justify-content: flex-end;
   flex: 0 0 2.75rem;
   padding-inline: 12px;
-  border-bottom: 1px solid var(--search-line);
-}
-
-:global(:root[data-theme='light']) .header {
-  --search-field: var(--light-surface, #f5f5f2);
-  --search-field-focus: var(--light-selected, #eaeae6);
-  --search-menu: var(--light-canvas, #fff);
-  --search-line: var(--light-line-hover, rgb(30 30 30 / 15%));
-  --search-text: var(--light-ink, #222);
-  --search-muted: var(--light-muted, #666);
-  --search-hover: var(--light-hover, #f3f3f1);
-  --search-shadow: var(--light-menu-shadow, 0 12px 32px rgb(0 0 0 / 13%));
+  border-bottom: 1px solid var(--settings-border);
+  background-color: var(--settings-header);
 }
 
 .field {
@@ -35,18 +17,20 @@
   width: min(242px, 100%);
   height: 32px;
   padding-inline: 9px 4px;
-  border-radius: 7px;
-  background: var(--search-field);
-  color: var(--search-text);
+  border: 1px solid var(--settings-control-border);
+  border-radius: 8px;
+  background-color: var(--settings-control);
+  color: var(--settings-text);
 }
 
 .field:focus-within {
-  background: var(--search-field-focus);
+  background-color: var(--settings-surface-hover);
+  border-color: var(--settings-accent);
 }
 
 .searchIcon {
   flex-shrink: 0;
-  color: var(--search-muted);
+  color: var(--settings-muted);
   pointer-events: none;
 }
 
@@ -64,7 +48,7 @@
 }
 
 .field input::placeholder {
-  color: var(--search-muted);
+  color: var(--settings-muted);
   opacity: 1;
 }
 
@@ -74,30 +58,25 @@
   height: 23px;
   place-items: center;
   border-radius: 4px;
-  color: var(--search-muted);
+  color: var(--settings-muted);
   cursor: pointer;
 }
 
 .clear:hover,
 .clear:focus-visible {
-  background: var(--search-hover);
-  color: var(--search-text);
+  background-color: var(--settings-surface-hover);
+  color: var(--settings-text);
 }
 
 .dropdown {
   position: absolute;
-  inset-block-start: calc(100% + 3px);
+  inset-block-start: calc(100% + 5px);
   inset-inline-end: 12px;
   width: min(350px, calc(100% - 24px));
   max-height: min(310px, max(90px, calc(100dvh - 190px)));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px;
-  border: 1px solid var(--search-line);
-  border-radius: 10px;
-  background: var(--search-menu);
-  color: var(--search-text);
-  box-shadow: var(--search-shadow);
 }
 
 .list {
@@ -116,8 +95,12 @@
   cursor: pointer;
 }
 
-.option:is(:hover, [aria-selected='true']) {
-  background: var(--search-hover);
+.option:hover {
+  background-color: var(--settings-surface-hover);
+}
+
+.option[aria-selected='true'] {
+  background-color: var(--settings-selected);
 }
 
 .optionIcon {
@@ -125,9 +108,9 @@
   flex: 0 0 27px;
   height: 27px;
   place-items: center;
-  border: 1px solid var(--search-line);
+  border: 1px solid var(--settings-control-border);
   border-radius: 6px;
-  color: var(--search-muted);
+  color: var(--settings-muted);
 }
 
 .optionCopy {
@@ -151,13 +134,13 @@
 }
 
 .optionPath {
-  color: var(--search-muted);
+  color: var(--settings-muted);
   font-size: 11px;
 }
 
 .optionArrow {
   flex-shrink: 0;
-  color: var(--search-muted);
+  color: var(--settings-accent);
   opacity: 0;
 }
 
@@ -169,12 +152,12 @@
   display: grid;
   gap: 4px;
   padding: 12px;
-  color: var(--search-muted);
+  color: var(--settings-muted);
   font-size: 12px;
 }
 
 .empty strong {
-  color: var(--search-text);
+  color: var(--settings-text);
   font-weight: 600;
 }
 

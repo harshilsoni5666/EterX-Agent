@@ -1,5 +1,5 @@
 import { appStorage } from './client-storage';
-import { SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord, type ScheduledFocusUpdate } from './scheduled-tasks';
+import { normalizeScheduledTask, queueScheduledTaskRunNow, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord, type ScheduledFocusUpdate } from './scheduled-tasks';
 
 let writeChain: Promise<boolean> = Promise.resolve(true);
 let writeSequence = 0;
@@ -31,7 +31,7 @@ export function updateScheduledTaskFocus(id: string, update: ScheduledFocusUpdat
       if (appStorage.getItem(SYNC_PENDING_KEY) === syncToken) {
         appStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(snapshot.tasks));
         const task = snapshot.tasks.find((item: ScheduledTaskRecord) => item.id === id);
-        if (update.action === 'reschedule' && update.at === 'now' && task?.status === 'queued') {
+        if (update.action === 'reschedule' && update.at === 'now' && task?.runNowRequestedAt) {
           window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task } }));
         }
         window.dispatchEvent(new CustomEvent(SCHEDULED_TASKS_UPDATED_EVENT));
@@ -48,6 +48,24 @@ export function updateScheduledTaskFocus(id: string, update: ScheduledFocusUpdat
   });
   writeChain = queued.then(() => true, () => prior);
   return queued;
+}
+
+export function readLocalScheduledTasks(): ScheduledTaskRecord[] {
+  const records: unknown = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
+  return Array.isArray(records) ? records.map(normalizeScheduledTask) : [];
+}
+
+export function runScheduledTaskNow(id: string) {
+  const tasks = readLocalScheduledTasks();
+  const task = tasks.find(item => item.id === id);
+  if (!task) throw new Error('This scheduled task no longer exists.');
+  if (task.status === 'running') throw new Error('This task is already running.');
+
+  if (!task.runNowRequestedAt) {
+    queueScheduledTaskRunNow(task);
+    void persistScheduledTasks(tasks);
+  }
+  window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task } }));
 }
 
 /**

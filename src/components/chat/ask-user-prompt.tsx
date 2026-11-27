@@ -1,668 +1,319 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { Check, CheckSquare, ChevronRight, ListChecks, Send, Square, Type, X } from 'lucide-react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ArrowDown, ArrowRight, ArrowUp, Check, ChevronLeft, ChevronRight, MessageSquareMore, X } from 'lucide-react';
+import {
+  formatAskUserAnswers, getAskUserFields, type AskUserAnswer, type AskUserField, type AskUserInput, type AskUserStatus,
+} from '../../lib/ask-user';
 
-type AskUserMode = 'choice' | 'text' | 'confirm' | 'multi_select' | 'short_answer';
-type AskUserIncomingMode = AskUserMode | 'questions';
-
-interface AskUserOption {
-  label: string;
-  description?: string;
-  value: string;
-}
-
-interface AskUserQuestion {
-  id?: string;
-  question: string;
-  mode?: AskUserIncomingMode;
-  options?: AskUserOption[];
-  context?: string;
-  defaultValue?: string;
-  placeholder?: string;
-  required?: boolean;
-}
-
-interface AskUserAnswer {
-  id: string;
-  question: string;
-  mode: AskUserMode;
-  answer: string;
-  selectedOption?: AskUserOption | AskUserOption[] | null;
-}
-
-interface AskUserProps {
-  question: string;
-  mode: AskUserIncomingMode;
-  options?: AskUserOption[];
-  questions?: AskUserQuestion[];
-  context?: string;
-  defaultValue?: string;
-  urgent?: boolean;
+interface AskUserProps extends AskUserInput {
   timestamp: number;
   responseKey?: string;
+  status?: AskUserStatus;
   answeredWith?: string;
-  onAnswer: (answer: string, selectedOption?: AskUserOption | AskUserOption[] | AskUserAnswer[]) => void;
+  onAnswer?: (answer: string | null) => void;
+  sourceTitle?: string;
+  onHide?: () => void;
 }
 
-async function submitAnswer(
-  responseKey: string,
-  answer: string,
-  option: unknown = null,
-  answers: AskUserAnswer[] | null = null,
-) {
-  const res = await fetch('/api/agent/answer', {
-    method: 'POST',
-    signal: AbortSignal.timeout(15_000),
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ responseKey, answer, selectedOption: option, answers }),
-  });
+type Draft = { text: string; selected: string[] };
+const emptyDraft: Draft = { text: '', selected: [] };
 
-  if (!res.ok) {
-    let message = `Answer submit failed (${res.status})`;
-    try {
-      const data = await res.json();
-      message = data.error || message;
-    } catch { }
-    throw new Error(message);
-  }
-}
+const statusLabels: Record<Exclude<AskUserStatus, 'pending'>, string> = {
+  answered: 'Answered',
+  dismissed: 'Dismissed',
+  interrupted: 'Interrupted',
+  expired: 'Expired',
+  closed: 'Closed',
+};
 
-const AskingDots = React.memo(() => (
-  <span className="eterx-ask-dots" aria-hidden="true">
-    <span />
-    <span />
-    <span />
-  </span>
-));
-
-const validModes = new Set<AskUserMode>(['choice', 'text', 'confirm', 'multi_select', 'short_answer']);
-
-const normalizeOption = (option: any, index: number): AskUserOption | null => {
-  if (typeof option === 'string') {
-    const label = option.trim();
-    return label ? { label, value: label } : null;
-  }
-
-  const label = String(option?.label || option?.value || '').trim();
-  if (!label) return null;
-
-  const value = String(option?.value || label).trim();
-  const description = String(option?.description || '').trim();
-
+function buildAnswer(field: AskUserField, draft: Draft): AskUserAnswer {
+  const answer: AskUserAnswer = { id: field.id, question: field.question, mode: field.mode, answer: draft.text.trim(), selectedOption: null };
+  if (!draft.selected.length) return answer;
+  if (field.mode === 'confirm') return { ...answer, answer: draft.selected[0] };
+  const byValue = new Map(field.options.map(option => [option.value, option]));
+  const selected = draft.selected.flatMap(value => byValue.has(value) ? [byValue.get(value)!] : []);
+  if (field.mode === 'rank' && selected.length !== field.options.length) return answer;
   return {
-    label,
-    value: value || `option_${index + 1}`,
-    ...(description ? { description } : {}),
+    ...answer,
+    answer: selected.map(option => option.label).join(field.mode === 'rank' ? ' → ' : ', '),
+    selectedOption: field.mode === 'choice' ? selected[0] ?? null : selected,
   };
-};
+}
 
-const normalizeQuestionMode = (mode: any, options: AskUserOption[]): AskUserMode => {
-  const requested = validModes.has(mode) ? mode : 'short_answer';
-  if ((requested === 'choice' || requested === 'multi_select') && options.length < 2) {
-    return 'short_answer';
+export function AskUserPrompt(props: AskUserProps) {
+  const { timestamp, responseKey, urgent, onAnswer, answeredWith, sourceTitle, onHide } = props;
+  const { question, mode, options, questions, required, context, defaultValue, placeholder } = props;
+  const fields = useMemo(() => getAskUserFields({ question, mode, options, questions, required, context, defaultValue, placeholder }),
+    [question, mode, options, questions, required, context, defaultValue, placeholder]);
+  const [step, setStep] = useState(0);
+  const [drafts, setDrafts] = useState(() => new Map<string, Draft>());
+  const [busy, setBusy] = useState<'send' | 'dismiss' | null>(null);
+  const [error, setError] = useState('');
+  const [receipt, setReceipt] = useState<{ status: Exclude<AskUserStatus, 'pending'>; answer?: string }>();
+  const inFlight = useRef(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const moveFocus = useRef(false);
+  const titleId = useId();
+  const contextId = useId();
+
+  const currentIndex = Math.min(step, fields.length - 1);
+  const field = fields[currentIndex];
+  const status = receipt?.status ?? (answeredWith ? 'answered' : props.status ?? 'pending');
+  const openedFromFocus = Boolean(onHide);
+
+  useEffect(() => {
+    if (!moveFocus.current) return;
+    moveFocus.current = false;
+    heading.current?.focus({ preventScroll: true });
+  }, [currentIndex]);
+
+  useEffect(() => {
+    if (openedFromFocus && status === 'pending') heading.current?.focus();
+  }, [openedFromFocus, status]);
+
+  if (!field) return null;
+
+  const grouped = fields.length > 1;
+  const groupTitle = questions?.length ? question?.trim() : '';
+  const cardTitle = groupTitle || (grouped ? 'Questions' : field.question);
+  const hideOnEscape = (event: React.KeyboardEvent) => {
+    if (event.key !== 'Escape' || !onHide) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onHide();
+  };
+
+  if (status !== 'pending') {
+    const reply = receipt?.answer || answeredWith;
+    return (
+      <details className="eterx-ask-shell eterx-ask-receipt" onKeyDown={hideOnEscape}>
+        <summary>
+          {status === 'answered' ? <Check size={16} aria-hidden="true" /> : <MessageSquareMore size={16} aria-hidden="true" />}
+          <span className="eterx-ask-receipt-title">{cardTitle}</span>
+          <span className="eterx-ask-receipt-status">{statusLabels[status]}</span>
+          <ChevronRight size={15} className="eterx-ask-disclosure" aria-hidden="true" />
+        </summary>
+        <div className="eterx-ask-receipt-body">
+          {reply ? <p>{reply}</p> : grouped ? <ol>{fields.map(item => <li key={item.id}>{item.question}</li>)}</ol> : <p>{field.question}</p>}
+          {onHide && <button type="button" className="eterx-ask-secondary" onClick={onHide}>Hide card</button>}
+        </div>
+      </details>
+    );
   }
-  return requested;
-};
 
-const formatAnswerSummary = (answers: AskUserAnswer[]) => {
-  if (answers.length === 0) return 'No answer provided';
-  if (answers.length === 1) return answers[0].answer || 'No answer provided';
+  const draft = drafts.get(field.id) ?? emptyDraft;
+  const currentAnswer = buildAnswer(field, draft).answer;
+  const isLast = currentIndex === fields.length - 1;
+  const hasOptions = field.options.length > 0 && (field.mode === 'choice' || field.mode === 'multi_select' || field.mode === 'rank');
+  const isRanking = hasOptions && field.mode === 'rank';
+  const isChoice = hasOptions && field.mode === 'choice';
+  const isConfirm = field.mode === 'confirm';
+  const positions = new Map(draft.selected.map((value, index) => [value, index]));
+  const rankedOptions = isRanking ? [...field.options].sort((left, right) => {
+    const last = field.options.length;
+    return (positions.get(left.value) ?? last) - (positions.get(right.value) ?? last);
+  }) : field.options;
+  const help = [questions?.length ? context?.trim() : '', field.context].filter((value, index, all) => value && all.indexOf(value) === index);
+  const canAdvance = Boolean(currentAnswer || (!field.required && grouped));
 
-  return answers
-    .map((answer, index) => `${index + 1}. ${answer.question}: ${answer.answer || 'No answer provided'}`)
-    .join('\n');
-};
-
-export const AskUserPrompt: React.FC<AskUserProps> = ({
-  question,
-  mode,
-  options = [],
-  questions,
-  context,
-  defaultValue,
-  urgent,
-  timestamp,
-  responseKey,
-  answeredWith,
-  onAnswer,
-}) => {
-  const [textValues, setTextValues] = useState<Record<string, string>>({});
-  const [multiValues, setMultiValues] = useState<Record<string, string[]>>({});
-  const [directReply, setDirectReply] = useState('');
-  const [answered, setAnswered] = useState(Boolean(answeredWith));
-  const [answeredValue, setAnsweredValue] = useState(answeredWith || '');
-  const [doneOpen, setDoneOpen] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
-  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
-  const submissionInFlightRef = useRef(false);
-
-  const normalizedQuestions = useMemo(() => {
-    const sourceQuestions = Array.isArray(questions) && questions.length > 0
-      ? questions
-      : [{
-        id: 'q1',
-        question,
-        mode,
-        options,
-        context,
-        defaultValue,
-        required: true,
-      }];
-
-    return sourceQuestions
-      .map((rawQuestion, index) => {
-        const normalizedOptions = (Array.isArray(rawQuestion.options) ? rawQuestion.options : [])
-          .map(normalizeOption)
-          .filter(Boolean) as AskUserOption[];
-        const id = String(rawQuestion.id || `q${index + 1}`).trim() || `q${index + 1}`;
-        const text = String(rawQuestion.question || '').trim();
-        const normalizedMode = normalizeQuestionMode(rawQuestion.mode, normalizedOptions);
-
-        return {
-          id,
-          question: text || 'Please provide the needed detail.',
-          mode: normalizedMode,
-          options: normalizedOptions,
-          context: String(rawQuestion.context || '').trim(),
-          defaultValue: String(rawQuestion.defaultValue || '').trim(),
-          placeholder: String(rawQuestion.placeholder || '').trim(),
-          required: rawQuestion.required === false ? false : true,
-        };
-      })
-      .filter(item => item.question);
-  }, [context, defaultValue, mode, options, question, questions]);
-
-  const isQuestionGroup = normalizedQuestions.length > 1 || mode === 'questions';
-  const firstTextQuestionId = normalizedQuestions.find(item => item.mode === 'text' || item.mode === 'short_answer')?.id;
-  const requiredCount = normalizedQuestions.filter(item => item.required).length;
-  const questionTitle = isQuestionGroup
-    ? (question || `${normalizedQuestions.length} questions need your input`)
-    : normalizedQuestions[0]?.question || question;
-  const canUseDefaults = normalizedQuestions.every(item => !item.required || Boolean(item.defaultValue));
-  const unansweredRequiredCount = normalizedQuestions.filter(item => {
-    if (!item.required) return false;
-    if (item.mode === 'multi_select') return (multiValues[item.id] || []).length === 0;
-    return !String(textValues[item.id] || '').trim();
-  }).length;
-
-  useEffect(() => {
-    setTextValues(prev => {
-      let changed = false;
-      const next: Record<string, string> = {};
-
-      normalizedQuestions.forEach(item => {
-        if (prev[item.id] !== undefined) {
-          next[item.id] = prev[item.id];
-        } else {
-          next[item.id] = item.defaultValue || '';
-          changed = true;
-        }
-      });
-
-      if (Object.keys(prev).length !== Object.keys(next).length) changed = true;
-      return changed ? next : prev;
-    });
-
-    setMultiValues(prev => {
-      let changed = false;
-      const next: Record<string, string[]> = {};
-
-      normalizedQuestions.forEach(item => {
-        if (item.mode === 'multi_select') {
-          next[item.id] = prev[item.id] || [];
-          if (!prev[item.id]) changed = true;
-        }
-      });
-
-      if (Object.keys(prev).length !== Object.keys(next).length) changed = true;
-      return changed ? next : prev;
-    });
-  }, [normalizedQuestions]);
-
-  useEffect(() => {
-    if (answeredWith) {
-      setAnswered(true);
-      setAnsweredValue(answeredWith);
-    }
-  }, [answeredWith]);
-
-  useEffect(() => {
-    if (!answered && firstTextQuestionId) {
-      const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 200);
-      return () => window.clearTimeout(focusTimer);
-    }
-  }, [answered, firstTextQuestionId]);
-
-  const setTextValue = (id: string, value: string) => {
-    setTextValues(prev => ({ ...prev, [id]: value }));
+  const goTo = (index: number) => {
+    setError('');
+    if (index === currentIndex) return;
+    moveFocus.current = true;
+    setStep(index);
   };
 
-  const toggleMulti = (id: string, value: string) => {
-    setMultiValues(prev => {
-      const current = prev[id] || [];
-      const next = current.includes(value)
-        ? current.filter(item => item !== value)
-        : [...current, value];
-      return { ...prev, [id]: next };
-    });
+  const updateDraft = (value: Draft) => {
+    setError('');
+    setDrafts(previous => new Map(previous).set(field.id, value));
   };
 
-  const buildAnswers = useCallback((textOverride: Record<string, string> = textValues, multiOverride: Record<string, string[]> = multiValues) => {
-    const missing: AskUserQuestion[] = [];
+  const pick = (value: string) => {
+    const selected = draft.selected.includes(value);
+    const next = selected ? draft.selected.filter(item => item !== value)
+      : isChoice || isConfirm ? [value] : [...draft.selected, value];
+    updateDraft({ selected: next, text: '' });
+  };
 
-    const answers = normalizedQuestions.map((item): AskUserAnswer => {
-      if (item.mode === 'multi_select') {
-        const selectedValues = multiOverride[item.id] || [];
-        const selectedOptions = item.options.filter(option => selectedValues.includes(option.value));
-        const answer = selectedOptions.map(option => option.label).join(', ');
-        if (item.required && !answer) missing.push(item);
-        return {
-          id: item.id,
-          question: item.question,
-          mode: item.mode,
-          answer,
-          selectedOption: selectedOptions,
-        };
-      }
+  const moveRank = (index: number, offset: number) => {
+    const selected = [...draft.selected];
+    const next = index + offset;
+    [selected[index], selected[next]] = [selected[next], selected[index]];
+    updateDraft({ selected, text: '' });
+  };
 
-      const rawValue = String(textOverride[item.id] || '').trim();
-      if (item.required && !rawValue) missing.push(item);
+  const useSuggestion = (value: string) => {
+    const parts = isChoice ? [value] : value.split(',').map(part => part.trim());
+    const selected = parts.map(part => field.options.find(option => option.value === part || option.label === part)?.value);
+    if (hasOptions && selected.every((option): option is string => option !== undefined) &&
+        (!isRanking || selected.length === field.options.length)) {
+      updateDraft({ selected: [...new Set(selected)], text: '' });
+    } else {
+      updateDraft({ text: value, selected: [] });
+    }
+  };
 
-      if (item.mode === 'choice') {
-        const selectedOption = item.options.find(option => option.value === rawValue || option.label === rawValue) || null;
-        return {
-          id: item.id,
-          question: item.question,
-          mode: item.mode,
-          answer: selectedOption?.label || rawValue,
-          selectedOption,
-        };
-      }
-
-      return {
-        id: item.id,
-        question: item.question,
-        mode: item.mode,
-        answer: rawValue,
-        selectedOption: null,
-      };
-    });
-
-    return { answers, missing };
-  }, [multiValues, normalizedQuestions, textValues]);
-
-  const commitAnswers = useCallback(async (answers: AskUserAnswer[]) => {
-    const cleanDisplay = formatAnswerSummary(answers).trim();
-    if (answered || isSubmitting || submissionInFlightRef.current || !cleanDisplay) return;
-    submissionInFlightRef.current = true;
-
-    const selectedOption = answers.length === 1 ? (answers[0].selectedOption || null) : answers;
-
-    setIsSubmitting(true);
-    setSubmitError('');
-
+  const commit = async (answers: AskUserAnswer[] | null) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(answers ? 'send' : 'dismiss');
+    setError('');
     try {
-      await submitAnswer(responseKey || `ask_user_${timestamp}`, cleanDisplay, selectedOption, answers);
-      setAnswered(true);
-      setAnsweredValue(cleanDisplay);
-      onAnswer(cleanDisplay, selectedOption as any);
-    } catch (error: any) {
-      setAnswered(false);
-      setAnsweredValue('');
-      setSubmitError(error?.message || 'Could not submit answer.');
+      const payload = answers ? { answers } : { dismiss: true };
+      const response = await fetch('/api/agent/answer', {
+        method: 'POST',
+        signal: AbortSignal.timeout(15_000),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ responseKey: responseKey || ('ask_user_' + timestamp), ...payload }),
+      });
+      const result = await response.json().catch(() => null);
+      if (response.status === 404 || response.status === 410) {
+        setReceipt({ status: 'closed' });
+        return;
+      }
+      if (!response.ok || result?.success !== true) throw new Error(result?.error || 'Could not save your reply. Try again.');
+      const answer = answers ? String(result.answer || formatAskUserAnswers(answers)) : null;
+      setReceipt(answer ? { status: 'answered', answer } : { status: 'dismissed' });
+      onAnswer?.(answer);
+    } catch (failure) {
+      setError(failure instanceof Error && failure.name !== 'TimeoutError' && failure.name !== 'TypeError'
+        ? failure.message : 'Could not reach the agent. Try again.');
     } finally {
-      submissionInFlightRef.current = false;
-      setIsSubmitting(false);
+      inFlight.current = false;
+      setBusy(null);
     }
-  }, [answered, isSubmitting, onAnswer, responseKey, timestamp]);
+  };
 
-  const submitAll = () => {
-    const { answers, missing } = buildAnswers();
-    if (missing.length > 0) {
-      setSubmitError(missing.length === 1
-        ? 'Answer the required question before submitting.'
-        : `Answer ${missing.length} required questions before submitting.`);
+  const advance = (skip = false) => {
+    if (inFlight.current) return;
+    if (skip) updateDraft(emptyDraft);
+    if (!isLast) {
+      goTo(currentIndex + 1);
       return;
     }
-    commitAnswers(answers);
-  };
-
-  const submitDirectReply = () => {
-    const answer = directReply.trim();
-    if (!answer || normalizedQuestions.length !== 1) return;
-
-    const item = normalizedQuestions[0];
-    commitAnswers([{
-      id: item.id,
-      question: item.question,
-      mode: item.mode === 'multi_select' ? 'text' : item.mode,
-      answer,
-      selectedOption: null,
-    }]);
-  };
-
-  const submitDefaults = () => {
-    if (!canUseDefaults) return;
-
-    const nextText = normalizedQuestions.reduce<Record<string, string>>((acc, item) => {
-      acc[item.id] = item.defaultValue || '';
-      return acc;
-    }, {});
-
-    const nextMulti = normalizedQuestions.reduce<Record<string, string[]>>((acc, item) => {
-      if (item.mode === 'multi_select') {
-        const defaultParts = item.defaultValue
-          .split(',')
-          .map(part => part.trim().toLowerCase())
-          .filter(Boolean);
-        acc[item.id] = item.options
-          .filter(option => defaultParts.includes(option.value.toLowerCase()) || defaultParts.includes(option.label.toLowerCase()))
-          .map(option => option.value);
-      }
-      return acc;
-    }, {});
-
-    const { answers, missing } = buildAnswers(nextText, nextMulti);
-    if (missing.length > 0) return;
-    commitAnswers(answers);
-  };
-
-  const handleChoice = (item: AskUserQuestion & { id: string; mode: AskUserMode; options: AskUserOption[] }, option: AskUserOption) => {
-    const nextText = { ...textValues, [item.id]: option.value };
-    setTextValues(nextText);
-
-    if (normalizedQuestions.length === 1 && item.mode === 'choice') {
-      const { answers } = buildAnswers(nextText, multiValues);
-      commitAnswers(answers);
+    const answers = fields.map(item => buildAnswer(item, skip && item.id === field.id ? emptyDraft : drafts.get(item.id) ?? emptyDraft));
+    const missing = fields.findIndex((item, index) => item.required && !answers[index].answer);
+    if (missing >= 0) {
+      goTo(missing);
+      setError('Complete this question before sending your answers.');
+      return;
     }
+    void commit(answers.some(item => item.answer) ? answers : null);
   };
-
-  const handleConfirm = (item: AskUserQuestion & { id: string; mode: AskUserMode }, value: 'Yes' | 'No') => {
-    const nextText = { ...textValues, [item.id]: value };
-    setTextValues(nextText);
-
-    if (normalizedQuestions.length === 1) {
-      const { answers } = buildAnswers(nextText, multiValues);
-      commitAnswers(answers);
-    }
-  };
-
-  const renderQuestionControl = (item: AskUserQuestion & { id: string; mode: AskUserMode; options: AskUserOption[] }, compact = false) => {
-    if (item.mode === 'choice') {
-      const selectedValue = textValues[item.id] || '';
-
-      return (
-        <div className={compact ? 'eterx-ask-options eterx-ask-options-compact' : 'eterx-ask-options'}>
-          {item.options.map((option, index) => {
-            const selected = selectedValue === option.value || selectedValue === option.label;
-            return (
-              <button
-                key={option.value || option.label}
-                type="button"
-                className="eterx-ask-option"
-                onClick={() => handleChoice(item, option)}
-                disabled={isSubmitting}
-                data-selected={selected ? 'true' : undefined}
-              >
-                <span className="eterx-ask-option-index">{index + 1}</span>
-                <span className="min-w-0 flex-1">
-                  <span className="eterx-ask-option-label">{option.label}</span>
-                  {option.description && <span className="eterx-ask-option-desc">{option.description}</span>}
-                </span>
-                <ChevronRight className="h-4 w-4 shrink-0 opacity-45" />
-              </button>
-            );
-          })}
-        </div>
-      );
-    }
-
-    if (item.mode === 'multi_select') {
-      const selectedValues = multiValues[item.id] || [];
-
-      return (
-        <div className={compact ? 'eterx-ask-options eterx-ask-options-compact' : 'eterx-ask-options'}>
-          {item.options.map((option) => {
-            const checked = selectedValues.includes(option.value);
-            return (
-              <button
-                key={option.value || option.label}
-                type="button"
-                className="eterx-ask-option"
-                onClick={() => toggleMulti(item.id, option.value)}
-                disabled={isSubmitting}
-                data-selected={checked ? 'true' : undefined}
-              >
-                <span className="eterx-ask-check">
-                  {checked ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="eterx-ask-option-label">{option.label}</span>
-                  {option.description && <span className="eterx-ask-option-desc">{option.description}</span>}
-                </span>
-              </button>
-            );
-          })}
-          {!compact && (
-            <button
-              type="button"
-              className="eterx-ask-submit"
-              onClick={submitAll}
-              disabled={selectedValues.length === 0 || isSubmitting}
-            >
-              <Send className="h-3.5 w-3.5" />
-              Submit {selectedValues.length > 0 ? `(${selectedValues.length})` : ''}
-            </button>
-          )}
-        </div>
-      );
-    }
-
-    if (item.mode === 'confirm') {
-      const selectedValue = textValues[item.id] || '';
-
-      return (
-        <div className={compact ? 'eterx-ask-confirm eterx-ask-confirm-compact' : 'eterx-ask-confirm'}>
-          <button
-            type="button"
-            className="eterx-ask-submit"
-            onClick={() => handleConfirm(item, 'Yes')}
-            disabled={isSubmitting}
-            data-selected={selectedValue === 'Yes' ? 'true' : undefined}
-          >
-            <Check className="h-3.5 w-3.5" />
-            Yes
-          </button>
-          <button
-            type="button"
-            className="eterx-ask-secondary"
-            onClick={() => handleConfirm(item, 'No')}
-            disabled={isSubmitting}
-            data-selected={selectedValue === 'No' ? 'true' : undefined}
-          >
-            No
-          </button>
-        </div>
-      );
-    }
-
-    const value = textValues[item.id] || '';
-    const isSingleText = normalizedQuestions.length === 1;
-    const isShortAnswer = item.mode === 'short_answer';
-
-    return (
-      <div className={isSingleText ? 'eterx-ask-textbox' : 'eterx-ask-textbox eterx-ask-textbox-compact'}>
-        {isShortAnswer ? (
-          <input
-            ref={item.id === firstTextQuestionId ? inputRef as React.RefObject<HTMLInputElement> : undefined}
-            value={value}
-            onChange={event => setTextValue(item.id, event.target.value)}
-            onKeyDown={event => {
-              if (isSingleText && event.key === 'Enter') {
-                event.preventDefault();
-                submitAll();
-              }
-            }}
-            placeholder={item.placeholder || item.defaultValue || 'Type a short answer'}
-            className="eterx-ask-input"
-          />
-        ) : (
-          <textarea
-            ref={item.id === firstTextQuestionId ? inputRef as React.RefObject<HTMLTextAreaElement> : undefined}
-            value={value}
-            onChange={event => setTextValue(item.id, event.target.value)}
-            onKeyDown={event => {
-              if (isSingleText && event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                submitAll();
-              }
-            }}
-            placeholder={item.placeholder || item.defaultValue || 'Type your answer'}
-            rows={3}
-            className="eterx-ask-input eterx-ask-textarea"
-          />
-        )}
-        {isSingleText && (
-          <button type="button" className="eterx-ask-submit" onClick={submitAll} disabled={!value.trim() || isSubmitting}>
-            <Send className="h-3.5 w-3.5" />
-            Send
-          </button>
-        )}
-      </div>
-    );
-  };
-
-  if (answered) {
-    return (
-      <motion.div
-        initial={{ opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="eterx-ask-shell eterx-ask-shell-done my-3 w-full"
-      >
-        <button
-          type="button"
-          className="eterx-ask-done-toggle"
-          onClick={() => setDoneOpen(open => !open)}
-          aria-expanded={doneOpen}
-        >
-          <span className="eterx-ask-status">
-            <span className="eterx-ask-status-icon"><Check className="h-3.5 w-3.5" /></span>
-            <span>Asked user</span>
-          </span>
-          <span className="eterx-ask-done-question">{isQuestionGroup ? `${normalizedQuestions.length} questions` : questionTitle}</span>
-          <ChevronRight className={`h-4 w-4 shrink-0 transition-transform ${doneOpen ? 'rotate-90' : ''}`} />
-        </button>
-        <AnimatePresence>
-          {doneOpen && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.16 }}
-              className="eterx-ask-done-body"
-            >
-              <div className="eterx-ask-done-label">{isQuestionGroup ? 'Questions' : 'Question'}</div>
-              <div className="eterx-ask-done-text">{isQuestionGroup ? questionTitle : normalizedQuestions[0]?.question || questionTitle}</div>
-              <div className="eterx-ask-answer">
-                <span className="eterx-ask-answer-label">Answer</span>
-                <span className="eterx-ask-answer-text">{answeredValue}</span>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-    );
-  }
-
-  const singleQuestion = normalizedQuestions[0];
-  if (!singleQuestion) return null;
-
-  const showDirectReply = normalizedQuestions.length === 1 && ['choice', 'multi_select', 'confirm'].includes(singleQuestion?.mode);
 
   return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key="ask-user"
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -6 }}
-        transition={{ duration: 0.2 }}
-        className="eterx-ask-shell my-4 w-full"
-      >
-        <div className="eterx-ask-header">
-          <span className="eterx-ask-title">
-            {isQuestionGroup ? <ListChecks className="h-3.5 w-3.5" /> : <Type className="h-3.5 w-3.5" />}
-            {urgent ? 'Input required' : 'Asking user'}
-            <AskingDots />
-            <span className="eterx-ask-count">{normalizedQuestions.length} {normalizedQuestions.length === 1 ? 'question' : 'questions'}</span>
-            {requiredCount > 0 && <span className="eterx-ask-required-chip">{requiredCount} required</span>}
-          </span>
-          {canUseDefaults && (
-            <button type="button" className="eterx-ask-skip" onClick={submitDefaults} disabled={isSubmitting}>
-              <X className="h-3.5 w-3.5" />
-              Use defaults
-            </button>
-          )}
-        </div>
+    <form className="eterx-ask-shell eterx-ask-panel" aria-labelledby={titleId} aria-busy={Boolean(busy)}
+      onKeyDown={hideOnEscape}
+      onSubmit={event => {
+        event.preventDefault();
+        if (canAdvance) advance();
+      }}>
+      <header className="eterx-ask-header">
+        <span className="eterx-ask-emblem"><MessageSquareMore size={16} aria-hidden="true" /></span>
+        <span className="eterx-ask-heading-label">
+          {groupTitle || (urgent ? 'Input needed' : 'Question for you')}
+          <small>
+            {sourceTitle && <span className="eterx-ask-source" title={sourceTitle}>{'From ' + sourceTitle}</span>}
+            {props.behavior === 'continue' ? 'Work can continue while you answer' : 'Waiting for your reply'}
+          </small>
+        </span>
+        {onHide && <button type="button" className="eterx-ask-secondary" onClick={onHide}>Hide card</button>}
+        <button type="button" className="eterx-ask-icon" onClick={() => void commit(null)} disabled={Boolean(busy)}
+          aria-label="Dismiss without answering" title="Dismiss without answering">
+          <X size={17} aria-hidden="true" />
+        </button>
+      </header>
 
-        <div className="eterx-ask-question">{questionTitle}</div>
-        {context && <div className="eterx-ask-context">{context}</div>}
+      <div className="eterx-ask-body">
+        <h3 id={titleId} ref={heading} tabIndex={-1} className="eterx-ask-question">{field.question}</h3>
+        {help.length > 0 && <div className="eterx-ask-context" id={contextId}>{help.map(text => <p key={text}>{text}</p>)}</div>}
 
-        {isQuestionGroup ? (
-          <div className="eterx-ask-form">
-            {normalizedQuestions.map((item, index) => (
-              <div key={item.id} className="eterx-ask-field">
-                <div className="eterx-ask-field-head">
-                  <span className="eterx-ask-field-index">{index + 1}</span>
-                  <span className="eterx-ask-field-title">{item.question}</span>
-                  {item.required && <span className="eterx-ask-field-required">Required</span>}
+        {isRanking && <p className="eterx-ask-hint">Select in order, then use the arrows to adjust your ranking.</p>}
+        {hasOptions && (
+          <div className="eterx-ask-options" role="group" aria-labelledby={titleId} key={field.id}>
+            {rankedOptions.map(option => {
+              const position = positions.get(option.value) ?? -1;
+              const selected = position >= 0;
+              return (
+                <div className="eterx-ask-option-row" key={option.value} data-selected={selected || undefined}>
+                  <button type="button" className="eterx-ask-option" aria-pressed={selected} disabled={Boolean(busy)}
+                    onClick={() => pick(option.value)}>
+                    <span className="eterx-ask-mark" data-round={isChoice || undefined} aria-hidden="true">
+                      {selected && (isRanking ? position + 1 : <Check size={12} />)}
+                    </span>
+                    <span className="eterx-ask-option-copy">
+                      <span>{option.label}</span>
+                      {option.description && <small>{option.description}</small>}
+                    </span>
+                    {selected && isRanking && <span className="sr-only">{'Rank ' + (position + 1)}</span>}
+                  </button>
+                  {selected && isRanking && (
+                    <div className="eterx-ask-reorder">
+                      <button type="button" className="eterx-ask-icon" aria-label={'Move ' + option.label + ' up'}
+                        onClick={() => moveRank(position, -1)} disabled={Boolean(busy) || position === 0}><ArrowUp size={15} /></button>
+                      <button type="button" className="eterx-ask-icon" aria-label={'Move ' + option.label + ' down'}
+                        onClick={() => moveRank(position, 1)} disabled={Boolean(busy) || position === draft.selected.length - 1}><ArrowDown size={15} /></button>
+                    </div>
+                  )}
                 </div>
-                {item.context && <div className="eterx-ask-field-context">{item.context}</div>}
-                {renderQuestionControl(item, true)}
-              </div>
-            ))}
-            <div className="eterx-ask-actions">
-              <button
-                type="button"
-                className="eterx-ask-submit eterx-ask-submit-primary"
-                onClick={submitAll}
-                disabled={unansweredRequiredCount > 0 || isSubmitting}
-              >
-                <Send className="h-3.5 w-3.5" />
-                Submit answers
-              </button>
-            </div>
+              );
+            })}
           </div>
-        ) : (
-          <>
-            {renderQuestionControl(singleQuestion)}
-            {showDirectReply && (
-              <div className="eterx-ask-direct">
-                <input
-                  value={directReply}
-                  onChange={event => setDirectReply(event.target.value)}
-                  onKeyDown={event => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      submitDirectReply();
-                    }
-                  }}
-                  placeholder="Or reply directly"
-                  className="eterx-ask-input"
-                />
-                <button type="button" className="eterx-ask-icon-submit" onClick={submitDirectReply} disabled={!directReply.trim() || isSubmitting} aria-label="Submit direct reply">
-                  <Send className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-          </>
         )}
 
-        {submitError && <div className="eterx-ask-error">{submitError}</div>}
-      </motion.div>
-    </AnimatePresence>
+        {isConfirm ? (
+          <div className="eterx-ask-confirm" role="group" aria-labelledby={titleId}>
+            {['Yes', 'No'].map(value => (
+              <button type="button" className="eterx-ask-secondary" key={value} aria-pressed={draft.selected.includes(value)}
+                disabled={Boolean(busy)} onClick={() => pick(value)}>{value}</button>
+            ))}
+          </div>
+        ) : field.mode === 'text' ? (
+          <textarea className="eterx-ask-input" rows={3} aria-labelledby={titleId} aria-describedby={help.length ? contextId : undefined}
+            value={draft.text} disabled={Boolean(busy)} placeholder={field.placeholder || 'Write your answer'}
+            onChange={event => updateDraft({ text: event.target.value, selected: [] })}
+            onKeyDown={event => {
+              if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }} />
+        ) : (
+          <input className="eterx-ask-input" aria-labelledby={titleId} aria-describedby={help.length ? contextId : undefined}
+            value={draft.text} disabled={Boolean(busy)}
+            placeholder={field.placeholder || (hasOptions ? 'Or write your own answer' : field.mode === 'fill_blank' ? 'Fill in the blank' : 'Write your answer')}
+            onChange={event => updateDraft({ text: event.target.value, selected: [] })} />
+        )}
+
+        {!isConfirm && field.defaultValue && !draft.text && !draft.selected.length && (
+          <button type="button" className="eterx-ask-suggestion" disabled={Boolean(busy)}
+            onClick={() => useSuggestion(field.defaultValue!)}>{'Use suggestion · ' + field.defaultValue}</button>
+        )}
+      </div>
+
+      {error && <p className="eterx-ask-error" role="alert">{error}</p>}
+
+      <footer className="eterx-ask-footer">
+        {grouped && (
+          <nav className="eterx-ask-pages" aria-label="Question navigation">
+            <button type="button" className="eterx-ask-icon" onClick={() => goTo(currentIndex - 1)}
+              disabled={Boolean(busy) || currentIndex === 0} aria-label="Previous question"><ChevronLeft size={17} /></button>
+            <span aria-live="polite">{currentIndex + 1} of {fields.length}</span>
+            <button type="button" className="eterx-ask-icon" onClick={() => goTo(currentIndex + 1)}
+              disabled={Boolean(busy) || isLast} aria-label="Next question"><ChevronRight size={17} /></button>
+          </nav>
+        )}
+        <div className="eterx-ask-actions">
+          {!field.required && (
+            <button type="button" className="eterx-ask-secondary" onClick={() => advance(true)} disabled={Boolean(busy)}>Skip</button>
+          )}
+          <button type="submit" className="eterx-ask-submit" disabled={Boolean(busy) || !canAdvance}>
+            {busy === 'send' ? 'Sending…' : busy === 'dismiss' ? 'Dismissing…' : !isLast ? 'Next' : grouped ? 'Send answers' : 'Send answer'}
+            {!busy && <ArrowRight size={15} aria-hidden="true" />}
+          </button>
+        </div>
+      </footer>
+    </form>
   );
-};
+}

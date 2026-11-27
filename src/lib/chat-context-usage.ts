@@ -31,7 +31,7 @@ export function readChatContextUsage({ logs, chatId, draft = '', selectedModel, 
     provider: String(latestModel.provider), modelId: String(latestModel.model || latestModel.modelId),
   } : fallbackModel);
   if (!model) return null;
-  const meter = readContextUsageMeter(logs, draft, model, measuredHistory);
+  const meter = readContextUsageMeter(logs, draft, model, measuredHistory, running);
   const { provider, modelId } = model;
   const latestUsage = meter.latestContextUsage;
   const modelMatches = contextMeasurementModel(latestUsage) === contextMeasurementModel(model);

@@ -2,7 +2,6 @@
 
 import { subscriptionModelLabel, subscriptionThinkingCatalog, withSubscriptionModels } from '../../lib/subscription-models-client';
 import { SUBSCRIPTION_PROVIDER_NAMES } from '../../lib/native-provider-contract';
-import { isAccountModelProvider } from '../../lib/agent/model-selector-store';
 import { getModelFastMode, setModelFastMode } from '../../lib/model-fast-preferences';
 
 import { planStepLabels, planTitle, type PlanImplementation, type TaskTrackerState } from '../../lib/task-plan-trace';
@@ -31,7 +30,7 @@ import { DictationButton } from '../ui/dictation-button';
 import type { DictationPhase } from '../../lib/microphone';
 import { Shimmer } from '../ui/shimmer';
 import { AdaptiveMenu } from '../ui/adaptive-menu';
-import { ChatModelPicker } from './chat-model-picker';
+import { ChatModelPicker, type ModelPickerScrollPositions } from './chat-model-picker';
 import { safeCopyPngToClipboard, safeCopyTextToClipboard, safeReadImageFromClipboard, safeReadTextFromClipboard } from '../ui/copy-button';
 import { ConnectorsModal } from './connectors-modal';
 import { AgentFace } from '../chat/agent-face';
@@ -396,7 +395,6 @@ export interface ChatInputProps {
       timestamp?: number;
     };
     isEstimated?: boolean;
-    awaitingSelectedModelMeasurement?: boolean;
   } | null;
   queuedFollowUps?: QueuedFollowUpItem[];
   chatMedia?: ChatMediaItem[];
@@ -1089,6 +1087,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
   const [modelPickerInstance, setModelPickerInstance] = useState(0);
+  const [modelPickerProvider, setModelPickerProvider] = useState<MainAgentProvider | null>(null);
+  const modelPickerScrollPositions = useRef<ModelPickerScrollPositions>(new Map());
   const closeModelPicker = useCallback(() => setShowModelMenu(false), []);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [codingDetails, setCodingDetails] = useState<CodingAgentId | null>(null);
@@ -2599,9 +2599,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       ? activeThinkingOptions.find(option => option.id === normalizedActiveThinkingLevel) || activeThinkingOptions[0]
       : undefined;
   }, [activeThinkingOptions, normalizedActiveThinkingLevel]);
-  const modelDisplayLabel = selectedModel
-    ? isAccountModelProvider(selectedModel.provider) ? `${MODEL_PROVIDER_LABEL[selectedModel.provider]} · ${selectedModel.label}` : selectedModel.label
-    : 'Select a model';
+  const modelDisplayLabel = selectedModel?.label ?? 'Select a model';
 
   // Normalize this composer's active level without rewriting model defaults.
   // Only an explicit thinking-level edit should persist a new default; a
@@ -3020,19 +3018,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <div className="mt-3 flex items-end justify-between gap-4 tabular-nums">
                   <div>
                     <div className="eterx-context-panel-percent text-[13px] font-semibold">
-                      {contextUsage.awaitingSelectedModelMeasurement ? 'Awaiting model count' : `${formatContextUsagePercent(utilization)} used`}
+                      {formatContextUsagePercent(utilization)} used
                     </div>
                     <div className="eterx-context-panel-meta mt-0.5 text-[10.5px] font-medium">
-                      {contextUsage.awaitingSelectedModelMeasurement
-                        ? `Selected window · ${formatExactContextTokens(safeContextWindow)} tokens`
-                        : <>{contextUsage.isEstimated ? '~' : ''}{formatContextUsageTokenCount(remainingTokens)} tokens available</>}
+                      {formatContextUsageTokenCount(remainingTokens)} tokens available
                     </div>
                   </div>
-                  {!contextUsage.awaitingSelectedModelMeasurement && (
-                    <div className="eterx-context-panel-total text-right text-[12px] font-medium">
-                      {contextUsage.isEstimated ? '~' : ''}{formatContextUsageTokenCount(safeUsedTokens)} / {formatExactContextTokens(safeContextWindow)} tokens
-                    </div>
-                  )}
+                  <div className="eterx-context-panel-total text-right text-[12px] font-medium">
+                    {formatContextUsageTokenCount(safeUsedTokens)} / {formatExactContextTokens(safeContextWindow)} tokens
+                  </div>
                 </div>
                 {contextUsage.contextLimitNote && (
                   <div className="eterx-context-panel-meta mt-1 text-[10.5px] leading-4">
@@ -3046,7 +3040,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 )}
 
                 <div className="eterx-context-panel-track mt-2 h-1.5 overflow-hidden rounded-full">
-                  <div className="flex h-full overflow-hidden rounded-full" style={{ width: `${contextUsage.awaitingSelectedModelMeasurement ? 0 : utilization}%` }}>
+                  <div className="flex h-full overflow-hidden rounded-full" style={{ width: `${utilization}%` }}>
                     {contextUsageRows.length > 0
                       ? contextUsageRows.filter(row => row.tokens > 0).map(row => (
                           <span
@@ -3069,7 +3063,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           <span className="h-3 w-3 shrink-0 rounded-[3px]" style={{ backgroundColor: row.color }} aria-hidden="true" />
                           <span className="eterx-context-panel-row-label min-w-0 flex-1 truncate text-[12px] font-medium">{row.label}</span>
                           <span className="eterx-context-panel-row-value shrink-0 text-[12px] font-medium tabular-nums">
-                            {formatContextUsageTokenCount(row.tokens, { prefixTilde: row.tokens > 0 })}
+                            {formatContextUsageTokenCount(row.tokens)}
                           </span>
                         </div>
                       ))}
@@ -3233,8 +3227,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   ['Latest request agent', chatUsage?.latestCacheOwner || 'Not reported'],
                   ['Latest request model', chatUsage?.latestCacheModel || 'Not reported'],
                   ['Cache reporting coverage', chatUsage?.cacheReportingCoverage == null ? 'Not reported' : `${(chatUsage.cacheReportingCoverage * 100).toFixed(1)}% of input tokens`],
-                  ['Current context (active agent)', contextUsage?.awaitingSelectedModelMeasurement ? 'Awaiting selected model count'
-                    : contextUsage && contextUsage.contextWindow > 0 ? `${contextUsage.isEstimated ? '~' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
+                  ['Current context (active agent)', contextUsage && contextUsage.contextWindow > 0
+                    ? `${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
                 ].map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4"><dt className="opacity-65">{label}</dt><dd className="text-right font-medium tabular-nums">{value}</dd></div>)}
               </dl>
               {chatUsage?.latestCacheExplanation && <p className="mt-3 text-xs leading-relaxed opacity-75">{chatUsage.latestCacheExplanation}</p>}
@@ -3913,9 +3907,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   Number.isFinite(contextUsage!.usedTokens) ? contextUsage!.usedTokens : 0,
                 ));
                 const exactUtilization = Math.max(0, Math.min(100, (safeUsedTokens / safeContextWindow) * 100));
-                const pending = contextUsage!.awaitingSelectedModelMeasurement;
                 const usedPercent = formatContextUsagePercent(exactUtilization);
                 const leftPercent = formatContextUsagePercent(100 - exactUtilization);
+                const contextLabel = contextUsage!.isEstimated ? 'Estimated context' : 'Context window';
                 return (
                 <Tooltip
                   side="top"
@@ -3926,16 +3920,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   content={(
                     <div className="flex h-[68px] w-full flex-col items-center justify-center px-2 text-center">
                       <div className="eterx-context-usage-label text-[11px] font-medium leading-[14px]">
-                        {pending ? 'Awaiting model count' : contextUsage!.isEstimated ? 'Estimated context' : 'Context window'}
+                        {contextLabel}
                       </div>
                       <div className="eterx-context-usage-primary mt-px whitespace-nowrap text-[12.5px] font-semibold leading-4">
-                        {pending ? `${formatContextTokenCount(safeContextWindow)} token window` : <>{usedPercent} used <span className="eterx-context-usage-muted font-medium">({leftPercent} left)</span></>}
+                        {usedPercent} used <span className="eterx-context-usage-muted font-medium">({leftPercent} left)</span>
                       </div>
-                      {!pending && (
-                        <div className="eterx-context-usage-secondary whitespace-nowrap text-[11.5px] font-medium leading-[15px] tabular-nums">
-                          {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
-                        </div>
-                      )}
+                      <div className="eterx-context-usage-secondary whitespace-nowrap text-[11.5px] font-medium leading-[15px] tabular-nums">
+                        {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
+                      </div>
                     </div>
                   )}
                 >
@@ -3944,7 +3936,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     type="button"
                     onClick={() => setShowContextUsagePanel(open => !open)}
                     className="eterx-context-usage-trigger relative grid h-[38px] w-[24px] shrink-0 place-items-center"
-                    aria-label={pending ? 'Context usage, awaiting selected model count' : `${contextUsage!.isEstimated ? 'Estimated context' : 'Context window'} ${usedPercent} used`}
+                    aria-label={`${contextLabel}, ${usedPercent} used`}
                     aria-expanded={showContextUsagePanel}
                     aria-haspopup="dialog"
                     data-open={showContextUsagePanel ? 'true' : undefined}
@@ -3962,7 +3954,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         strokeWidth="2.4"
                         strokeLinecap="round"
                         pathLength="100"
-                        strokeDasharray={`${pending ? 0 : exactUtilization} 100`}
+                        strokeDasharray={`${exactUtilization} 100`}
+                        visibility={exactUtilization > 0 ? 'visible' : 'hidden'}
                       />
                     </svg>
                   </button>
@@ -4249,6 +4242,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         onOpenSettingsTab('api');
                       })}
                       selectedModel={selectedModel}
+                      browsedProvider={modelPickerProvider}
+                      onBrowseProvider={setModelPickerProvider}
+                      scrollPositions={modelPickerScrollPositions}
                       providerLabels={MODEL_PROVIDER_LABEL}
                       getThinkingOptions={getThinkingLevelOptions}
                       getThinkingLevel={getEffectiveThinkingLevel}

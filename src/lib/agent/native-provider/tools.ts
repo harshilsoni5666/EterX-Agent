@@ -27,7 +27,8 @@ export function nativeAgentTools(context: ProjectContext, signal: AbortSignal, i
   const runtime = context as ProjectContext & { disableSubAgents?: boolean; _customAgentProfile?: Parameters<typeof getCustomAgentAllowedToolNames>[0] };
   const allowed = isCustomAgentRuntimeContext(runtime) ? getCustomAgentAllowedToolNames(runtime._customAgentProfile) : null;
   const canSpawn = context.allowAgentSpawning && !runtime.disableSubAgents && !context.planMode;
-  const toolContext = { ...runtime, abortSignal: signal };
+  const toolContext = { ...runtime, abortSignal: signal,
+    runAbortSignal: (runtime as ProjectContext & { abortSignal?: AbortSignal }).abortSignal };
   const definitions = isAgentBuilderRuntimeContext(context) ? agentBuilderTools
     : allowed ? globalToolRegistry.getAllTools().filter(tool => allowed.has(tool.name) && !isBuilderOnlyToolName(tool.name) && (canSpawn || tool.name !== 'spawn_sub_agent'))
     : [askUserTool, ...(canSpawn ? [spawnSubAgentTool, agentCommTool] : []),
@@ -43,7 +44,8 @@ export function nativeAgentTools(context: ProjectContext, signal: AbortSignal, i
       if (!capability.allowed) return JSON.stringify({ error: capability.reason });
       const blocked = await requestToolApproval(tool.name, args, toolContext, { requireScope: true });
       if (blocked) return JSON.stringify(blocked);
-      return (JSON.stringify(await tool.execute(args, toolContext)) || '').slice(0, 120_000);
+      const output = JSON.stringify(await tool.execute(args, toolContext)) || '';
+      return tool.name === 'ask_user' ? output : output.slice(0, 120_000);
     }),
   }));
 }

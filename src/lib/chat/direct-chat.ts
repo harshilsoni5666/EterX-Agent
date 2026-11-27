@@ -5,6 +5,7 @@ import { buildChatMediaContext } from '../chat-media-store';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Anthropic, OpenAI } from '../agent/model-clients';
 import { GoogleGenAI } from '@google/genai';
 import {
@@ -408,7 +409,7 @@ const compactDirectHistoryAtBoundary = async (
 const asDataUrl = (mimeType: string, base64: string) =>
   base64.startsWith('data:') ? base64 : `data:${mimeType};base64,${base64}`;
 
-const waitForGeminiFileReady = async (client: GoogleGenAI, uploadedFile: any) => {
+const waitForGeminiFileReady = async (client: GoogleGenAI, uploadedFile: any, signal?: AbortSignal) => {
   let current = uploadedFile;
   const state = () => String(current?.state || '').toUpperCase();
   if (!current?.name || state() !== 'PROCESSING') {
@@ -416,8 +417,8 @@ const waitForGeminiFileReady = async (client: GoogleGenAI, uploadedFile: any) =>
     return current;
   }
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    current = await client.files.get({ name: current.name });
+    await delay(1000, undefined, { signal });
+    current = await client.files.get({ name: current.name, config: { abortSignal: signal } });
     if (state() === 'ACTIVE') return current;
     if (state() === 'FAILED') throw new Error('Gemini Files API processing failed.');
   }
@@ -430,6 +431,7 @@ async function prepareAttachments(
   apiKey?: string,
   modelName?: string,
   modelWireCapabilities?: string[],
+  signal?: AbortSignal,
 ): Promise<PreparedAttachment[]> {
   assertProviderAttachmentsSupported(provider || 'custom', modelName || '', attachments.map(item => ({
     name: item.name,
@@ -440,6 +442,7 @@ async function prepareAttachments(
 
   let geminiClient: GoogleGenAI | null = null;
   for (const attachment of attachments.slice(0, 50)) {
+    throwIfAborted(signal);
     const mimeType = String(
       attachment.mimeType || attachment.inlineData?.mimeType || 'application/octet-stream',
     ).toLowerCase();
@@ -453,8 +456,9 @@ async function prepareAttachments(
     if (!base64 && attachment.path && !canUseGeminiFileInput && provider !== 'openai' && provider !== 'anthropic') {
       try {
         const stat = await fs.stat(attachment.path);
-        if (stat.isFile()) base64 = (await fs.readFile(attachment.path)).toString('base64');
+        if (stat.isFile()) base64 = (await fs.readFile(attachment.path, { signal })).toString('base64');
       } catch (error: any) {
+        throwIfAborted(signal);
         throw new Error(`ATTACHMENT_PREPARATION_FAILED: cannot read ${attachment.name}: ${formatUnknownError(error)}`);
       }
     }
@@ -467,10 +471,11 @@ async function prepareAttachments(
         geminiClient ||= new GoogleGenAI({ httpOptions: { timeout: MODEL_REQUEST_TIMEOUT_MS }, apiKey });
         const uploaded = await waitForGeminiFileReady(geminiClient, await geminiClient.files.upload({
           file: attachment.path!,
-          config: { mimeType },
-        }));
+          config: { mimeType, abortSignal: signal },
+        }), signal);
         fileUri = String((uploaded as any)?.uri || '').trim() || undefined;
       } catch (error: any) {
+        throwIfAborted(signal);
         throw new Error(`ATTACHMENT_PREPARATION_FAILED: Gemini could not upload ${attachment.name}: ${formatUnknownError(error)}`);
       }
     }
@@ -480,14 +485,15 @@ async function prepareAttachments(
       try {
         if (provider === 'openai') {
           const client = new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey });
-          const uploaded = await client.files.create({ file: createReadStream(attachment.path), purpose: 'user_data' });
+          const uploaded = await client.files.create({ file: createReadStream(attachment.path, { signal }), purpose: 'user_data' }, { signal });
           fileId = uploaded.id;
         } else {
           const client = new Anthropic({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
-          const uploaded = await client.beta.files.upload({ file: createReadStream(attachment.path) });
+          const uploaded = await client.beta.files.upload({ file: createReadStream(attachment.path, { signal }) }, { signal });
           fileId = uploaded.id;
         }
       } catch (error: any) {
+        throwIfAborted(signal);
         throw new Error(`ATTACHMENT_PREPARATION_FAILED: ${provider} could not upload ${attachment.name}: ${formatUnknownError(error)}`);
       }
     }
@@ -1231,6 +1237,7 @@ export async function streamDirectChat(
   onTrace: DirectChatTraceHandler,
   signal?: AbortSignal,
 ): Promise<{ text: string; provider: MainAgentProvider; model: string }> {
+  throwIfAborted(signal);
   const { provider, model } = resolveDirectModel(request);
   const thinking = resolveDirectThinking(request, provider, model);
   let history = flattenHistory(request.history || []);
@@ -1240,7 +1247,7 @@ export async function streamDirectChat(
   const firstKey = getProviderKeyRound(provider, request.runtimeSettings, request.chatId || request.runId)[0] || getProviderKey(provider, request.runtimeSettings);
   const key = firstKey;
   const attachments = isNativeSessionProvider(provider) ? []
-    : await prepareAttachments(request.mediaAttachments || [], provider, key, model, request.modelWireCapabilities);
+    : await prepareAttachments(request.mediaAttachments || [], provider, key, model, request.modelWireCapabilities, signal);
   const prompt = String(request.prompt || '').trim();
   let currentText = buildDirectRequestText(
     prompt || 'Please review the attached file or media and help me with it.',
@@ -1539,7 +1546,7 @@ export async function streamDirectChat(
             }
             const attemptAttachments = attemptKey === firstKey
               ? attachments
-              : await prepareAttachments(request.mediaAttachments || [], provider, attemptKey, model, request.modelWireCapabilities);
+              : await prepareAttachments(request.mediaAttachments || [], provider, attemptKey, model, request.modelWireCapabilities, signal);
             const attemptText = currentText;
             return provider === 'gemini'
               ? streamGeminiDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal)

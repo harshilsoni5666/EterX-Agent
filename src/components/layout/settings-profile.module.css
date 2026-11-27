@@ -1,9 +1,9 @@
 .root {
-  --profile-text: #ededed;
-  --profile-muted: #a0a0a0;
+  --profile-text: var(--settings-text, #ededed);
+  --profile-muted: var(--settings-muted, #a0a0a0);
   --profile-subtle: #929292;
-  --profile-line: #2b2b2b;
-  --profile-hover: #252525;
+  --profile-line: var(--settings-border, #2b2b2b);
+  --profile-hover: var(--settings-surface-hover, #252525);
   --profile-tooltip: #262626;
   --activity-gap: 4px;
   --activity-weekly-height: 132px;
@@ -19,11 +19,11 @@
 }
 
 :global(:root[data-theme='light']) .root {
-  --profile-text: #24272c;
-  --profile-muted: #626970;
+  --profile-text: var(--settings-text, #24272c);
+  --profile-muted: var(--settings-muted, #626970);
   --profile-subtle: #697078;
-  --profile-line: #dedfe2;
-  --profile-hover: #eceff3;
+  --profile-line: var(--settings-border, #dedfe2);
+  --profile-hover: var(--settings-surface-hover, #eceff3);
   --profile-tooltip: #ffffff;
   --activity-0: #e3e6eb;
   --activity-1: #bfdcf6;
@@ -36,7 +36,7 @@
 .identityText { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .name { width: 100%; max-width: 360px; padding: 2px 0; border: 0; border-bottom: 1px solid transparent; border-radius: 0; background: transparent; color: var(--profile-text); outline: none; font-size: 17px; font-weight: 600; }
 .name:hover { border-bottom-color: var(--profile-line); }
-.name:focus { border-bottom-color: #398ddd; }
+.name:focus { border-bottom-color: var(--settings-accent, #398ddd); }
 .name::placeholder { color: var(--profile-muted); }
 .identityCaption { font-size: 12px; color: var(--profile-subtle); }
 .activity { padding: 32px 0 28px; }

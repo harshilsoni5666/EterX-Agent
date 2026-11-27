@@ -391,7 +391,7 @@ export async function getOrCreateAgentCache(
 
 /**
  * Call this when a request errors with NOT_FOUND referring to a cachedContent.
- * Clears the stale entry and immediately tries to rebuild the cache.
+ * Invalidate that exact cache and join any replacement already in progress.
  *
  * Returns the new cache name, or null if rebuild also fails.
  */
@@ -400,7 +400,8 @@ export async function handleAgentCacheNotFound(
   apiKey: string,
   modelName: string,
   staticSystemInstruction: string,
-  toolDeclarations: any[]
+  toolDeclarations: any[],
+  rejectedCacheName: string,
 ): Promise<string | null> {
   const cacheToolDeclarations = normalizeGeminiCacheToolDeclarations(toolDeclarations);
   const store = getCacheStore();
@@ -410,11 +411,13 @@ export async function handleAgentCacheNotFound(
     buildContentHash(staticSystemInstruction, cacheToolDeclarations),
   );
   const existing = store.get(key);
-  if (existing) {
+  if (existing?.name === rejectedCacheName) {
     clearEntry(existing);
     store.delete(key);
+    // A concurrent lookup may still be resolving with this removed name.
+    getInflightStore().delete(key);
+    console.log(`[AgentCache] 🔄 Cache NOT_FOUND — rebuilding for model ${modelName} ...`);
   }
-  console.log(`[AgentCache] 🔄 Cache NOT_FOUND — rebuilding for model ${modelName} ...`);
   return getOrCreateAgentCache(ai, apiKey, modelName, staticSystemInstruction, toolDeclarations);
 }
 

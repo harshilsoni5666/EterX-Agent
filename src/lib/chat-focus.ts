@@ -1,5 +1,6 @@
 import { isModelProvider, parseModelEntryKey, type ModelSelectorEntry } from './agent/model-selector-store';
 import { isConclusiveSettledAnswerTrace, isFeedTurnBoundary, isTerminalWorkTrace } from './chat-feed-lifecycle';
+import { getAskUserResponseKey, isAskUserPrompt, isPendingAskUser } from './ask-user';
 
 export interface ChatFocusDisposition {
   focusSettled?: boolean;
@@ -25,6 +26,11 @@ export const FOCUS_GROUPS = [
 export type FocusGroup = typeof FOCUS_GROUPS[number]['id'];
 export type FocusStatus = 'working' | 'input' | 'done' | 'failed' | 'stopped' | 'scheduled' | 'queued' | 'paused' | 'snoozed' | 'woke' | 'settled';
 
+export interface FocusQuestionTarget {
+  chatId: string;
+  responseKey: string;
+}
+
 export function canSettleFocusItem(status?: FocusStatus): boolean {
   return status !== 'working' && status !== 'input';
 }
@@ -33,6 +39,7 @@ interface FocusTraceState {
   activityAt: number;
   status?: 'input' | 'done' | 'failed' | 'stopped';
   question?: any;
+  pendingQuestions: ReadonlyMap<string, any>;
   turnModel?: ModelSelectorEntry;
   previousModel?: ModelSelectorEntry;
 }
@@ -61,15 +68,29 @@ export function readFocusTrace(logs: any[]): FocusTraceState {
   const turn = logs[boundary];
   const runId = turn?.runId || turn?.turnId;
   const startAt = Number(turn?.timestamp || 0);
+  const belongsToRun = (log: any) => Boolean(runId && (
+    log.runId === runId || log.turnId === runId || log.rootRunId === runId || log.rootTurnId === runId));
   const turnLogs = logs.slice(boundary + 1).filter(log => log &&
-    (!runId || (!log.runId && !log.turnId) || log.runId === runId || log.turnId === runId ||
-      log.rootRunId === runId || log.rootTurnId === runId));
+    (!runId || (!log.runId && !log.turnId) || belongsToRun(log)));
   const mainLogs = turnLogs.filter(isMainTrace);
   const terminal = mainLogs.findLast(isTerminalWorkTrace);
   const answer = mainLogs.findLast(isConclusiveSettledAnswerTrace);
-  const question = turnLogs.findLast(log => log.type === 'ask_user' && !log.answeredAt &&
-    log.answeredWith === undefined && log.interrupted !== true &&
-    typeof log.question === 'string' && log.question.trim());
+  const pendingQuestions = new Map<string, any>();
+  if (!terminal) {
+    // An agent can keep a question open across a live steering boundary.
+    const questions = new Map<string, any>();
+    logs.forEach((log, index) => {
+      if (!isAskUserPrompt(log) ||
+        !(belongsToRun(log) || index > boundary && (!runId || (!log.runId && !log.turnId)))) return;
+      const key = getAskUserResponseKey(log);
+      const previous = questions.get(key);
+      if (!previous || isPendingAskUser(previous)) questions.set(key, log);
+    });
+    for (const [key, log] of questions) {
+      if (isPendingAskUser(log)) pendingQuestions.set(key, log);
+    }
+  }
+  const question = Array.from(pendingQuestions.values()).at(-1);
   const terminalKind = String(terminal?.status || terminal?.type || '').toLowerCase();
   const failed = terminal && (terminalKind === 'error' || terminalKind === 'failed' || terminal.type === 'error');
   const stopped = terminal && stoppedStatuses.has(terminalKind);
@@ -80,7 +101,7 @@ export function readFocusTrace(logs: any[]): FocusTraceState {
   const previousModel = turnModel || boundary < 0 ? undefined : readTraceModel(
     logs.slice(0, boundary).findLast(log => isMainTrace(log) && readTraceModel(log)),
   );
-  const state = { activityAt, status, question: status === 'input' ? question : undefined, turnModel, previousModel } satisfies FocusTraceState;
+  const state = { activityAt, status, question, pendingQuestions, turnModel, previousModel } satisfies FocusTraceState;
   traceCache.set(logs, state);
   return state;
 }

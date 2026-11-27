@@ -10,12 +10,13 @@ import { appStorage, appStorageReady } from '../../lib/client-storage';
 import { preloadAppPanel } from '../../lib/preload-app-panel';
 import { IMPORT_LABELS, type ImportOrigin } from '../../lib/imports/types';
 import { chatMatchesScope, chatWorkspaceKey, chatWorkspaceName, RECENTS_CHAT_SCOPE, type ChatScope } from '../../lib/chat-scope';
-import { canSettleFocusItem, FOCUS_GROUPS, type ChatFocusDisposition, type FocusGroup, type FocusStatus } from '../../lib/chat-focus';
+import { canSettleFocusItem, FOCUS_GROUPS, type ChatFocusDisposition, type FocusGroup, type FocusQuestionTarget, type FocusStatus } from '../../lib/chat-focus';
+import { getAskUserResponseKey } from '../../lib/ask-user';
 import type { LiveChatLedger } from '../../lib/live-chat-ledger';
-import type { ScheduledTaskRecord } from '../../lib/scheduled-tasks';
+import { canRunTaskFromFocus, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
 import { FocusChatPreview, FocusRowContent, FocusTaskRow, formatFocusDate, shortFocusTaskTitle, useSidebarFocus } from './sidebar-focus';
-import { FocusQuestionButton, FocusScheduleActions } from './sidebar-focus-actions';
-import { updateScheduledTaskFocus } from '../../lib/scheduled-task-sync';
+import { FocusQuestionButton, FocusRowActions } from './sidebar-focus-actions';
+import { runScheduledTaskNow } from '../../lib/scheduled-task-sync';
 import { FocusChatHover } from './sidebar-focus-hover';
 import { ChatHistoryNotice, type ChatHistoryStatus } from '../chat/chat-history-notice';
 
@@ -773,8 +774,30 @@ const lightweightSidebarCss = `
     cursor: wait;
   }
 
+  .eterx-focus-input-button {
+    display: inline-grid;
+    justify-items: end;
+  }
+
+  .eterx-focus-input-state {
+    grid-area: 1 / 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .eterx-focus-input-answer,
+  .eterx-sidebar-focus-row:is(:hover, :focus-within) .eterx-focus-input-default {
+    visibility: hidden;
+  }
+
+  .eterx-sidebar-focus-row:is(:hover, :focus-within) .eterx-focus-input-answer {
+    visibility: visible;
+  }
+
   .eterx-focus-row-actions > button:is(:hover, :focus-visible, [data-state="open"]),
-  .eterx-focus-input-button:is(:hover, :focus-visible) {
+  .eterx-sidebar-focus-row:is(:hover, :focus-within) .eterx-focus-input-button,
+  .eterx-focus-input-button:is(:hover, :focus-visible, [aria-expanded="true"]) {
     background: color-mix(in srgb, currentColor 12%, transparent);
   }
 
@@ -806,117 +829,22 @@ const lightweightSidebarCss = `
     }
   }
 
-  .eterx-focus-schedule-menu {
+  :root .eterx-sidebar-menu.eterx-focus-run-menu {
     z-index: 100100;
-    width: min(252px, calc(100vw - 20px));
-    padding: 5px;
+    min-width: 120px;
+    padding: 4px;
+    border-radius: 12px !important;
   }
 
-  .eterx-focus-schedule-label {
-    overflow: hidden;
-    padding: 4px 8px;
-    color: var(--sidebar-muted-text);
-    font-size: 11px;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  .eterx-focus-schedule-menu .eterx-sidebar-project-menu-item {
-    justify-content: space-between;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .eterx-focus-schedule-menu .eterx-sidebar-project-menu-item > small {
-    color: var(--sidebar-muted-text);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .eterx-focus-schedule-menu [role="separator"] {
-    height: 1px;
-    margin: 4px 7px;
-    background: var(--border);
-  }
-
-  .eterx-focus-dialog-overlay {
-    position: fixed;
-    z-index: 100199;
-    inset: 0;
-    background: #0006;
-  }
-
-  .eterx-focus-dialog {
-    position: fixed;
-    z-index: 100200;
-    top: 50%;
-    left: 50%;
-    translate: -50% -50%;
-    width: min(360px, calc(100vw - 24px));
-    max-height: calc(100dvh - 24px);
-    overflow: auto;
-    padding: 16px;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--background);
-    color: var(--foreground);
-    box-shadow: 0 18px 60px #0005;
-  }
-
-  .eterx-focus-dialog.eterx-focus-question-dialog {
-    width: min(590px, calc(100vw - 24px));
-    padding: 32px 14px 14px;
-  }
-
-  .eterx-focus-question-dialog .eterx-ask-shell {
-    margin-block: 0;
-  }
-
-  .eterx-focus-dialog > h2 {
-    padding-inline-end: 28px;
-    font-weight: 600;
-  }
-
-  .eterx-focus-dialog-close {
-    position: absolute;
-    top: 9px;
-    right: 9px;
-    display: grid;
-    width: 25px;
-    height: 25px;
-    place-items: center;
-    border-radius: 5px;
-    color: var(--sidebar-muted-text);
-    cursor: pointer;
-  }
-
-  .eterx-focus-dialog-close:hover {
-    background: var(--muted);
-  }
-
-  .eterx-focus-dialog:not(.eterx-focus-question-dialog) form {
-    display: grid;
-    gap: 12px;
-    margin-top: 12px;
-    font-size: 13px;
-  }
-
-  .eterx-focus-dialog:not(.eterx-focus-question-dialog) input {
-    display: block;
-    width: 100%;
-    margin-top: 5px;
+  .eterx-focus-run-menu .eterx-sidebar-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 7px 9px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--input-bg);
-  }
-
-  .eterx-focus-dialog:not(.eterx-focus-question-dialog) button[type="submit"] {
-    justify-self: end;
-    padding: 5px 13px;
-    border-radius: 6px;
-    background: var(--muted);
+    color: var(--sidebar-text);
+    font-size: 13px;
     cursor: pointer;
+    white-space: nowrap;
   }
 
   .eterx-focus-preview-anchor {
@@ -1130,41 +1058,6 @@ const lightweightSidebarCss = `
 
   .eterx-sidebar-project-search input {
     color: var(--sidebar-strong-text);
-  }
-
-  .eterx-sidebar-project-menu-item {
-    min-height: 32px;
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    padding: 5px 8px;
-    color: var(--sidebar-muted-text);
-    font-size: 12.5px;
-    font-weight: 500;
-    text-align: left;
-    transition: background-color 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
-  }
-
-  .eterx-sidebar-project-menu-item:hover,
-  .eterx-sidebar-project-menu-item:focus-visible,
-  .eterx-sidebar-project-menu-item.is-selected {
-    background: var(--sidebar-hover-bg);
-    border-color: transparent;
-    color: var(--sidebar-hover-text);
-    box-shadow: none;
-    outline: none;
-  }
-
-  .eterx-sidebar-project-menu-item:hover,
-  .eterx-sidebar-project-menu-item:focus-visible {
-    box-shadow: none;
-  }
-
-  .eterx-sidebar-project-menu-item:active {
-    transform: scale(0.985);
   }
 
   .eterx-sidebar-project-loading {
@@ -1754,8 +1647,8 @@ interface SidebarProps {
   focusGroup: FocusGroup | null;
   onFocusGroupChange: (group: FocusGroup | null) => void;
   onSetChatSettled: (id: string, settled: boolean) => void;
-  onSetChatReminder: (id: string, at: number | 'now') => Promise<void>;
-  onAnswerChatQuestion: (id: string, timestamp: number, answer: string, responseKey?: string) => void;
+  focusedQuestion?: FocusQuestionTarget | null;
+  onOpenFocusQuestion: (target: FocusQuestionTarget, trigger: HTMLButtonElement) => void;
   onOpenFocusTask: (task: ScheduledTaskRecord) => void;
   historyStatus: ChatHistoryStatus;
   retryHistory: () => void;
@@ -1781,7 +1674,7 @@ interface SidebarProps {
 export const Sidebar = React.memo<SidebarProps>(
   ({
     isOpen, titlebarToggleExternal = false, setIsOpen, createNewChat, chatScope: selectedChatScope, onChatScopeChange, chats, historyStatus, retryHistory, activeChatId, additionalActiveChatIds, loadChat, copyChat, openChatWindow, deleteChat, deleteChats, renameChat, toggleFavorite, moveChatToProject, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking,
-    liveChatLedger, focusGroup, onFocusGroupChange, onSetChatSettled, onSetChatReminder, onAnswerChatQuestion, onOpenFocusTask,
+    liveChatLedger, focusGroup, onFocusGroupChange, onSetChatSettled, focusedQuestion, onOpenFocusQuestion, onOpenFocusTask,
 }) => {
   const reduceMotion = useReducedMotion();
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean, anchoredToButton?: boolean } | null>(null);
@@ -2988,24 +2881,22 @@ export const Sidebar = React.memo<SidebarProps>(
                       ? [task && shortFocusTaskTitle(task.title), formatFocusDate(focusChat.nextRunAt)].filter(Boolean).join(' · ')
                       : task ? shortFocusTaskTitle(task.title) : undefined;
                     const focusActions = focusChat && !isSelectMode && canSettleFocusItem(focusChat.status) ? (
-                      <FocusScheduleActions
+                      <FocusRowActions
                         title={task?.title || chat.title}
-                        task={Boolean(task)}
                         settled={focusChat.group === 'settled'}
-                        scheduledAt={focusChat.nextRunAt}
-                        onSchedule={async at => {
-                          if (!task) return onSetChatReminder(chat.id, at);
-                          await updateScheduledTaskFocus(task.id, { action: 'reschedule', at });
+                        onRunNow={task && canRunTaskFromFocus(task, focusChat.group === 'settled') ? () => {
+                          runScheduledTaskNow(task.id);
                           if (focusChat.group === 'settled') onSetChatSettled(chat.id, false);
-                        }}
+                        } : undefined}
                         onSettle={() => onSetChatSettled(chat.id, focusChat.group !== 'settled')}
                       />
                     ) : undefined;
-                    const focusInput = focusChat?.question && !isSelectMode ? (
+                    const questionKey = getAskUserResponseKey(focusChat?.question);
+                    const focusInput = questionKey && !isSelectMode ? (
                       <FocusQuestionButton
                         title={chat.title}
-                        question={focusChat.question}
-                        onAnswer={(timestamp, answer, key) => onAnswerChatQuestion(chat.id, timestamp, answer, key)}
+                        expanded={focusedQuestion?.chatId === chat.id && focusedQuestion.responseKey === questionKey}
+                        onOpen={trigger => onOpenFocusQuestion({ chatId: chat.id, responseKey: questionKey }, trigger)}
                       />
                     ) : undefined;
                     const chatTitle = editingChatId === chat.id && !isWorking ? (
@@ -3110,7 +3001,7 @@ export const Sidebar = React.memo<SidebarProps>(
                         data-menu-open={isMenuOpen ? 'true' : undefined}
                         aria-current={isActive && !isSelectMode ? 'page' : undefined}
                         onClick={(event) => {
-                          // Focus controls can render dialogs outside the row through portals.
+                          // Portaled row actions must not activate the conversation.
                           if (!isSelectMode && event.currentTarget.contains(event.target as Node)) {
                             loadChat(chat.id); setActiveView('chat');
                           }

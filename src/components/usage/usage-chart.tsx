@@ -1,8 +1,9 @@
 import { useId, useMemo } from 'react';
-import { Activity, ChevronDown } from 'lucide-react';
+import { Activity, CalendarDays, CalendarRange, Clock3 } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { UsageBucket, UsageDay } from '../../lib/usage/summary';
 import { compactCount, exactCount, formatUsageBucket, metricMeasured, usageScopeKey, usd, type UsageMetric } from './usage-format';
+import { UsageSelect } from './usage-controls';
 import type { UsageSeries } from './usage-series';
 import styles from './usage-dashboard.module.css';
 
@@ -66,22 +67,24 @@ export function UsageChart({ title, days, buckets, series, byModel, byHour, metr
   const hasMetric = days.some(row => metricMeasured(row, metric) > 0);
   const ticks = days.length ? [0, .25, .5, .75, 1].map(fraction => days[Math.round((days.length - 1) * fraction)].day) : [];
   const interval = byHour ? 'hour' : 'day';
+  const timeOptions = useMemo(() => {
+    const Icon = byHour ? Clock3 : CalendarDays;
+    const icon = <Icon size={14} strokeWidth={1.75} />;
+    return [...days].reverse().map(({ day }) => ({ value: day, label: formatUsageBucket(day), icon }));
+  }, [byHour, days]);
   const axis = (value: number) => isCost ? (value >= 1000 ? '$' + compactCount(value) : usd(value)) : compactCount(value);
   const tooltipValue = isCost ? usd : exactCount;
 
   return <section className={styles.chartPanel} aria-labelledby={id + '-title'}>
     <div className={styles.sectionHead}>
       <h2 id={id + '-title'}>{title}</h2>
-      {hasActivity && <label className={styles.daySelect}>
-        <span>Inspect {interval}</span>
-        <span className={styles.selectControl}>
-          <select value={day ?? ''} onChange={event => onDay(event.target.value || null)}>
-            <option value="">All {interval}s</option>
-            {[...days].reverse().map(row => <option value={row.day} key={row.day}>{formatUsageBucket(row.day)}</option>)}
-          </select>
-          <ChevronDown size={12} aria-hidden="true" />
-        </span>
-      </label>}
+      {hasActivity && <div className={styles.daySelect}>
+        <span aria-hidden="true">Inspect {interval}</span>
+        <UsageSelect label={'Inspect ' + interval} value={day} all={{
+          label: 'All ' + interval + 's',
+          icon: <CalendarRange size={14} strokeWidth={1.75} />,
+        }} options={timeOptions} onSelect={onDay} align="end" />
+      </div>}
     </div>
     {hasMetric ? <div className={styles.plot} role="group" aria-label={title}>
       <ResponsiveContainer width="100%" height="100%" minWidth={1}>

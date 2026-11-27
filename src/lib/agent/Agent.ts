@@ -111,6 +111,7 @@ import { SOURCE_READING_POLICY } from './source-read-policy';
 import { RuntimeEvidenceLedger } from './runtime-evidence';
 import { AdaptiveHarness, type AdaptiveHarnessSnapshot } from './adaptive-harness';
 import { ExecutionGovernor, type ExecutionGovernorState } from './execution-governor';
+import { AskUserInbox } from './ask-user-inbox';
 import { writeRuntimeTrace } from './runtime-trace';
 import { estimateRequestTokenBudget } from './request-token-budget';
 import {
@@ -1504,6 +1505,10 @@ export class GeminiAgentClient {
 
   /** Never consume a correction just to decide whether a stale tool may start. */
   private deferToolForPendingHumanSteering(context: ProjectContext): Record<string, any> | null {
+    if (context.askUserInbox?.hasReplies) return {
+      success: false, deferred: true, executed: false,
+      message: 'An Ask User reply is ready. Apply it at the next model boundary before choosing tools.',
+    };
     // Workers have their own direct-user mailbox; the parent queue is not theirs.
     if ((context as any).isSubAgent) return null;
     const registry = (globalThis as any).__eterxAgentRegistry;
@@ -2879,6 +2884,8 @@ ${ message.text }
       await awaitSubAgentControlBoundary(context);
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
 
+      const questionReplies = context.askUserInbox?.takeReplies();
+      if (questionReplies) messages.push({ role: 'user', content: questionReplies });
       const liveSteering = this.drainLiveSteering(context.projectId);
       let steeringAcknowledged = false;
       if (liveSteering.length > 0) {
@@ -3380,6 +3387,16 @@ ${ message.text }
       const toolCalls = Array.isArray(assistantMessage.tool_calls) ? assistantMessage.tool_calls : [];
 
       if (toolCalls.length === 0) {
+        if (context.askUserInbox?.hasWork) {
+          cancelProvisionalAnswer();
+          const replies = await context.askUserInbox.waitForReply();
+          if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
+          if (replies) {
+            if (contentText) messages.push({ role: 'assistant', content: contentText });
+            messages.push({ role: 'user', content: replies });
+            continue;
+          }
+        }
         if (this.isLiveSteeringEcho(contentText)) {
           cancelProvisionalAnswer();
           messages.push({ role: 'assistant', content: contentText });
@@ -3513,7 +3530,7 @@ ${ message.text }
             toolOutputs[index] = {
               success: false,
               deferred: true,
-              error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
+              error: 'Ask User takes precedence in this batch. Use its result to decide which work can proceed.',
             };
           }
         }
@@ -3833,6 +3850,8 @@ ${ message.text }
       await awaitSubAgentControlBoundary(context);
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
 
+      const questionReplies = context.askUserInbox?.takeReplies();
+      if (questionReplies) messages.push({ role: 'user', content: [{ type: 'text', text: questionReplies }] });
       const liveSteering = this.drainLiveSteering(context.projectId);
       let steeringAcknowledged = false;
       if (liveSteering.length > 0) {
@@ -4234,6 +4253,16 @@ ${ message.text }
       if (toolUses.length > 0) cancelProvisionalAnswer(`anthropic_work_stream_${ interactions }`);
 
       if (toolUses.length === 0) {
+        if (context.askUserInbox?.hasWork) {
+          cancelProvisionalAnswer();
+          const replies = await context.askUserInbox.waitForReply();
+          if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
+          if (replies) {
+            if (contentBlocks.length) messages.push({ role: 'assistant', content: contentBlocks });
+            messages.push({ role: 'user', content: [{ type: 'text', text: replies }] });
+            continue;
+          }
+        }
         if (this.isLiveSteeringEcho(contentText)) {
           cancelProvisionalAnswer();
           messages.push({
@@ -4369,7 +4398,7 @@ ${ message.text }
             toolOutputs[index] = {
               success: false,
               deferred: true,
-              error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
+              error: 'Ask User takes precedence in this batch. Use its result to decide which work can proceed.',
             };
           }
         }
@@ -5524,10 +5553,12 @@ OUTPUT CONTRACT
     mediaFiles: AgentMediaFile[] = [],
     imageBackupParts: any[] = []
   ): Promise<{ text: string, trace: any[] }> {
-    const runContext = { ...context, runId: (context as any).runId || (context as any).turnId || desktopRunUUID() };
+    const askUserInbox = new AskUserInbox();
+    const runContext = { ...context, askUserInbox, runId: context.runId || context.turnId || desktopRunUUID() };
     try {
       return await this.executeMessageLoopInSession(runContext, message, history, onTrace, mediaFiles, imageBackupParts);
     } finally {
+      askUserInbox.close();
       const { finishDesktopSession } = await import('./computer/desktop-session');
       // A larger workflow can invoke this agent again with the same run ID.
       // Close this loop's native resources without revoking its parent run.
@@ -6639,19 +6670,20 @@ OUTPUT CONTRACT
     };
     const activateGeminiCacheForRoute = async (
       model: string,
-      rebuildCurrent = false,
+      rejectedCacheName?: string,
     ): Promise<boolean> => {
       if (!_cacheableStaticPrompt || !_canUseContextCache) {
         fallBackToUncachedGeminiConfig();
         return false;
       }
-      const cacheName = rebuildCurrent
+      const cacheName = rejectedCacheName
         ? await handleAgentCacheNotFound(
             this.ai,
             this.getCurrentApiKey(),
             model,
             _cacheableStaticPrompt,
             _cacheToolDecls,
+            rejectedCacheName,
           )
         : await getOrCreateAgentCache(
             this.ai,
@@ -6959,6 +6991,12 @@ OUTPUT CONTRACT
       // === LIVE STEERING: Drain user mid-run feedback ===
       // Messages are queued by POST /api/agent/steer and injected here at
       // the start of each ReAct iteration â€” never mid-tool-call, never disruptive.
+      const questionReplies = context.askUserInbox?.takeReplies();
+      if (questionReplies) {
+        const lastContent = contents[contents.length - 1];
+        if (lastContent?.role === 'user' && Array.isArray(lastContent.parts)) lastContent.parts.push({ text: questionReplies });
+        else contents.push({ role: 'user', parts: [{ text: questionReplies }] });
+      }
       const unifiedSteering = this.drainLiveSteering(context.projectId);
       let steeringAcknowledged = false;
       if (unifiedSteering.length > 0) {
@@ -7296,14 +7334,14 @@ OUTPUT CONTRACT
               || isBadRequest
             );
 
-          if (isCacheRejectedError && _cacheableStaticPrompt && _canUseContextCache && !cacheRecoveryAttempted) {
+          if (isCacheRejectedError && _cachedContentName && _cacheableStaticPrompt && _canUseContextCache && !cacheRecoveryAttempted) {
             cacheRecoveryAttempted = true;
             console.warn('[GeminiClient] ⚠️ Cached content expired mid-session — rebuilding cache...');
             try {
               const cacheNotFound = errMsg.includes('NOT_FOUND')
                 || errMsg.toLowerCase().includes('not found')
                 || errMsg.includes('404');
-              if (cacheNotFound) await activateGeminiCacheForRoute(currentModel, true);
+              if (cacheNotFound) await activateGeminiCacheForRoute(currentModel, _cachedContentName);
               else {
                 _cacheableStaticPrompt = null;
                 fallBackToUncachedGeminiConfig();
@@ -7633,6 +7671,18 @@ OUTPUT CONTRACT
 
       // If no function calls, we're done â€” emit final answer
       if (functionCalls.length === 0) {
+        if (context.askUserInbox?.hasWork) {
+          cancelProvisionalAnswer();
+          const replies = await context.askUserInbox.waitForReply();
+          if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
+          if (replies) {
+            if (fullResponseContent) contents.push(fullResponseContent);
+            contents.push({ role: 'user', parts: [{ text: replies }] });
+            accumulatedText = '';
+            accumulatedThought = '';
+            continue;
+          }
+        }
         noToolCallStreak++;
 
         if (accumulatedText) {
@@ -8702,7 +8752,7 @@ OUTPUT CONTRACT
                 output: {
                   success: false,
                   deferred: true,
-                  error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
+                  error: 'Ask User takes precedence in this batch. Use its result to decide which work can proceed.',
                 },
               },
               ...(call.id ? { id: call.id } : {}),

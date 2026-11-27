@@ -11,6 +11,7 @@ import { AgentOrchestrator } from './orchestrator';
 import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
 import { taskPlanTraceIdentity } from '../task-plan-trace';
+import { getAskUserStatus, isPendingAskUser } from '../ask-user';
 import { writeRuntimeTrace } from './runtime-trace';
 import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider } from './model-routing';
 import { MODEL_PROVIDER_MODE, isModelProvider, modelEntryKey, parseModelEntryKey } from './model-selector-store';
@@ -1588,7 +1589,10 @@ class AgentRegistry {
         // write to this run even if a successor already owns the chat.
         const closingPhase = isTerminalContextCompaction(traceEvent);
         const committedUsage = traceEvent?.type === 'context_usage' && traceEvent.contextReplaced === true;
-        if ((closingPhase || committedUsage) && traceEvent.compactionId && execution.traceBuffer.some(({ data }) =>
+        const closingQuestion = traceEvent?.type === 'ask_user' && traceEvent.responseKey &&
+          getAskUserStatus(traceEvent) !== 'pending' && execution.traceBuffer.some(({ data }) =>
+            data?.responseKey === traceEvent.responseKey && isPendingAskUser(data));
+        if (closingQuestion || (closingPhase || committedUsage) && traceEvent.compactionId && execution.traceBuffer.some(({ data }) =>
           data?.chatId === traceEvent.chatId && (closingPhase
             ? isPendingContextCompaction(data) && data.compactionId === traceEvent.compactionId
             : data.type === 'context_usage' && data.contextRequestId === traceEvent.contextRequestId))) {

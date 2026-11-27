@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { createPackageWithOptions } from '@electron/asar';
 import { DEFAULT_POSTHOG_HOST, isPostHogProjectToken, postHogEndpoint } from '../src/lib/telemetry/protocol.ts';
+import desktopPostHogProject from '../telemetry/desktop-project.json' with { type: 'json' };
 
 const preparationStarted = performance.now();
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -15,8 +16,15 @@ const runtimeRoot = path.join(repositoryRoot, 'desktop-runtime');
 let telemetryConfig = {};
 try { telemetryConfig = parseEnv(fs.readFileSync(path.join(repositoryRoot, 'telemetry', '.env.local'), 'utf8')); }
 catch (error) { if (error.code !== 'ENOENT') throw error; }
-const postHogToken = (process.env.ETERX_POSTHOG_PROJECT_TOKEN ?? telemetryConfig.ETERX_POSTHOG_PROJECT_TOKEN ?? '').trim();
-const postHogHost = (process.env.ETERX_POSTHOG_HOST ?? telemetryConfig.ETERX_POSTHOG_HOST ?? '').trim() || DEFAULT_POSTHOG_HOST;
+// The public capture token is included in first-party desktop builds.
+// Hosted builds of a fork can supply their own project and capture host.
+const buildRepository = process.env.GITHUB_REPOSITORY?.trim().toLowerCase();
+const defaultProject = !buildRepository || buildRepository === 'harshilsoni5666/eterx-agent'
+  ? desktopPostHogProject : undefined;
+const postHogToken = process.env.ETERX_POSTHOG_PROJECT_TOKEN?.trim()
+  || telemetryConfig.ETERX_POSTHOG_PROJECT_TOKEN?.trim() || defaultProject?.token || '';
+const postHogHost = process.env.ETERX_POSTHOG_HOST?.trim()
+  || telemetryConfig.ETERX_POSTHOG_HOST?.trim() || defaultProject?.host || DEFAULT_POSTHOG_HOST;
 if (postHogToken && (!isPostHogProjectToken(postHogToken) || !postHogEndpoint(postHogHost))) {
   throw new Error('Configure a PostHog project token and an HTTPS origin for the packaged runtime.');
 }

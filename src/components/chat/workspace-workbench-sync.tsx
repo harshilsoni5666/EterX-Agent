@@ -1,19 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Activity } from 'lucide-react';
+import { useEffect } from 'react';
 import { isAppVisible, useAppVisibility } from '../../lib/app-visibility';
 import { activeDevelopmentPreview, openDevelopmentPreview, openWorkbenchView } from '../../lib/side-workspace-store';
 import { notifyWorkbenchClient, workbenchAction, workbenchUrl } from '../../lib/workbench/client';
 import type { PreviewJob, PreviewResult, WorkbenchFocus } from '../../lib/workbench/contracts';
-import { Tooltip } from '../ui/tooltip';
 import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 
 const seen = new Map<string, string>();
 
 export function WorkspaceWorkbenchSync({ chatId, owner }: { chatId: string; owner: string }) {
   const visible = useAppVisibility() && useWorkspacePaneVisible();
-  const [running, setRunning] = useState(0);
   useEffect(() => {
     if (!visible) return;
     const api = (window as any).electronAPI;
@@ -42,8 +39,7 @@ export function WorkspaceWorkbenchSync({ chatId, owner }: { chatId: string; owne
     };
     feed.onmessage = event => {
       try {
-        const { focus, running, previewJobId } = JSON.parse(event.data) as { focus?: WorkbenchFocus; running: number; previewJobId?: string };
-        setRunning(running);
+        const { focus, previewJobId } = JSON.parse(event.data) as { focus?: WorkbenchFocus; previewJobId?: string };
         if (focus && seen.get(chatId) !== focus.id) {
           seen.set(chatId, focus.id);
           if (seen.size > 500) seen.delete(seen.keys().next().value!);
@@ -59,10 +55,5 @@ export function WorkspaceWorkbenchSync({ chatId, owner }: { chatId: string; owne
     };
     return () => { disposed = true; feed.close(); };
   }, [chatId, owner, visible]);
-  const label = running ? 'Workbench · ' + running + ' running' : 'Workbench';
-  return <Tooltip text={label} side="bottom">
-    <button type="button" aria-label={label} className="eterx-header-icon-button eterx-wb-quick" onClick={() => openWorkbenchView(owner, chatId)}>
-      <Activity size={17} /><i hidden={!running} />
-    </button>
-  </Tooltip>;
+  return null;
 }

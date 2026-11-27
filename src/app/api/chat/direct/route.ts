@@ -22,7 +22,8 @@ import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { assertProviderAvailable, ProviderUnavailableError } from '../../../../lib/app-presentation/posthog';
 import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
-import { beginDirectChatRun, isDirectChatRunning, isManualCompactionActive } from '../../../../lib/agent/manual-compaction';
+import { beginDirectChatRun, getDirectCompactionRun, isManualCompactionActive } from '../../../../lib/agent/manual-compaction';
+import { waitForNative } from '../../../../lib/agent/native-provider/shared';
 import { waitForSubscriptionHandoff } from '../../../../lib/agent/subscription-handoff';
 import { beginTelemetryTurn } from '../../../../lib/telemetry/runtime';
 import { telemetryClientContext } from '../../../../lib/telemetry/client-context';
@@ -60,6 +61,7 @@ export async function POST(req: NextRequest) {
       selectedModel = null,
       contextCompaction = null,
       runId = '',
+      replacesRunIds = [],
     } = await readJsonObject(req);
     const prompt = cleanContextText(rawPrompt).trim();
     const chatId = String(projectId || '');
@@ -95,14 +97,39 @@ export async function POST(req: NextRequest) {
       throw error;
     }
 
-    if (isManualCompactionActive(chatId)) {
-      return attachAgentApiSessionCookie(jsonError('Context is compacting. Please wait until it finishes.', 409), session);
-    }
     if (runId !== '' && !isSafeRunId(runId)) {
       return attachAgentApiSessionCookie(jsonError('runId must be a valid identifier when provided', 400), session);
     }
-    if (isDirectChatRunning(chatId)) {
-      return attachAgentApiSessionCookie(jsonError('A reply is already running in this chat. Stop it or wait for it to finish.', 409), session);
+    if (!Array.isArray(replacesRunIds) || replacesRunIds.some(id => !isSafeRunId(id) || id === runId)) {
+      return attachAgentApiSessionCookie(jsonError('Invalid Chat reply to replace.', 400), session);
+    }
+
+    let activeRun = getDirectCompactionRun(chatId);
+    if (activeRun) {
+      // Let the previous provider release its session and finish saving context
+      // before a redirect starts. Only cancel runs named by this request.
+      const handoffSignal = AbortSignal.any([req.signal, AbortSignal.timeout(10_000)]);
+      while (activeRun && !handoffSignal.aborted &&
+        (activeRun.signal.aborted || (activeRun.runId && replacesRunIds.includes(activeRun.runId)))) {
+        if (!activeRun.signal.aborted) activeRun.controls?.cancel();
+        try {
+          await waitForNative(activeRun.finished, handoffSignal);
+        } catch {
+          break;
+        }
+        activeRun = getDirectCompactionRun(chatId);
+      }
+    }
+    if (req.signal.aborted) return new Response(null, { status: 499 });
+    const blockingRun = getDirectCompactionRun(chatId);
+    if (blockingRun) {
+      const message = blockingRun.signal.aborted
+        ? 'The previous reply is still stopping. Try sending again in a moment.'
+        : 'A reply is already running in this chat. Stop it or wait for it to finish.';
+      return attachAgentApiSessionCookie(jsonError(message, 409), session);
+    }
+    if (isManualCompactionActive(chatId)) {
+      return attachAgentApiSessionCookie(jsonError('Context is compacting. Please wait until it finishes.', 409), session);
     }
     const encoder = new TextEncoder();
     const streamAbortController = new AbortController();

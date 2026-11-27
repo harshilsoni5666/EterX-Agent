@@ -1,6 +1,7 @@
 'use client';
 import { formatModelName } from '../../lib/agent/model-presentation';
 import { requestJson } from '../../lib/request-json';
+import { isDesktopTelemetryRenderer, resolveTelemetryEnabled } from '../../lib/telemetry/preference';
 import { yieldToMainThread } from '../../lib/yield-to-main';
 import { DEFAULT_GIT_PREFERENCES, normalizeGitPreferences } from '../../lib/git/preferences';
 import { DEFAULT_SCRATCH_RETENTION_DAYS, normalizeScratchRetention } from '../../lib/managed-workspaces';
@@ -104,6 +105,7 @@ import { isLocalModelProvider, normalizeProviderBaseURL } from '../../lib/agent/
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { resolveModelContextWindow } from '../../lib/agent/model-context-window';
 import { readContextUsageMeter } from '../../lib/context-usage-meter';
+import { contextMeasurementModel } from '../../lib/context-usage-snapshot';
 import { readModelUsage, uniqueModelUsageLogs } from '../../lib/model-usage';
 import { selectMainContextLogs } from '../../lib/chat-usage-scope';
 import {
@@ -296,20 +298,6 @@ const Plus = (props: SettingsGlyphProps) => (
   </SettingsGlyph>
 );
 
-const BookOpen = (props: SettingsGlyphProps) => (
-  <SettingsGlyph {...props}>
-    <path d="M4.5 5.5c2.25-.8 4.75-.35 7.5 1.35v12.1c-2.75-1.7-5.25-2.15-7.5-1.35V5.5Z" />
-    <path d="M19.5 5.5c-2.25-.8-4.75-.35-7.5 1.35v12.1c2.75-1.7 5.25-2.15 7.5-1.35V5.5Z" />
-    <path d="M12 6.85v12.1" />
-  </SettingsGlyph>
-);
-
-const ArrowLeft = (props: SettingsGlyphProps) => (
-  <SettingsGlyph {...props}>
-    <path d="M19 12H5M11 6l-6 6 6 6" />
-  </SettingsGlyph>
-);
-
 const Trash2 = (props: SettingsGlyphProps) => (
   <SettingsGlyph {...props}>
     <path d="M5 7h14M9.1 7V5.1h5.8V7M7.1 7.2l.7 12.1h8.4l.7-12.1M10.2 10.8v5M13.8 10.8v5" />
@@ -493,7 +481,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   contextWindowSizeSelection: 'model_max',
   contextWindowSizeSelectionTouched: false,
   debugMode: false,
-  telemetry: false,
+  telemetry: isDesktopTelemetryRenderer(),
   experimentalFeatures: false,
   keyboardShortcuts: true,
   mcpServersEnabled: true,
@@ -539,6 +527,7 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
     ? value as Partial<AppSettings>
     : {};
   const next = { ...DEFAULT_SETTINGS, ...stored, ...normalizeAppearancePreferences(stored) } as AppSettings;
+  next.telemetry = resolveTelemetryEnabled(stored.telemetry, DEFAULT_SETTINGS.telemetry);
   Object.assign(next, normalizeGitPreferences(stored));
   next.dictationModel = typeof stored.dictationModel === 'string' && stored.dictationModel.trim()
     ? stored.dictationModel : DEFAULT_SETTINGS.dictationModel;
@@ -791,8 +780,6 @@ type ContextChatSummary = {
   title: string;
   updatedAt: number;
   usedTokens: number;
-  estimated: boolean;
-  awaitingModel: boolean;
   reportedWindow: number;
   modelMaximum: number;
   provider: string;
@@ -942,14 +929,9 @@ const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; disab
     aria-label={label ?? (enabled ? 'Enabled' : 'Disabled')}
     disabled={disabled}
     onClick={() => !disabled && onChange(!enabled)}
-    className={`relative w-[42px] h-[24px] rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] shrink-0 ${ disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
-      } ${ enabled ? 'bg-[#2F8BEF] shadow-none' : 'bg-[#D7D7D2] hover:bg-[#C9C9C2] dark:bg-white/10 dark:hover:bg-white/15' }`}
+    className={settingsPanelStyles.toggle}
   >
-    <motion.div
-      animate={{ x: enabled ? 20 : 2 }}
-      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-      className="absolute left-0 top-[3px] w-[18px] h-[18px] rounded-full bg-white shadow-none"
-    />
+    <span aria-hidden="true" className={settingsPanelStyles.toggleThumb} />
   </button>
 );
 
@@ -1536,158 +1518,6 @@ const ProviderMark: React.FC<{ provider: string; className?: string }> = ({ prov
   </span>
 );
 
-const MANUAL_GUIDES: Record<string, { title: string; intro: string; steps: Array<[string, string]>; tip: string }> = {
-  'first-chat': {
-    title: 'Start your first chat',
-    intro: 'A good first request gives EterX-Agent a clear outcome, useful context, and a definition of what finished looks like.',
-    steps: [
-      ['Open a new chat', 'Return to the main workspace and start a fresh conversation when the task is unrelated to your previous work. Use a descriptive first message so the chat is easy to find later.'],
-      ['Describe the outcome', 'Start with the result you want: “Prepare a launch checklist”, “Review this folder for risks”, or “Build a dashboard from this data.” Add audience, format, deadline, and constraints when they matter.'],
-      ['Add context and files', 'Attach the relevant files or select the workspace that contains them. Tell the agent which files are authoritative and which files it may edit.'],
-      ['Choose the model and agent', 'Use the model picker in the composer for model choice. Use the agent selector when a specialist or custom agent is better suited to the work.'],
-      ['Review and steer', 'Read the plan, provide corrections early, and send follow-ups if priorities change. You can ask for a summary, a preview, or a smaller next step at any time.'],
-    ],
-    tip: 'The most reliable prompt pattern is: outcome + context + constraints + deliverable format.'
-  },
-  workspaces: {
-    title: 'Workspaces, files, and changes',
-    intro: 'Workspaces give the agent a safe place to understand project context and make focused changes without losing the conversation around them.',
-    steps: [
-      ['Choose a workspace', 'Use the workspace or folder control to select the project you want to work in. Keep unrelated projects separate so file context stays focused.'],
-      ['Attach individual files', 'Attach a specific document, image, spreadsheet, or code file when the task depends on a small known set of inputs.'],
-      ['Ask for inspection first', 'For unfamiliar projects, ask EterX-Agent to map the structure, identify relevant files, and summarize conventions before asking it to edit.'],
-      ['Review every change', 'When files are edited, inspect the change summary and open the affected files. Ask for a diff, tests, or a rollback plan when the change is important.'],
-      ['Keep generated work organized', 'Ask the agent to place outputs in a named folder and use predictable filenames. This keeps future chats and manual review simple.'],
-    ],
-    tip: 'For large projects, start with a scoped folder and a short task brief instead of attaching everything.'
-  },
-  agents: {
-    title: 'Agents and work modes',
-    intro: 'EterX-Agent combines a general workflow with specialist and custom agents so you can choose the right level of focus and autonomy.',
-    steps: [
-      ['Use General mode for everyday work', 'General mode is the best default for planning, writing, research, coding, file work, and routine questions.'],
-      ['Use Autonomous mode for longer goals', 'Autonomous mode is useful when the work needs multiple steps, continued progress, or collaboration between the main agent and proxy work. Define the goal and boundaries clearly.'],
-      ['Choose a specialist when useful', 'Select a configured specialist such as coding, research, design, or review when its instructions and tools match the task better than a broad general workflow.'],
-      ['Build a custom agent when repeated', 'Create a custom agent when you have a stable role, tone, workflow, or tool policy you want to reuse. Give it a focused description and test it on a small request first.'],
-      ['Control the handoff', 'Ask the active agent to explain what it is delegating, what evidence it received, and what remains for you to review.'],
-    ],
-    tip: 'Use the least specialized agent that can do the job well; add specialization when the workflow repeats or needs strict behavior.'
-  },
-  tasks: {
-    title: 'Scheduled tasks and background work',
-    intro: 'Tasks let EterX-Agent repeat work on a schedule and keep selected chats running when the main window is hidden.',
-    steps: [
-      ['Create a task from a clear prompt', 'Describe the recurring outcome, source context, expected output, schedule, and the agent or model it should use.'],
-      ['Review the schedule', 'Confirm timezone, recurrence, next run, and whether the task should create a new chat or continue an existing one.'],
-      ['Enable background operation', 'In General settings, configure the background companion and scheduled-chat behavior when you want work to continue while the window is closed or hidden.'],
-      ['Inspect run history', 'Use the task history to review completed, failed, paused, and retried runs. Read the recorded output before changing the schedule.'],
-      ['Pause or edit safely', 'Pause a task before changing its prompt, files, permissions, or provider settings when the next run could otherwise start with stale assumptions.'],
-    ],
-    tip: 'Start recurring tasks with a low-risk read-only report. Add editing or external actions only after the output is trustworthy.'
-  },
-  live: {
-    title: 'Live conversation and voice',
-    intro: 'Live Convo provides a hands-free way to talk with the agent through the selected provider’s documented native realtime transport while keeping the same app context controls.',
-    steps: [
-      ['Configure Live Convo', 'Open the Live Convo settings, add the selected provider’s dedicated Live key, and select a documented realtime model and voice from the catalog.'],
-      ['Check the connection state', 'Wait for the provider catalog and connection status to become ready before starting. If the catalog is unavailable, check the key and endpoint first.'],
-      ['Speak in short turns', 'Give one goal at a time, pause between instructions, and ask the agent to repeat important decisions before acting.'],
-      ['Use app controls deliberately', 'Live tools can navigate settings, select agents, inspect tasks, and control supported app actions. Confirm consequential actions yourself.'],
-      ['End or resume cleanly', 'Disconnect when finished and return to the text chat when you need files, long-form output, or a detailed review trail.'],
-    ],
-    tip: 'Voice is excellent for direction and exploration; text chat is better for precise specifications, code, and documents.'
-  },
-  'settings-guide': {
-    title: 'Settings guide',
-    intro: 'Settings are organized by the part of the app they control. Configure the essentials first, then tune behavior as you learn your workflow.',
-    steps: [
-      ['API', 'Add provider keys and verify that they sync successfully. Keys are used to connect model and external-service providers.'],
-      ['Chat model picker', 'Choose from the available models grouped by connected provider.'],
-      ['General', 'Set work mode, permissions, background behavior, terminal shell, destination defaults, follow-up behavior, notifications, and this manual.'],
-      ['Profile and Personalization', 'Set identity, response preferences, tone, and instructions that should apply across conversations.'],
-      ['Appearance and Shortcuts', 'Choose theme and density, then learn or configure keyboard shortcuts for faster navigation and common actions.'],
-      ['External service, Browser, and Computer use', 'Configure web search providers and decide whether browser or computer actions are available to the agent. Review access carefully.'],
-      ['Context, Tokens, and Archives', 'Inspect context usage, token reporting, older chats, and archived conversations when you need to manage history or performance.'],
-    ],
-    tip: 'For a new install, configure API → Models → General first. Everything else can be tuned after your first successful chat.'
-  },
-  troubleshooting: {
-    title: 'Troubleshooting',
-    intro: 'When something does not work, identify whether the issue is credentials, provider discovery, permissions, workspace context, or the running task itself.',
-    steps: [
-      ['No models appear', 'Confirm the provider has a valid key in Settings → API and its endpoint is reachable.'],
-      ['A chat uses the wrong model', 'Check the active model in the composer, confirm the model is in the custom list, and verify that a saved model override is not taking priority.'],
-      ['The agent cannot access a file', 'Confirm the correct workspace is selected, attach the file directly if needed, and check whether the requested action requires additional permissions.'],
-      ['A task stopped or failed', 'Open its run history, read the first error, then check provider credentials, model availability, background settings, and the task’s file paths.'],
-      ['Live Convo will not connect', 'Check the Live provider, API key, catalog status, selected model, voice availability, and network endpoint. Reconnect after changing credentials.'],
-      ['The app feels slow', 'Reduce the task scope, use a faster model for exploration, archive irrelevant chats, and avoid attaching large unrelated folders.'],
-    ],
-    tip: 'When asking for help, include the exact screen, provider, model, action, and error message. Avoid sharing API keys or secrets.'
-  },
-};
-
-type ManualDocumentSection = {
-  title: string;
-  paragraphs: string[];
-  bullets?: string[];
-  subSections?: Array<{ title: string; text: string }>;
-};
-
-const FULL_MANUAL_SECTIONS: ManualDocumentSection[] = [
-  { title: 'Connecting a Model and API Provider', paragraphs: ['Open Settings → API, select a provider, and add a key to its provider pool. Its available chat models appear automatically in the model picker.', 'Open the picker in the chat input to choose a model and adjust its thinking level when available. You can connect multiple providers and switch between them from the same picker.'] },
-  { title: 'Connecting External Services', paragraphs: ['External services, such as web search, image generation, and other integrations, can be configured from the Settings tab.', 'Open Settings, navigate to External Services, and select the appropriate provider for the service you want to use. Add the required API key or authentication credentials to complete the connection.', 'Once the credentials have been validated, the external service will be ready to use.', 'Depending on the selected provider, you may also be able to configure additional permissions, access controls, or provider-specific settings.'] },
-  { title: 'Selecting an Agent and Operating Mode', paragraphs: ['From the chat input bar, you can select a built-in or custom agent.', 'The agent selector allows you to choose between the following operating modes:'], bullets: ['Chat Mode', 'Agent Mode', 'Autonomous Mode'], subSections: [{ title: 'Chat Mode', text: 'Chat Mode is designed for direct conversations and standard interactions with the selected model or agent.' }, { title: 'Agent Mode', text: 'Agent Mode allows the selected agent to use its available tools, instructions, memory, and connected services to complete more advanced tasks.' }, { title: 'Autonomous Mode', text: 'Autonomous Mode uses a proxy agent that works on your behalf. The proxy agent communicates with, guides, and supervises the main agent while the task is being completed. Select Autonomous Mode and send your first request; a separate proxy-agent panel will appear when the workflow begins.' }], },
-  { title: 'Communicating with the Proxy Agent', paragraphs: ['You can communicate directly with the side proxy agent while working in Autonomous Mode.', 'The proxy agent manages proxy-related instructions, task supervision, preferences, and operating rules. You can provide instructions for the current task or define rules that should be followed during future workflows.', 'For example, you can tell the proxy agent:'], bullets: ['How frequently it should intervene', 'What actions require your approval', 'Which rules the main agent must always follow', 'How it should handle errors or uncertain results', 'How much autonomy the main agent should receive'], },
-  { title: 'Background Tasks', paragraphs: ['To enable background task execution, open Settings, navigate to General, and turn on Background Tasks.', 'When background execution is enabled, supported tasks can continue running even after the main application window has been closed.', 'Background execution may depend on your operating system, application permissions, power settings, and the type of task being performed.'] },
-  { title: 'Scheduling Tasks', paragraphs: ['To create a scheduled task, open the Tasks section within the application. Select the option to create a new task, then configure:'], bullets: ['The task instructions', 'The execution date and time', 'The recurrence schedule, if required', 'The agent or model that should perform the task', 'Any required tools, permissions, or connectors'], subSections: [{ title: 'Task management', text: 'The Tasks section allows you to view and manage active tasks, upcoming scheduled tasks, tasks that are currently running, completed tasks, task results, and execution history. Scheduled and completed tasks may also appear in the sidebar history so you can reopen and review them easily.' }] },
-  { title: 'Running Multiple Agents in Parallel', paragraphs: ['The application supports running multiple agents in parallel.', 'This allows different agents to work on separate tasks or different parts of the same larger task at the same time.', 'For example, one agent may perform research while another analyzes files, writes documentation, tests code, or reviews the results. Parallel execution can help complete complex workflows more efficiently.'] },
-  { title: 'Using Sub-Agents', paragraphs: ['Agents can create sub-agents to handle specialized, independent, or smaller parts of a task.', 'You can open an individual sub-agent to:'], bullets: ['View its current activity', 'Review its instructions', 'Monitor its progress', 'Communicate with it', 'Change its task', 'Stop its execution'], },
-  { title: 'Creating a Custom Agent', paragraphs: ['To create your own custom agent, open the Agents section and start a conversation with the Builder Agent.', 'Describe the purpose of the agent and explain what you want it to do. You may provide information such as:'], bullets: ['The agent’s role', 'The tasks it should perform', 'Its preferred behavior', 'The tools it should use', 'The models it should access', 'Its permissions', 'Its response style', 'Its operating rules', 'Its memory and context requirements'], subSections: [{ title: 'After creation', text: 'The Builder Agent will use your instructions to create an advanced custom agent. Once created, it will appear in the agent selector and can be selected directly from the chat input bar.' }] },
-  { title: 'Selecting a Custom Agent', paragraphs: ['Open the agent selector from the chat input bar and choose your custom agent from the available list.', 'After selecting the agent, choose the appropriate operating mode and send your request.', 'The custom agent will follow the tools, instructions, permissions, and behavior configured during its creation.'] },
-  { title: 'Mounting and Using Connectors', paragraphs: ['The application supports conversational connectors and other service integrations.', 'Connectors allow agents to interact with supported external platforms, services, accounts, and data sources.', 'You can connect a supported service by providing the required access token, credentials, or authorization permissions. You may also ask the main agent to guide you through connector setup or complete supported parts of the connection process on your behalf.', 'Once a connector has been mounted and properly authorized, agents may use it to:'], bullets: ['Retrieve information', 'Search connected services', 'Access permitted files or data', 'Perform supported actions', 'Complete tasks across connected applications', 'Use connected information during conversations'], },
-  { title: 'Connectors in Autonomous and Scheduled Tasks', paragraphs: ['When sufficient permissions are available, agents may use mounted connectors while performing autonomous, background, or scheduled tasks.', 'For example, an agent may use a connector to retrieve information, process connected data, perform an approved action, or complete a scheduled workflow.', 'Review connector permissions carefully and provide only the level of access required for the task.'] },
-  { title: 'Checking for Application Updates', paragraphs: ['You can check for application updates at any time.', 'Open Settings, navigate to the Updates tab, and select Check for Updates.', 'The application will check whether a newer version is available.', 'If an update is available, the application will notify you and provide the available update options. Depending on your settings, the update may be downloaded or installed automatically, or the application may ask for your approval before continuing.', 'Follow the on-screen instructions to complete the update.'] },
-  { title: 'Customizing the Application', paragraphs: ['The Settings section provides a wide range of options for customizing the application.', 'Review each settings category and adjust the application according to your preferences and workflow.', 'Changes will be applied based on the selected options, allowing you to personalize the application, agent behavior, interface, permissions, and overall workflow.'] },
-];
-
-const UserManualOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const [activeSection, setActiveSection] = useState(0);
-  const [query, setQuery] = useState('');
-  const visibleSections = FULL_MANUAL_SECTIONS
-    .map((section, index) => ({ section, index }))
-    .filter(({ section }) => `${section.title} ${section.paragraphs.join(' ')} ${(section.bullets || []).join(' ')}`.toLowerCase().includes(query.trim().toLowerCase()));
-
-  const jumpToSection = (index: number) => {
-    setActiveSection(index);
-    document.getElementById(`manual-section-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100001] flex items-start justify-center bg-black/55 px-3 pb-4 pt-12 backdrop-blur-md sm:px-6 sm:pb-6 sm:pt-14">
-      <motion.div initial={{ opacity: 0, y: 18, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.22 }} className="relative flex h-[min(860px,calc(100vh-72px))] w-[min(1180px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-white/[0.13] bg-[#151515] shadow-none">
-        <header className="flex shrink-0 items-center justify-between border-b border-white/[0.09] bg-[#1B1B1B]/95 px-5 py-4 backdrop-blur-xl sm:px-7">
-          <div className="min-w-0"><div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#76B9FF]">EterX-Agent documentation</div><h2 className="mt-1 truncate text-[19px] font-semibold tracking-[-0.02em] text-[#F4F4F4] sm:text-[21px]">Application Setup and Usage Guide</h2><p className="mt-1 hidden text-[12px] text-[#8F8F8F] sm:block">Everything you need to connect, configure, and operate the app.</p></div>
-          <button type="button" onClick={onClose} className="ml-4 shrink-0 rounded-lg border border-white/[0.1] px-3 py-2 text-[12px] font-medium text-[#D8D8D8] transition-colors hover:bg-white/[0.07]">Close</button>
-        </header>
-        <div className="flex min-h-0 flex-1">
-          <aside className="hidden w-[265px] shrink-0 flex-col border-r border-white/[0.08] bg-[#181818] lg:flex">
-            <div className="border-b border-white/[0.07] p-4"><div className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[#777]">Contents</div><div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search the manual" className="h-9 w-full rounded-lg border border-white/[0.09] bg-[#121212] pl-8 pr-3 text-[12px] text-[#F1F1F1] outline-hidden placeholder:text-[#666] focus:border-[#3D9BFF]/50" /></div></div>
-            <nav className="eterx-scrollbar flex-1 overflow-y-auto p-3">{visibleSections.map(({ section, index }) => <button key={section.title} type="button" onClick={() => jumpToSection(index)} className={`mb-1 flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors ${activeSection === index ? 'bg-[#2B3B4D] text-[#F1F1F1]' : 'text-[#A2A2A2] hover:bg-white/[0.05] hover:text-[#F1F1F1]'}`}><span className={`mt-0.5 text-[10px] font-bold ${activeSection === index ? 'text-[#76B9FF]' : 'text-[#666]'}`}>{String(index + 1).padStart(2, '0')}</span><span className="text-[12px] leading-4">{section.title}</span></button>)}</nav>
-            <div className="border-t border-white/[0.07] p-4 text-[11px] leading-5 text-[#777]">Read in order for first-time setup, then use Contents to jump to a feature.</div>
-          </aside>
-          <main className="eterx-scrollbar min-w-0 flex-1 overflow-y-auto px-5 py-6 sm:px-9 sm:py-8">
-            <div className="mx-auto max-w-[790px]">
-              <div className="mb-8 rounded-xl border border-[#3D9BFF]/20 bg-gradient-to-br from-[#203247] to-[#1C232D] px-5 py-5 sm:px-6"><div className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#8CC7FF]">New here?</div><h3 className="mt-2 text-[17px] font-semibold text-[#F1F1F1]">Follow this setup path</h3><p className="mt-2 text-[13px] leading-5 text-[#BBD7EE]">Connect a provider → add a model → configure services → choose an agent mode → explore automation and customization.</p></div>
-              {visibleSections.length === 0 && <div className="rounded-xl border border-white/[0.08] bg-[#1D1D1D] px-5 py-8 text-center text-[13px] text-[#999]">No matching sections. Try a different search.</div>}
-              <div className="space-y-10">{visibleSections.map(({ section, index }) => <section id={`manual-section-${index}`} key={section.title} className="scroll-mt-6 border-b border-white/[0.08] pb-9 last:border-b-0"><div className="flex items-start gap-3"><span className="mt-1 rounded-md bg-[#25384A] px-2 py-1 text-[10px] font-bold tracking-[0.1em] text-[#8CC7FF]">{String(index + 1).padStart(2, '0')}</span><h3 className="text-[20px] font-semibold leading-tight tracking-[-0.02em] text-[#F1F1F1]">{section.title}</h3></div><div className="mt-5 space-y-3">{section.paragraphs.map(paragraph => <p key={paragraph} className="text-[13.5px] leading-6 text-[#B0B0B0]">{paragraph}</p>)}</div>{section.bullets && <div className="mt-5 rounded-xl border border-white/[0.08] bg-[#1C1C1C] p-4"><ul className="space-y-2 text-[13px] leading-5 text-[#C4C4C4]">{section.bullets.map(item => <li key={item} className="flex gap-2.5"><span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[#5FAFFF]" />{item}</li>)}</ul></div>}{section.subSections && <div className="mt-5 grid gap-3 sm:grid-cols-2">{section.subSections.map(sub => <div key={sub.title} className="rounded-xl border border-white/[0.08] bg-[#1C1C1C] px-4 py-3.5"><div className="text-[13px] font-semibold text-[#F1F1F1]">{sub.title}</div><p className="mt-1.5 text-[12.5px] leading-5 text-[#9F9F9F]">{sub.text}</p></div>)}</div>}</section>)}</div>
-            </div>
-          </main>
-        </div>
-      </motion.div>
-    </motion.div>
-  );
-};
-
 function observeSettingsScrollEdges(viewport: HTMLElement | null) {
   const frame = viewport?.parentElement;
   if (!viewport || !frame) return;
@@ -1735,7 +1565,7 @@ function SettingsScrollList({ children, className, frameClassName = '', enabled 
   return (
     <div className={`eterx-settings-scroll-frame relative flex min-h-0 ${frameClassName}`}>
       <div ref={viewportRef} className={`min-w-0 flex-1 ${enabled ? 'overflow-y-auto eterx-scrollbar' : 'overflow-hidden'} ${className}`}>
-        <div className="flow-root">{children}</div>
+        <div className={enabled ? 'flow-root' : 'flow-root h-full'}>{children}</div>
       </div>
     </div>
   );
@@ -1810,16 +1640,16 @@ const ModernSelect: React.FC<{
           if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
         }, 0)}
         aria-expanded={open}
-        className="eterx-settings-select-trigger flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-hidden transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+        className={`eterx-settings-select-trigger ${settingsPanelStyles.selectTrigger}`}
       >
         <span className="truncate">{selected?.label || placeholder}</span>
-        <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
+        <ChevronRight className={settingsPanelStyles.selectChevron} />
       </button>
       {open && (
-        <div className={`eterx-settings-select-menu absolute right-0 z-50 ${openUp ? 'bottom-full mb-2' : 'mt-2'} flex max-h-72 w-full flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1 shadow-none text-neutral-900 dark:text-neutral-100`}>
+        <div data-open-up={openUp} className={`eterx-settings-select-menu ${settingsPanelStyles.selectMenu} ${settingsPanelStyles.menuSurface}`}>
           {searchable && (
-            <div className="relative mb-1 shrink-0">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
+            <div className={settingsPanelStyles.selectSearch}>
+              <Search className={settingsPanelStyles.selectSearchIcon} />
               <input
                 autoFocus
                 value={query}
@@ -1828,7 +1658,7 @@ const ModernSelect: React.FC<{
                   if (event.key === 'Escape') setOpen(false);
                 }}
                 placeholder={`Search ${options.length} options`}
-                className="h-9 w-full rounded-lg border border-black/10 dark:border-white/[0.08] bg-neutral-100 dark:bg-[#191919] pl-8 pr-3 text-[12px] text-neutral-900 dark:text-[#F2F2F2] outline-hidden placeholder:text-neutral-400 dark:placeholder:text-[#707070] focus:border-black/20 dark:focus:border-white/[0.18]"
+                className={settingsPanelStyles.selectSearchInput}
               />
             </div>
           )}
@@ -1842,23 +1672,21 @@ const ModernSelect: React.FC<{
                 setOpen(false);
               }}
               data-active={value === option.value}
-              className={`eterx-settings-select-option flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
-                value === option.value ? 'bg-black/5 dark:bg-white/[0.08] text-neutral-900 dark:text-[#F4F4F4] font-medium' : 'text-neutral-700 dark:text-[#CFCFCF] hover:bg-black/5 dark:hover:bg-white/[0.055] hover:text-neutral-900 dark:hover:text-[#F4F4F4]'
-              }`}
+              className={`eterx-settings-select-option ${settingsPanelStyles.selectOption}`}
             >
               <span className="min-w-0 flex-1">
                 <ModelOptionLabel value={option.value} label={option.label} />
                 {option.description && (
-                  <span className="mt-0.5 block truncate text-[11px] font-normal text-[#8F8F8F]">
+                  <span className={settingsPanelStyles.selectDescription}>
                     {option.description}
                   </span>
                 )}
               </span>
-              {value === option.value && <Check className="ml-2 h-3.5 w-3.5 shrink-0" />}
+              {value === option.value && <Check className={settingsPanelStyles.selectCheck} />}
             </button>
           ))}
           {visibleOptions.length === 0 && (
-            <div className="px-3 py-4 text-center text-[12px] text-[#888]">No matching options</div>
+            <div className={settingsPanelStyles.selectEmpty}>No matching options</div>
           )}
           </div>
         </div>
@@ -1907,21 +1735,20 @@ const ProviderSelect: React.FC<{
         onBlur={() => window.setTimeout(() => {
           if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
         }, 0)}
-        className="flex h-9 w-full items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-hidden transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+        aria-expanded={open}
+        className={`eterx-settings-select-trigger ${settingsPanelStyles.selectTrigger}`}
       >
         <span className="flex min-w-0 items-center gap-2">
           <ProviderMark provider={value} />
           <span className="truncate">{label}</span>
         </span>
-        <span className="flex items-center gap-2 shrink-0">
-          <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
-        </span>
+        <ChevronRight className={settingsPanelStyles.selectChevron} />
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[280px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1.5 shadow-none text-neutral-900 dark:text-neutral-100">
+        <div className={`eterx-settings-select-menu ${settingsPanelStyles.selectMenu} ${settingsPanelStyles.menuSurface}`}>
           {searchable && (
-            <div className="relative mb-1 shrink-0">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
+            <div className={settingsPanelStyles.selectSearch}>
+              <Search className={settingsPanelStyles.selectSearchIcon} />
               <input
                 autoFocus
                 value={query}
@@ -1930,7 +1757,7 @@ const ProviderSelect: React.FC<{
                   if (event.key === 'Escape') setOpen(false);
                 }}
                 placeholder={`Search ${providers.length} providers`}
-                className="h-9 w-full rounded-lg border border-black/10 dark:border-white/[0.08] bg-neutral-100 dark:bg-[#191919] pl-8 pr-3 text-[12px] text-neutral-900 dark:text-[#F2F2F2] outline-hidden placeholder:text-neutral-400 dark:placeholder:text-[#707070] focus:border-black/20 dark:focus:border-white/[0.18]"
+                className={settingsPanelStyles.selectSearchInput}
               />
             </div>
           )}
@@ -1945,22 +1772,19 @@ const ProviderSelect: React.FC<{
                   onChange(provider);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
-                  value === provider ? 'bg-black/5 dark:bg-white/[0.08] text-neutral-900 dark:text-[#F4F4F4] font-medium' : 'text-neutral-700 dark:text-[#CFCFCF] hover:bg-black/5 dark:hover:bg-white/[0.055] hover:text-neutral-900 dark:hover:text-[#F4F4F4]'
-                }`}
+                data-active={value === provider}
+                className={`eterx-settings-select-option ${settingsPanelStyles.selectOption}`}
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <ProviderMark provider={provider} />
                   <span className="truncate">{PROVIDER_LABEL[provider] || provider}</span>
                 </span>
-                <span className="flex items-center gap-1.5 shrink-0">
-                  {value === provider && <Check className="h-3.5 w-3.5 shrink-0 text-[#F4F4F4]" />}
-                </span>
+                {value === provider && <Check className={settingsPanelStyles.selectCheck} />}
               </button>
             );
           })}
           {visibleProviders.length === 0 && (
-            <div className="px-3 py-4 text-center text-[12px] text-[#888]">No matching providers</div>
+            <div className={settingsPanelStyles.selectEmpty}>No matching providers</div>
           )}
           </div>
         </div>
@@ -2065,8 +1889,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
   const [subscriptionProvider, setSubscriptionProvider] = useState<SubscriptionProvider>(initialSubscriptionProvider);
   const [searchDestination, setSearchDestination] = useState<SettingsSearchResult | null>(null);
-  const [manualOpen, setManualOpen] = useState(false);
-  const [manualTopic, setManualTopic] = useState('model-selection');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [terminalPlatform, setTerminalPlatform] = useState<'unknown' | 'windows' | 'mac' | 'linux'>('unknown');
 
@@ -2075,7 +1897,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       setSearchDestination(null);
       return;
     }
-    setManualOpen(false);
     setActiveTab(normalizeSettingsTab(initialTab));
   }, [initialTab, isOpen]);
   useEffect(() => {
@@ -2164,6 +1985,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const providerBaseURLSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const providerBaseURLDirtyRef = useRef(false);
   const { updateState, updateActionError, updateActionPending, runUpdateAction, markUpdateViewed } = useDesktopUpdates(isOpen);
+  const installResult = updateState.status === 'installing' ? null : updateState.lastInstall;
+  const successfulInstallCompletedAt = installResult?.status === 'succeeded' ? installResult.completedAt : undefined;
   const quietUpdateCheck = !updateState.checkErrorVisible && !updateState.availableVersion && (
     updateState.status === 'idle' || updateState.status === 'pending' ||
     (updateState.status === 'error' && Boolean(updateState.checkError))
@@ -2317,8 +2140,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'updates') return;
-    markUpdateViewed();
-  }, [activeTab, markUpdateViewed, isOpen, updateState.availableVersion]);
+    markUpdateViewed(successfulInstallCompletedAt);
+  }, [activeTab, isOpen, markUpdateViewed, successfulInstallCompletedAt, updateState.availableVersion]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -2488,14 +2311,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           ? latestModelLog.usage : latestModelLog;
         const provider = selection?.provider || String(measured?.provider || '');
         const modelId = selection?.modelId || String(measured?.model || measured?.modelId || '');
-        const measuredModelMatches = usage?.provider === provider && String(usage?.model || usage?.modelId || '') === modelId;
+        const measuredModel = contextMeasurementModel(usage);
+        const measuredModelMatches = measuredModel && measuredModel === contextMeasurementModel({ provider, modelId });
         summaries.push({
           id: String(chat.id),
           title: String(chat.title || 'Untitled chat').trim() || 'Untitled chat',
           updatedAt: Number(chat.updatedAt || 0),
           usedTokens: meter.usedTokens,
-          estimated: meter.isEstimated,
-          awaitingModel: meter.awaitingSelectedModelMeasurement,
           reportedWindow: measuredModelMatches ? normalizeContextWindow(meter.contextWindow) : 0,
           modelMaximum: measuredModelMatches ? normalizeContextWindow(usage?.modelContextWindow) : 0,
           provider,
@@ -3465,7 +3287,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   }, [performSync, onClose]);
 
   const openSearchResult = useCallback((result: SettingsSearchResult) => {
-    setManualOpen(false);
     if (result.tab === 'subscription') {
       const provider = NATIVE_PROVIDERS.find(name => result.target.startsWith(name + '-'));
       setSubscriptionProvider(provider ?? (result.target.startsWith('antigravity-') ? 'antigravity' : 'codex'));
@@ -3681,7 +3502,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   }, [isOpen, activeTab]);
 
   useLayoutEffect(() => {
-    if (!isOpen || !searchDestination || searchDestination.tab !== activeTab || manualOpen) return;
+    if (!isOpen || !searchDestination || searchDestination.tab !== activeTab) return;
     const body = settingsBodyRef.current;
     if (!body) return;
 
@@ -3711,7 +3532,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       window.clearTimeout(timeout);
       delete target.dataset.settingsSearchHighlight;
     };
-  }, [activeTab, isOpen, manualOpen, searchDestination]);
+  }, [activeTab, isOpen, searchDestination]);
 
   // Close on escape
   useEffect(() => {
@@ -3986,7 +3807,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             className="eterx-settings-panel fixed inset-0 z-[99999] flex items-center justify-center"
           >
             {/* Backdrop */}
-            {!standalone && <div className="absolute inset-0 bg-black/40 backdrop-blur-[3px]" onClick={handleClose} />}
+            {!standalone && <div className={settingsPanelStyles.backdrop} onClick={handleClose} />}
 
             {/* Panel */}
             <motion.div
@@ -3999,17 +3820,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: standalone ? 0 : 10, scale: standalone ? 1 : 0.98 }}
               transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
-            className={`eterx-settings-dialog ${settingsPanelStyles.dialog} ${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))] rounded-[12px] border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-none`}
+              data-standalone={standalone}
+              className={`eterx-settings-dialog ${settingsPanelStyles.dialog} relative flex flex-col overflow-hidden ${standalone ? 'h-screen w-screen' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))]'}`}
             >
-              {/* Glass Background */}
-              <div className="absolute inset-0 bg-[#151515]" />
-
               <div className="relative flex min-h-0 flex-1 flex-col sm:flex-row">
 
               {/* ─── Sidebar Tabs ─── */}
-              <div className={`relative z-10 w-full sm:w-[200px] shrink-0 overflow-hidden border-b border-white/[0.08] bg-[#1D1D1D] sm:border-b-0 sm:border-t flex flex-col ${settingsPanelStyles.sidebar}`}>
-                <div className="flex h-11 shrink-0 items-center px-2 border-b border-white/[0.05] pointer-events-auto [-webkit-app-region:no-drag]">
-                  <button onClick={handleClose} className="eterx-settings-back-button flex w-full h-8 items-center gap-2.5 rounded-lg px-2.5 text-[#A7A7A7] transition-colors hover:bg-white/[0.05] hover:text-[#F1F1F1] pointer-events-auto [-webkit-app-region:no-drag]">
+              <div className={`${settingsPanelStyles.sidebar} relative z-10 flex w-full shrink-0 flex-col overflow-hidden border-b sm:w-[200px] sm:border-b-0 sm:border-t`}>
+                <div className={`${settingsPanelStyles.sidebarHeader} pointer-events-auto flex h-11 shrink-0 items-center border-b px-2 [-webkit-app-region:no-drag]`}>
+                  <button onClick={handleClose} className="eterx-settings-back-button pointer-events-auto flex h-8 w-full items-center gap-2.5 px-2.5 [-webkit-app-region:no-drag]">
                     <span className="grid h-5 w-5 shrink-0 place-items-center">
                       <ChevronRight className="h-4 w-4 rotate-180" />
                     </span>
@@ -4023,15 +3842,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         key={tab.id}
                         data-active={activeTab === tab.id}
                         onClick={() => {
-                          setManualOpen(false);
                           setSearchDestination(null);
                           setActiveTab(tab.id);
                           onTabChange?.(tab.id);
                         }}
-                        className={`eterx-settings-tab flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
-                          ? 'bg-[#313131] text-[#F5F5F5]'
-                          : 'text-[#F0F0F0] hover:bg-white/[0.045]'
-                          }`}
+                        className="eterx-settings-tab flex shrink-0 items-center gap-2.5 px-2.5 text-left text-[13px] font-medium leading-none sm:w-full"
                       >
                         <span className="grid h-5 w-5 shrink-0 place-items-center text-current">
                           <tab.icon className="h-4 w-4" strokeWidth={1.9} />
@@ -4044,72 +3859,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
               </div>
 
               {/* ─── Content ─── */}
-              <div className={`relative z-20 flex-1 flex flex-col min-w-0 overflow-hidden border-l border-t border-white/[0.08] bg-[#151515] ${settingsPanelStyles.content}`}>
+              <div className={`${settingsPanelStyles.content} relative z-20 flex min-w-0 flex-1 flex-col overflow-hidden border-l border-t`}>
                 <SettingsSearch tabs={SETTINGS_TABS} activeTab={activeTab} onSelect={openSearchResult} />
 
                 {/* Scrollable Body */}
                 <div className="eterx-settings-scroll-frame relative flex min-h-0 flex-1">
-                  <div ref={settingsBodyRef} className={`${searchStyles.body} min-h-0 min-w-0 flex-1 overflow-x-hidden eterx-scrollbar px-4 sm:px-6 ${activeTab === 'tokens' ? 'overflow-y-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
-                  <div className={`mx-auto w-full ${manualOpen || activeTab === 'profile' || activeTab === 'tokens' || activeTab === 'subscription' ? 'max-w-[980px]' : activeTab === 'agents' ? 'max-w-[860px]' : 'max-w-[640px]'} pb-8`}>
-                      <div className="mb-6 flex items-center justify-between gap-4">
+                  <div ref={settingsBodyRef} className={`${searchStyles.body} scrollbar-hide min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 [scrollbar-width:none]! sm:px-6 ${activeTab === 'tokens' || activeTab === 'profile' ? 'py-4' : 'py-8'}`}>
+                  <div className={`mx-auto w-full ${activeTab === 'profile' || activeTab === 'tokens' || activeTab === 'subscription' ? 'max-w-[980px]' : activeTab === 'agents' ? 'max-w-[860px]' : 'max-w-[640px]'} ${activeTab === 'tokens' ? 'flex h-full flex-col' : 'pb-8'}`}>
+                      <div className="mb-6 flex shrink-0 items-center justify-between gap-4">
                         <h3 data-settings-search-target={SETTINGS_TAB_HEADING} tabIndex={-1} className={`text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4] ${settingsPanelStyles.title}`}>
-                          {manualOpen ? 'User manual' : SETTINGS_TABS.find(t => t.id === activeTab)?.label}
+                          {SETTINGS_TABS.find(t => t.id === activeTab)?.label}
                         </h3>
                         {activeTab === 'tokens' && <div data-settings-search-target="token-count" tabIndex={-1} className="flex items-center gap-3"><span className="text-[12px] text-[#999]">Show token count</span><Toggle enabled={settings.showTokenCount} onChange={value => updateSetting('showTokenCount', value)} /></div>}
                       </div>
 
                       {/* ═══ GENERAL TAB ═══ */}
-                      {manualOpen && activeTab === 'general' && (
-                        <div className="space-y-6">
-                          <button type="button" onClick={() => setManualOpen(false)} className="inline-flex items-center gap-2 rounded-lg px-1 py-1 text-[12.5px] font-medium text-[#A7A7A7] transition-colors hover:text-[#F1F1F1]">
-                            <ArrowLeft className="h-4 w-4" /> Back to General settings
-                          </button>
-                          <div className="rounded-2xl border border-white/[0.09] bg-gradient-to-br from-[#252525] to-[#1B1B1B] p-6 sm:p-8">
-                            <div className="flex max-w-[690px] items-start gap-4">
-                              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-[#3D9BFF]/25 bg-[#3D9BFF]/10 text-[#76B9FF]"><BookOpen className="h-5 w-5" /></span>
-                              <div><div className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#76B9FF]">Getting started</div><h4 className="mt-2 text-[25px] font-semibold tracking-[-0.02em] text-[#F4F4F4]">Welcome to EterX-Agent</h4><p className="mt-2 text-[14px] leading-6 text-[#B3B3B3]">A practical guide to setting up your workspace, starting conversations, and turning ideas into finished work.</p></div>
-                            </div>
-                            <div className="mt-6 grid gap-3 sm:grid-cols-3">
-                              {[['01', 'Start a chat', 'Describe what you want to accomplish in plain language.'], ['02', 'Add context', 'Attach files or choose a workspace when the task needs them.'], ['03', 'Review results', 'Follow progress, steer the work, and inspect what changed.']].map(([number, title, description]) => <div key={number} className="rounded-xl border border-white/[0.08] bg-black/10 p-4"><div className="text-[11px] font-semibold tracking-[0.12em] text-[#76B9FF]">{number}</div><div className="mt-2 text-[13px] font-semibold text-[#F1F1F1]">{title}</div><div className="mt-1.5 text-[12px] leading-5 text-[#999]">{description}</div></div>)}
-                            </div>
-                          </div>
-                          <div className="grid gap-5 md:grid-cols-[220px_1fr]">
-                            <div className="space-y-1 rounded-xl border border-white/[0.08] bg-[#202020] p-2">
-                              <div className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#777]">Topics</div>
-                              {[
-                                ['model-selection', 'Model selection'],
-                                ['first-chat', 'Your first chat'],
-                                ['workspaces', 'Workspaces & files'],
-                                ['agents', 'Agents & work modes'],
-                                ['tasks', 'Scheduled tasks'],
-                                ['live', 'Live Convo'],
-                                ['settings-guide', 'Settings guide'],
-                                ['troubleshooting', 'Troubleshooting'],
-                              ].map(([id, topic]) => <button key={id} type="button" onClick={() => setManualTopic(id)} className={`w-full rounded-lg px-3 py-2 text-left text-[12.5px] font-medium transition-colors ${manualTopic === id ? 'bg-[#303030] text-[#F1F1F1]' : 'text-[#A7A7A7] hover:bg-white/[0.045] hover:text-[#F1F1F1]'}`}>{topic}</button>)}
-                            </div>
-                            <article className="rounded-xl border border-white/[0.08] bg-[#202020] p-5 sm:p-7">
-                              <div className="flex items-center justify-between gap-4"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#777]">User manual · {manualTopic === 'model-selection' ? 'Settings' : 'Guide'}</div><span className="rounded-full border border-emerald-400/15 bg-emerald-400/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-300">Preview</span></div>
-                              {manualTopic === 'model-selection' ? <>
-                                <h4 className="mt-4 text-[21px] font-semibold tracking-[-0.015em] text-[#F1F1F1]">Choose a chat model</h4>
-                                <p className="mt-3 text-[14px] leading-6 text-[#B0B0B0]">The chat picker loads the available models from each connected provider.</p>
-                                <div className="mt-7 space-y-5">
-                                  {[['1', 'Connect a provider', 'Open Settings → API and add at least one key to the provider pool.'], ['2', 'Choose a model in chat', 'Open the model picker in the chat input. Select a provider or search by provider name, model name, or model ID.']].map(([number, title, description]) => <div key={number} className="flex gap-3.5"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#303030] text-[11px] font-semibold text-[#BFDFFF]">{number}</span><div><div className="text-[13px] font-semibold text-[#F1F1F1]">{title}</div><p className="mt-1 text-[13px] leading-5 text-[#9F9F9F]">{description}</p></div></div>)}
-                                </div>
-                              </> : (() => {
-                                const guide = MANUAL_GUIDES[manualTopic] || MANUAL_GUIDES['first-chat'];
-                                return <>
-                                  <h4 className="mt-4 text-[21px] font-semibold tracking-[-0.015em] text-[#F1F1F1]">{guide.title}</h4>
-                                  <p className="mt-3 text-[14px] leading-6 text-[#B0B0B0]">{guide.intro}</p>
-                                  <div className="mt-7 space-y-5">{guide.steps.map(([title, description], index) => <div key={title} className="flex gap-3.5"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#303030] text-[11px] font-semibold text-[#BFDFFF]">{index + 1}</span><div><div className="text-[13px] font-semibold text-[#F1F1F1]">{title}</div><p className="mt-1 text-[13px] leading-5 text-[#9F9F9F]">{description}</p></div></div>)}</div>
-                                  <div className="mt-7 rounded-xl border border-[#3D9BFF]/15 bg-[#3D9BFF]/[0.06] px-4 py-3 text-[12px] leading-5 text-[#AFCDF0]">{guide.tip}</div>
-                                </>;
-                              })()}
-                            </article>
-                          </div>
-                        </div>
-                      )}
-
-                      {activeTab === 'general' && !manualOpen && (
+                      {activeTab === 'general' && (
                         <div>
                           <SectionHeader title="Work mode" />
                           <p className="-mt-2 mb-5 text-[14px] text-[#A5A5A5]">Choose how EterX handles tasks and works with your workspace.</p>
@@ -4159,7 +3924,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <SettingsStack>
                             <SettingsStackRow title="Continue active chats in background" description="Normal chat runs keep working when the EterX window is closed or hidden." tall>
                               <div className="flex items-center gap-3">
-                                <span className={`text-[11px] font-semibold ${gatewayRunning ? 'text-emerald-400' : 'text-white/35'}`}>{gatewayRunning ? 'Running' : 'Off'}</span>
+                                <span className={`text-[11px] font-semibold ${gatewayRunning ? 'text-[color:var(--settings-text)]' : 'text-white/35'}`}>{gatewayRunning ? 'Running' : 'Off'}</span>
                                 <Toggle enabled={Boolean(gatewayConfig?.enabled && gatewayConfig?.keepActiveChatsOnClose !== false)} onChange={value => saveBackgroundMode('chats', value)} />
                               </div>
                             </SettingsStackRow>
@@ -4259,9 +4024,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               >
                                 View
                               </SoftButton>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="User manual" description="Learn how to use EterX-Agent, explore the workspace, and get the most from every feature.">
-                              <SoftButton onClick={() => setManualOpen(true)}>Open manual</SoftButton>
                             </SettingsStackRow>
                           </SettingsStack>
 
@@ -4435,7 +4197,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     options={contextChats.map(chat => ({
                                       value: chat.id,
                                       label: chat.title,
-                                      description: `${chat.awaitingModel ? 'Awaiting selected model count' : `${chat.estimated ? '~' : ''}${compactTokenLabel(chat.usedTokens)} used`}${chat.id === activeContextChatId ? ' · Current chat' : ''}`,
+                                      description: `${compactTokenLabel(chat.usedTokens)} used${chat.id === activeContextChatId ? ' · Current chat' : ''}`,
                                     }))}
                                   />
                                 </div>
@@ -4459,8 +4221,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   <div className="grid grid-cols-2 gap-2">
                                     <div className="rounded-xl border border-white/[0.07] bg-[#171717] px-3 py-2.5">
                                       <div className="text-[10.5px] font-medium tracking-[0.08em] text-[#707070]">Current usage</div>
-                                      <div className="mt-1 text-[14px] font-medium text-[#EAEAEA]">{selectedContextChat.awaitingModel ? 'Awaiting count'
-                                        : `${selectedContextChat.estimated ? '~' : ''}${compactTokenLabel(selectedContextChat.usedTokens)}`}</div>
+                                      <div className="mt-1 text-[14px] font-medium text-[#EAEAEA]">{compactTokenLabel(selectedContextChat.usedTokens)}</div>
                                     </div>
                                     <div className="rounded-xl border border-white/[0.07] bg-[#171717] px-3 py-2.5">
                                       <div className="text-[10.5px] font-medium tracking-[0.08em] text-[#707070]">Effective budget</div>
@@ -4496,7 +4257,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       )}
 
                       {(activeTab === 'profile' || activeTab === 'tokens') && (
-                        <div>
+                        <div className={activeTab === 'tokens' ? 'flex min-h-0 flex-1 flex-col' : undefined}>
                           {activeTab === 'profile' ? <SettingsProfile
                             name={settings.userName || ''}
                             onNameChange={value => updateSetting('userName', value)}
@@ -4532,7 +4293,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               });
                               return <>
                               <span className="sr-only" role="status">{loading ? 'Loading token usage…' : ''}</span>
-                              <div aria-busy={loading} className="mt-4 flex h-[calc(100vh-230px)] min-h-[340px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
+                              <div aria-busy={loading} className="flex min-h-[340px] flex-1 flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
                                 <div data-settings-search-target="chat-token-usage" tabIndex={-1} className="eterx-settings-token-list flex min-h-0 flex-1 flex-col border-b border-white/[0.08] p-2">
                                   <div className="px-3 py-2 text-[11px] font-medium tracking-[0.02em] text-[#777]">All chats</div>
                                   <SettingsScrollList className="pr-1" frameClassName="flex-1" enabled={!loading}>
@@ -4550,7 +4311,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   <div className="flex min-h-[34px] items-center justify-between px-3 py-2"><span className="text-[11px] font-medium tracking-[0.02em] text-[#777]">Action usage</span>{!loading && !loadFailed && <span className="max-w-[55%] truncate text-[12px] text-[#888]">{selected?.title || 'Choose a chat'}</span>}</div>
                                   <SettingsScrollList className="pr-1" frameClassName="flex-1" enabled={!loading}>
                                     {loading ? <TokenUsageRowsSkeleton actions showCounts={settings.showTokenCount} />
-                                      : loadFailed ? null
+                                      : loadFailed ? <div className="px-3 py-8 text-center text-[13px] text-[#777]">Unable to load action usage.</div>
                                       : selected?.actions?.length ? selected.actions.slice().reverse().map(action => (
                                       <button key={action.id} type="button" onClick={event => hoverChat(event, action.tokens, action.tokens, action.model, action.label, { scope: 'action', promptTokens: action.promptTokens, cachedTokens: action.cachedTokens, uncachedPromptTokens: action.uncachedPromptTokens, outputTokens: action.outputTokens })} onMouseEnter={event => hoverChat(event, action.tokens, action.tokens, action.model, action.label, { scope: 'action', promptTokens: action.promptTokens, cachedTokens: action.cachedTokens, uncachedPromptTokens: action.uncachedPromptTokens, outputTokens: action.outputTokens })} onMouseLeave={() => setHoveredToken(null)} className="mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-white/[0.055]">
                                         <span className="min-w-0 truncate"><span className="mr-2 normal-case text-[10px] tracking-[0.04em] text-[#666]">{action.kind.charAt(0).toUpperCase() + action.kind.slice(1).toLowerCase()}</span><span className="text-[13px] text-[#D8D8D8]">{action.label}</span></span>
@@ -4625,6 +4386,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
 
                         </div>
+                      )}
+
+                      {activeTab === 'subscription' && (
+                        <SubscriptionProviders provider={subscriptionProvider} onSelect={setSubscriptionProvider} />
                       )}
 
                       {activeTab === 'api' && (
@@ -5405,8 +5170,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow title="Debug mode" description="Show detailed internal logs, tool calls, and runtime traces in console.">
                               <Toggle enabled={settings.debugMode} onChange={v => updateSetting('debugMode', v)} />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Performance telemetry" description="Share usage and performance metrics with PostHog using an installation ID.">
-                              <Toggle enabled={settings.telemetry} onChange={v => updateSetting('telemetry', v)} />
+                            <SettingsStackRow title="Performance telemetry" description="Share usage and performance metrics with PostHog using an installation ID. On by default in the desktop app.">
+                              <Toggle label="Performance telemetry" enabled={settings.telemetry} onChange={v => updateSetting('telemetry', v)} />
                             </SettingsStackRow>
                           </SettingsStack>
 
@@ -5523,13 +5288,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         <div className="flex min-h-full flex-col">
                           <SectionHeader title="Application updates" />
                           <div>
-                          {updateState.lastInstall && updateState.status !== 'installing' && (
+                          {installResult && (
                             <p role="status" className={`mb-4 rounded-xl border px-4 py-3 text-[12px] leading-relaxed ${
-                              updateState.lastInstall.status === 'succeeded'
+                              installResult.status === 'succeeded'
                                 ? 'border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-400'
                                 : 'border-amber-500/20 bg-amber-500/[0.06] text-amber-400'
                             }`}>
-                              {updateState.lastInstall.message}
+                              {installResult.message}
                             </p>
                           )}
                           <div className="mb-5 rounded-xl border border-white/[0.07] bg-white/[0.025] p-5">
@@ -5784,10 +5549,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             </motion.div>
           </motion.div>
         )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {isOpen && manualOpen && <UserManualOverlay onClose={() => setManualOpen(false)} />}
       </AnimatePresence>
 
       <AnimatePresence>

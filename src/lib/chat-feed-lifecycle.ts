@@ -3,6 +3,7 @@ import { modelUsageReceiptKey, mergeModelUsageReceipt } from './model-usage';
 import { sameUserAdmission, userAdmissionKey, reconcileQueuedTurnDelivery } from './steering-delivery';
 import { mergeUserAttachments, visibleUserRequest } from './chat-user-payload';
 import { normalizeImportedTraces } from './imports/presentation';
+import { getAskUserResponseKey, getAskUserStatus, isAskUserPrompt } from './ask-user';
 
 const TERMINAL_WORK_STATUSES = new Set([
   'completed',
@@ -21,6 +22,11 @@ const TERMINAL_WORK_TYPES = new Set([
 
 const TERMINAL_WORK_TEXT =
   /(?:generation stopped by user|agent stopped(?:\s*:|\b)|agent connection (?:failed|did not start)|agent start failed|custom agent (?:start|connection) failed)/i;
+
+export const AGENT_POLL_TIMEOUT_MESSAGES = {
+  start: 'Agent connection did not start. Please retry this message.',
+  reconnect: 'The agent run is no longer available on the server. Reconnect or retry this message.',
+} as const;
 
 const ACTIVE_FEED_STATUSES = new Set([
   'running',
@@ -426,6 +432,13 @@ export const reconcileTerminalRunNotices = (logs: any[]): any[] => {
     const status = String(log?.status || '').toLowerCase();
     const detail = String(log?.detail || log?.text || log?.message || '')
       .replace(/^\s*[*_`]+|[*_`]+\s*$/g, '').replace(/\s+/g, ' ').trim();
+    // Older renderers sometimes wrote a registry timeout into a direct Chat
+    // turn, including after its direct stream had recorded a successful done.
+    if ((type === 'thought' || (type === 'agent_status' && log.title === 'Agent unavailable')) &&
+      (detail === AGENT_POLL_TIMEOUT_MESSAGES.start || detail === AGENT_POLL_TIMEOUT_MESSAGES.reconnect) &&
+      (boundary?.chatMode === true || (boundary?.chatMode == null && boundary?.selectedAgentName === 'Chat')) &&
+      (!log.runId || !boundary.runId || log.runId === boundary.runId) &&
+      (!log.turnId || !boundary.turnId || log.turnId === boundary.turnId)) continue;
     const stopped = ['stopped', 'cancelled', 'canceled'].includes(status) ||
       /^(?:generation stopped by user\.?|agent stopped\.?|stopped by (?:you|user)\.?)$/i.test(detail);
     const isNotice = (Boolean(detail) || type === 'agent_status') &&
@@ -962,6 +975,11 @@ export const mergeFeedTracePayload = (previous: any, incoming: any): any => {
   for (const [key, value] of Object.entries(incoming || {})) {
     if (value !== undefined) merged[key] = value;
   }
+  if (previous?.type === 'ask_user' && incoming?.type === 'ask_user' &&
+      getAskUserResponseKey(previous) === getAskUserResponseKey(incoming) &&
+      getAskUserStatus(previous) !== 'pending' && getAskUserStatus(incoming) === 'pending') {
+    merged.questionStatus = getAskUserStatus(previous);
+  }
   for (const key of ['diffLines', 'content', 'contentPreview', 'preview', 'toolResult', 'toolArgs', 'fileOperationResult', 'result']) {
     if (merged[key] == null && previous?.[key] != null) merged[key] = previous[key];
   }
@@ -972,6 +990,31 @@ export const mergeFeedTracePayload = (previous: any, incoming: any): any => {
   }
   return merged;
 };
+
+export function upsertAskUserTrace(logs: any[], event: any) {
+  if (!isAskUserPrompt(event)) return;
+  const responseKey = getAskUserResponseKey(event);
+  const index = logs.findIndex(log => log?.type === 'ask_user' && getAskUserResponseKey(log) === responseKey);
+  if (index < 0) {
+    logs.push({ ...event, responseKey });
+    return;
+  }
+  const previous = logs[index];
+  logs[index] = {
+    ...mergeFeedTracePayload(previous, event),
+    responseKey,
+    id: previous.id ?? event.id,
+    runId: previous.runId ?? event.runId,
+    turnId: previous.turnId ?? event.turnId,
+    rootTurnId: previous.rootTurnId ?? event.rootTurnId,
+    _feedPresentationId: previous._feedPresentationId ?? event._feedPresentationId,
+    _originTraceIdx: previous._originTraceIdx ?? event._originTraceIdx,
+    _traceIdx: previous._traceIdx ?? event._traceIdx,
+    _pollIdx: event._pollIdx ?? event._traceIdx ?? previous._pollIdx,
+    timestamp: previous.timestamp ?? event.timestamp,
+    startTime: previous.startTime ?? event.startTime,
+  };
+}
 
 const mergeTimelineTrace = (previous: any, incoming: any): any => {
   const imported = mergeImportedTraceRevision(previous, incoming);

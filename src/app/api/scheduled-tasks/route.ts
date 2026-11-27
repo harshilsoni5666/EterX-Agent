@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { loadScheduledTaskSnapshot, mutateScheduledTasks, saveScheduledTaskSnapshot } from '../../../lib/scheduled-task-store';
-import { normalizeScheduledTask, rescheduleTask } from '../../../lib/scheduled-tasks';
+import { normalizeScheduledTask, queueScheduledTaskRunNow, rescheduleTask } from '../../../lib/scheduled-tasks';
 import { rejectCrossOrigin } from '../agent/_shared';
 
 export const dynamic = 'force-dynamic';
@@ -43,6 +43,10 @@ export async function PATCH(req: NextRequest) {
       if (task.status === 'running') {
         status = 409;
         throw new Error('This task is already running.');
+      }
+      if (body.action === 'reschedule' && body.at === 'now') {
+        queueScheduledTaskRunNow(task, now);
+        return;
       }
       tasks[index] = body.action === 'reschedule'
         ? rescheduleTask(task, at, now)

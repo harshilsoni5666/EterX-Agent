@@ -52,17 +52,21 @@ function subscribe(owner: string, fn: () => void) {
   listeners.set(owner, set); set.add(fn);
   return () => { set.delete(fn); if (!set.size) listeners.delete(owner); };
 }
-function withoutDuplicateChats(next: WorkspaceState): WorkspaceState {
+function normalizeWorkspaceTabs(next: WorkspaceState): WorkspaceState {
   const chatTabs = new Map<string, string>();
   for (const tab of next.tabs) if (tab.kind === 'chat' && tab.chatId && (!chatTabs.has(tab.chatId) || tab.id === next.activeId)) chatTabs.set(tab.chatId, tab.id);
   const unique = next.tabs.filter(tab => tab.kind !== 'chat' || !tab.chatId || chatTabs.get(tab.chatId) === tab.id);
+  const workbenchIndex = unique.findIndex(tab => tab.kind === 'workbench');
+  if (workbenchIndex > 0) {
+    return { ...next, tabs: [unique[workbenchIndex], ...unique.slice(0, workbenchIndex), ...unique.slice(workbenchIndex + 1)] };
+  }
   return unique.length === next.tabs.length ? next : { ...next, tabs: unique };
 }
 export function updateWorkspace(owner: string, patch: Partial<WorkspaceState>) {
   owner = resolveWorkspaceOwner(owner);
   if (disposedOwners.has(owner)) return;
   const previous = read(owner);
-  const next = withoutDuplicateChats({ ...previous, ...patch });
+  const next = normalizeWorkspaceTabs({ ...previous, ...patch });
   if (next.tabs === previous.tabs && Object.entries(patch).every(([key, value]) => previous[key as keyof WorkspaceState] === value)) return;
   states.set(owner, next);
   listeners.get(owner)?.forEach(fn => fn());
@@ -149,7 +153,7 @@ export function openWorkbenchView(owner: string, chatId: string, view?: Workbenc
   if (!view && sameChat && current) return addWorkspaceTab(owner, 'workbench', { workbenchChatId: chatId });
   return addWorkspaceTab(owner, 'workbench', {
     workbenchChatId: chatId,
-    workbenchView: view || 'runs',
+    workbenchView: view || 'services',
     workbenchTaskId: view === 'runs' ? target.taskId : sameChat ? current?.workbenchTaskId : undefined,
     workbenchUrl: target.url,
     workbenchDeviceMode: view === 'devices' ? target.mode || 'devices' : sameChat ? current?.workbenchDeviceMode : undefined,
@@ -194,7 +198,7 @@ export function transferWorkspace(from: string, to: string) {
   if (!state) return;
   const target = states.get(to);
   states.delete(from); controls.delete(from);
-  states.set(to, withoutDuplicateChats(target ? { ...state, ...target, open: state.open || target.open, tabs: [...state.tabs, ...target.tabs.filter(tab => !state.tabs.some(item => item.id === tab.id))], activeId: target.activeId || state.activeId, folders: compactWorkspaceRoots([...(state.folders || []), ...(target.folders || [])]) } : state));
+  states.set(to, normalizeWorkspaceTabs(target ? { ...state, ...target, open: state.open || target.open, tabs: [...state.tabs, ...target.tabs.filter(tab => !state.tabs.some(item => item.id === tab.id))], activeId: target.activeId || state.activeId, folders: compactWorkspaceRoots([...(state.folders || []), ...(target.folders || [])]) } : state));
   listeners.get(from)?.forEach(fn => fn()); listeners.get(to)?.forEach(fn => fn());
 }
 export function disposeWorkspace(owner: string) {

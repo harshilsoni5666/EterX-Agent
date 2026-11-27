@@ -517,20 +517,20 @@ export function normalizeProviderCacheUsage(
       raw.reasoningTokens,
     ) ? 1 : 0,
   };
-  const cacheTokensMeasured = wasProvided(
+  const cacheReadValues = [
+    raw.prompt_cache_hit_tokens,
     raw.prompt_tokens_details?.cached_tokens,
     raw.input_tokens_details?.cached_tokens,
     raw.cached_tokens,
     raw.cachedTokens,
-    raw.prompt_cache_hit_tokens,
-  );
-  const measuredCachedTokens = numberFrom(
-      raw.prompt_cache_hit_tokens,
-      raw.prompt_tokens_details?.cached_tokens,
-      raw.input_tokens_details?.cached_tokens,
-      raw.cached_tokens,
-      raw.cachedTokens,
-    );
+    raw.cachedInputTokens,
+    raw.cached_input_tokens,
+    raw.cacheReadTokens,
+    raw.totalCachedTokens,
+    raw.total_cached_tokens,
+  ];
+  const cacheTokensMeasured = wasProvided(...cacheReadValues);
+  const measuredCachedTokens = numberFrom(...cacheReadValues);
   const cachedTokens = promptTokens > 0
     ? Math.min(promptTokens, measuredCachedTokens)
     : measuredCachedTokens;

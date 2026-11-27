@@ -79,7 +79,7 @@ async function runNativeTurn(
     }), result => ({ usage: result.usage }), signal);
     const { response, usageId } = results;
     recordNativeUsage(provider, account.id, model.id, response.usage, response.limits, !turn.auxiliary);
-    if (!response.text.trim()) throw new Error('The provider completed the turn without a text response.');
+    if (!response.text.trim() && !context?.askUserInbox?.hasWork) throw new Error('The provider completed the turn without a text response.');
     return { text: response.text.trim(), usage: response.usage ? { ...response.usage, eterxUsageId: usageId } : undefined };
   });
 }
@@ -91,7 +91,8 @@ export async function runNativeProviderAgent(
 ) {
   const trace: Record<string, unknown>[] = [];
   const emit: Trace = event => { trace.push(event); onTrace?.(event); };
-  const id = [provider, context.subAgentTurnId || context.turnId || context.projectId, Date.now()].join(':');
+  const baseId = [provider, context.subAgentTurnId || context.turnId || context.projectId, Date.now()].join(':');
+  let id = baseId;
   const messages = history.flatMap(message => {
     const text = typeof message?.content === 'string' ? message.content
       : (Array.isArray(message?.parts) ? message.parts : []).map((part: any) => part?.text || '').join('\n');
@@ -113,31 +114,48 @@ export async function runNativeProviderAgent(
       ? 'Use EterX spawn_sub_agent to delegate independent tasks. Use mode="models" to see provider and model pairs. Leave provider and model empty to inherit, or supply a pair for each worker. Use join when you need the results.'
       : '';
     const agentContext = { ...runtime, _onTrace: runtime._onTrace ?? emit };
-    const result = await runSubscriptionTurn(provider, {
-      chatId: context.ownerChatId || context.projectId, model, prompt,
-      instruction: [FINAL_ANSWER_POLICY, builder ? buildAgentBuilderRuntimePrompt(runtime.agentId || context.projectId, runtime.agentName)
-        : context._customAgentProfile?.professionalPrompt, delegation].filter(Boolean).join('\n\n'),
-      history: messages, attachments: files, thinking: context.selectedThinkingLevel, signal: context.abortSignal,
-      agent: { context: agentContext, trace: event => { thoughtEvent(true); emit(event); } }, onContextUsage: emit,
-      onText(delta) {
-        thoughtEvent(true);
-        if (!answerStart) answerStart = Date.now();
-        partial += delta;
-        emit({ type: 'answer', answerId: id, text: delta, isDelta: true, isStreaming: true, isLiveTyping: true,
-          streamState: 'open', startTime: answerStart, timestamp: Date.now() });
-      },
-      onThought(delta) {
-        if (!thoughtStart) thoughtStart = Date.now();
-        thought += delta;
-        thoughtEvent(false);
-      },
-    });
-    thoughtEvent(true);
-    if (result.usage) emit({ type: 'model_usage', usageId: result.usage.eterxUsageId, source: 'provider', provider,
-      model, usageScope: 'turn', ...normalizeProviderCacheUsage(provider, result.usage), timestamp: Date.now() });
-    emit({ type: 'answer', answerId: id, text: result.text, isDelta: false, isStreaming: false,
-      streamState: 'closed', final: true, startTime: answerStart || Date.now(), endTime: Date.now() });
-    return { text: result.text, trace };
+    const instruction = [FINAL_ANSWER_POLICY, builder ? buildAgentBuilderRuntimePrompt(runtime.agentId || context.projectId, runtime.agentName)
+      : context._customAgentProfile?.professionalPrompt, delegation].filter(Boolean).join('\n\n');
+    let request = prompt;
+    for (let pass = 0; ; pass++) {
+      id = pass ? baseId + ':' + pass : baseId;
+      const result = await runSubscriptionTurn(provider, {
+        chatId: context.ownerChatId || context.projectId, model, prompt: request, instruction,
+        history: messages, attachments: files, thinking: context.selectedThinkingLevel, signal: context.abortSignal,
+        agent: { context: agentContext, trace: event => { thoughtEvent(true); emit(event); } }, onContextUsage: emit,
+        onText(delta) {
+          thoughtEvent(true);
+          if (!answerStart) answerStart = Date.now();
+          partial += delta;
+          emit({ type: 'answer', answerId: id, text: delta, isDelta: true, isStreaming: true, isLiveTyping: true,
+            streamState: 'open', startTime: answerStart, timestamp: Date.now() });
+        },
+        onThought(delta) {
+          if (!thoughtStart) thoughtStart = Date.now();
+          thought += delta;
+          thoughtEvent(false);
+        },
+      });
+      thoughtEvent(true);
+      if (result.usage) emit({ type: 'model_usage', usageId: result.usage.eterxUsageId, source: 'provider', provider,
+        model, usageScope: 'turn', ...normalizeProviderCacheUsage(provider, result.usage), timestamp: Date.now() });
+      if (context.askUserInbox?.hasWork) {
+        if (answerStart) emit({ type: 'answer_cancel', answerId: id });
+        partial = '';
+        answerStart = 0;
+        const replies = await context.askUserInbox.waitForReply();
+        context.abortSignal?.throwIfAborted();
+        if (replies) {
+          messages.push({ role: 'user', text: request });
+          if (result.text) messages.push({ role: 'assistant', text: result.text });
+          request = replies;
+          continue;
+        }
+      }
+      emit({ type: 'answer', answerId: id, text: result.text, isDelta: false, isStreaming: false,
+        streamState: 'closed', final: true, startTime: answerStart || Date.now(), endTime: Date.now() });
+      return { text: result.text, trace };
+    }
   } catch (error) {
     thoughtEvent(true);
     if (partial) emit({ type: 'answer', answerId: id, text: partial, isDelta: false, isStreaming: false,

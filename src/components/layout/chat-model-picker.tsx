@@ -17,6 +17,9 @@ type PickerModel = {
   modelName: string;
 };
 
+type PickerScrollKey = MainAgentProvider | 'providers';
+export type ModelPickerScrollPositions = Map<PickerScrollKey, number>;
+
 type ChatModelPickerProps<Model extends PickerModel> = {
   anchorRef: RefObject<HTMLDivElement | null>;
   openBelow: boolean;
@@ -24,6 +27,9 @@ type ChatModelPickerProps<Model extends PickerModel> = {
   loading: boolean;
   onOpenApiSettings?: () => void;
   selectedModel: Model | null;
+  browsedProvider: MainAgentProvider | null;
+  onBrowseProvider: (provider: MainAgentProvider) => void;
+  scrollPositions: RefObject<ModelPickerScrollPositions>;
   providerLabels: Record<MainAgentProvider, string>;
   getThinkingOptions: (model: Model) => ModelThinkingOption[];
   getThinkingLevel: (model: Model) => MainAgentThinkingLevel | null;
@@ -34,18 +40,27 @@ type ChatModelPickerProps<Model extends PickerModel> = {
   onClose: () => void;
 };
 
-function PickerScrollPane({ resetKey, revealSelection, onScroll, children }: {
+function PickerScrollPane({ resetKey, revealSelection, scrollKey, scrollPositions, onScroll, children }: {
   resetKey: string;
   revealSelection: boolean;
+  scrollKey?: PickerScrollKey;
+  scrollPositions: RefObject<ModelPickerScrollPositions>;
   onScroll?: () => void;
   children: ReactNode;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const isPresent = useIsPresent();
 
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
+    const savedScrollTop = scrollKey === undefined ? undefined : scrollPositions.current.get(scrollKey);
+    if (savedScrollTop !== undefined) {
+      // Restore after AdaptiveMenu has fit the pane to the viewport.
+      const frame = requestAnimationFrame(() => { list.scrollTop = savedScrollTop; });
+      return () => cancelAnimationFrame(frame);
+    }
     list.scrollTop = 0;
     const selected = revealSelection && list.querySelector<HTMLElement>('[aria-pressed="true"]');
     if (!selected) return;
@@ -60,7 +75,7 @@ function PickerScrollPane({ resetKey, revealSelection, onScroll, children }: {
     // AdaptiveMenu may shorten the pane after its children mount.
     const frame = requestAnimationFrame(reveal);
     return () => cancelAnimationFrame(frame);
-  }, [resetKey, revealSelection]);
+  }, [resetKey, revealSelection, scrollKey, scrollPositions]);
 
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -82,19 +97,24 @@ function PickerScrollPane({ resetKey, revealSelection, onScroll, children }: {
   }, []);
 
   return (
-    <div ref={listRef} className="eterx-model-picker-scroll" data-menu-scroll-region onScroll={onScroll}>
+    <div ref={listRef} className="eterx-model-picker-scroll" data-menu-scroll-region onScroll={event => {
+      if (isPresent && scrollKey !== undefined) {
+        scrollPositions.current.set(scrollKey, event.currentTarget.scrollTop);
+      }
+      onScroll?.();
+    }}>
       <div ref={contentRef} className="eterx-model-picker-choices">{children}</div>
     </div>
   );
 }
 
 export function ChatModelPicker<Model extends PickerModel>({
-  anchorRef, openBelow, models, loading, onOpenApiSettings, selectedModel, providerLabels, getThinkingOptions, getThinkingLevel, getFastMode,
+  anchorRef, openBelow, models, loading, onOpenApiSettings, selectedModel, browsedProvider, onBrowseProvider, scrollPositions,
+  providerLabels, getThinkingOptions, getThinkingLevel, getFastMode,
   onSelectModel, onSelectThinking, onChangeFastMode, onClose,
 }: ChatModelPickerProps<Model>) {
   const paused = usePausedProviders();
   const [search, setSearch] = useState('');
-  const [browsedProvider, setBrowsedProvider] = useState<MainAgentProvider | null>(null);
   const [thinkingAnchor, setThinkingAnchor] = useState<{ key: string; button: HTMLButtonElement } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const thinkingRef = useRef<HTMLDivElement>(null);
@@ -233,12 +253,13 @@ export function ChatModelPicker<Model extends PickerModel>({
         <div className="eterx-model-picker-columns">
           <section className="eterx-model-picker-pane" aria-label="Providers">
             <div className="eterx-model-picker-heading">Providers</div>
-            <PickerScrollPane resetKey={query} revealSelection={!query}>
+            <PickerScrollPane resetKey={query} revealSelection={!query} scrollPositions={scrollPositions}
+              scrollKey={!query && matchingGroups.length > 0 ? 'providers' : undefined}>
               {matchingGroups.map(({ provider }) => (
                 <button key={provider} type="button" className="eterx-model-picker-provider" aria-pressed={group?.provider === provider}
                   title={providerLabels[provider]} onClick={() => {
                     closeThinking();
-                    setBrowsedProvider(provider);
+                    onBrowseProvider(provider);
                   }}>
                   <ModelProviderIconAsset provider={provider} className="eterx-model-provider-icon size-4" />
                   <span className="min-w-0 truncate">{providerLabels[provider]}</span>
@@ -250,6 +271,7 @@ export function ChatModelPicker<Model extends PickerModel>({
           <section className="eterx-model-picker-pane" aria-label={group ? `${providerLabels[group.provider]} models` : 'Models'}>
             <div className="eterx-model-picker-heading">{group ? providerLabels[group.provider] + ' models' : 'Models'}</div>
             <PickerScrollPane key={group?.provider} resetKey={`${query}\n${selectedModel?.optionKey ?? ''}`} revealSelection={!query}
+              scrollPositions={scrollPositions} scrollKey={query ? undefined : group?.provider}
               onScroll={() => { if (thinkingAnchor) closeThinking(thinkingRef.current?.contains(document.activeElement)); }}>
               {group ? group.models.map(model => {
                 const unavailable = paused.has(model.provider);

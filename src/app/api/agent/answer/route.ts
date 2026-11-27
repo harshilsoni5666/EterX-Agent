@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getPendingAskUser } from '../../../../lib/agent/tools/core/ask_user';
+import { formatAskUserAnswers, getAskUserFields, type AskUserAnswer, type AskUserField } from '../../../../lib/ask-user';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
 import {
   attachAgentApiSessionCookie,
   cleanContextText,
-  cleanString,
   ensureChatOwner,
   getOrCreateAgentApiSession,
   isSafeResponseKey,
@@ -16,115 +17,116 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+function readAnswer(field: AskUserField, item: any): AskUserAnswer {
+  const text = cleanContextText(item?.answer).trim();
+  const selection: unknown = item?.selectedOption;
+  const selected: unknown[] = Array.isArray(selection) ? selection : [selection];
+  const options = new Map(field.options.map(option => [option.value, option]));
+  const selectedValues = selected.map(option => {
+    if (option === null || typeof option !== 'object') return option;
+    const { value, label } = option as { value?: unknown; label?: unknown };
+    return value ?? label ?? option;
+  });
+  const selectedOptions = [...new Set(selectedValues)]
+    .flatMap(value => typeof value === 'string' && options.has(value) ? [options.get(value)!] : []);
+  const result: AskUserAnswer = { id: field.id, question: field.question, mode: field.mode, answer: text, selectedOption: null };
+  switch (field.mode) {
+    case 'confirm':
+      result.answer = /^(yes|y|approve|approved|confirm|confirmed|allow|proceed|ok|true|send)$/i.test(text) ? 'Yes'
+        : /^(no|n|decline|declined|deny|cancel|false)$/i.test(text) ? 'No' : '';
+      break;
+    case 'choice':
+      if (selectedOptions.length === 1) {
+        result.answer = selectedOptions[0].label;
+        result.selectedOption = selectedOptions[0];
+      }
+      break;
+    case 'multi_select':
+    case 'rank':
+      if (selectedOptions.length) {
+        const complete = field.mode === 'multi_select' || selectedOptions.length === field.options.length;
+        result.answer = complete ? selectedOptions.map(option => option.label).join(field.mode === 'rank' ? ' → ' : ', ') : '';
+        result.selectedOption = complete ? selectedOptions : null;
+      }
+      break;
+  }
+  return result;
+}
+
 export async function POST(req: NextRequest) {
-  let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
+  const session = getOrCreateAgentApiSession(req);
+  const respond = (response: NextResponse) => attachAgentApiSessionCookie(response, session);
   try {
-    const originError = rejectCrossOrigin(req);
-    if (originError) return originError;
-    session = getOrCreateAgentApiSession(req);
+    const { responseKey, answer, answers, selectedOption, dismiss } = await readJsonObject(req);
+    if (!isSafeResponseKey(responseKey)) return respond(jsonError('A valid question key is required.', 400));
 
-    const { responseKey, answer, answers, selectedOption } = await readJsonObject(req);
-
-    if (!isSafeResponseKey(responseKey) || (answer === undefined && !Array.isArray(answers))) {
-      return attachAgentApiSessionCookie(
-        jsonError('Valid responseKey and answer are required', 400),
-        session,
-      );
+    const pending = getPendingAskUser();
+    const record = Object.hasOwn(pending, responseKey) ? pending[responseKey] : undefined;
+    if (!record) return respond(jsonError('This question is no longer open.', 404));
+    if (record.sessionId && record.sessionId !== session.sessionId) {
+      return respond(jsonError('This browser session cannot answer that question.', 403));
+    }
+    if (record.chatId) {
+      const ownerError = requireChatOwner(record.chatId, session.sessionId);
+      if (ownerError) return respond(ownerError);
     }
 
-    const cleanAnswers = Array.isArray(answers)
-      ? answers.slice(0, 20).map((item: any) => ({
-          id: cleanString(item?.id, 80),
-          question: cleanString(item?.question, 500),
-          mode: cleanString(item?.mode, 40),
-          answer: cleanContextText(item?.answer).trim(),
-          selectedOption: item?.selectedOption ?? null,
-        }))
-      : null;
-    const cleanAnswer = cleanContextText(
-      answer === undefined && cleanAnswers?.length
-        ? cleanAnswers.map(item => item.answer || item.selectedOption?.value || item.selectedOption?.label || '').filter(Boolean).join('\n')
-        : answer,
-    ).trim();
-    if (!cleanAnswer) {
-      return attachAgentApiSessionCookie(jsonError('Answer must be a non-empty string.', 400), session);
+    const status = dismiss === true ? 'dismissed' : 'answered';
+    let cleanAnswer: string | null = null;
+    let cleanAnswers: AskUserAnswer[] | null = null;
+    let cleanSelection: AskUserAnswer['selectedOption'] = null;
+    if (status === 'answered') {
+      const fields = getAskUserFields(record);
+      if (Array.isArray(answers)) {
+        const byId = new Map(answers.map(item => [item?.id, item]));
+        cleanAnswers = fields.map(field => readAnswer(field, byId.get(field.id)));
+        const missing = fields.find((field, index) => field.required && !cleanAnswers![index].answer);
+        if (missing) return respond(jsonError('Complete the required questions before sending your reply.', 400));
+        if (cleanAnswers.some(item => item.answer)) cleanAnswer = formatAskUserAnswers(cleanAnswers);
+        if (cleanAnswers.length === 1) cleanSelection = cleanAnswers[0].selectedOption;
+      } else if (fields.length === 1) {
+        const result = readAnswer(fields[0], { answer, selectedOption });
+        cleanAnswer = result.answer;
+        cleanSelection = result.selectedOption;
+      } else {
+        // Older integrations can supply the whole reply as a single string.
+        cleanAnswer = cleanContextText(answer).trim();
+      }
+      if (!cleanAnswer) return respond(jsonError('Enter a valid answer before submitting.', 400));
     }
 
-    const pending = (globalThis as any).__pendingAskUser;
-    if (!pending || !pending[responseKey]) {
-      return attachAgentApiSessionCookie(
-        jsonError('No pending question found for this key. It may have timed out.', 404),
-        session,
-      );
+    if (record.status !== 'pending') {
+      if (record.status === status && record.answer === cleanAnswer &&
+          JSON.stringify(record.answers) === JSON.stringify(cleanAnswers) &&
+          JSON.stringify(record.selectedOption) === JSON.stringify(cleanSelection)) {
+        return respond(NextResponse.json({ success: true, alreadyAccepted: true, answer: record.answer }));
+      }
+      return respond(jsonError('This question has already been resolved.', 409));
     }
 
-    const pendingRecord = pending[responseKey];
-    if (pendingRecord.sessionId && pendingRecord.sessionId !== session.sessionId) {
-      return attachAgentApiSessionCookie(jsonError('This browser session cannot answer that question.', 403), session);
-    }
-    if (pendingRecord.chatId) {
-      const ownerError = requireChatOwner(pendingRecord.chatId, session.sessionId);
-      if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
-    }
-
-    if (pendingRecord.status === 'answered') {
-      const sameAnswer = pendingRecord.answer === cleanAnswer &&
-        JSON.stringify(pendingRecord.answers || null) === JSON.stringify(cleanAnswers) &&
-        JSON.stringify(pendingRecord.selectedOption || null) === JSON.stringify(selectedOption ?? null);
-      return attachAgentApiSessionCookie(sameAnswer
-        ? NextResponse.json({ success: true, alreadyAccepted: true })
-        : jsonError('This question already has an accepted answer. Send a follow-up to change your instruction.', 409), session);
-    }
-
-    pendingRecord.status = 'answered';
-    pendingRecord.answer = cleanAnswer;
-    pendingRecord.answers = cleanAnswers;
-    pendingRecord.selectedOption = selectedOption ?? null;
-    pendingRecord.answeredAt = Date.now();
-
-    // User responses can contain secrets. Do not put their content in logs.
-
-    return attachAgentApiSessionCookie(NextResponse.json({ success: true }), session);
-  } catch (error: any) {
-    console.error('[API: ask_user] Error:', error);
-    const response = NextResponse.json(
-      { error: 'Failed to process answer', details: formatUnknownError(error, 'Failed to process answer') },
-      { status: 500 },
-    );
-    return session ? attachAgentApiSessionCookie(response, session) : response;
+    record.status = status;
+    record.answer = cleanAnswer;
+    record.answers = cleanAnswers;
+    record.selectedOption = cleanSelection;
+    record.answeredAt = Date.now();
+    record.notify?.();
+    return respond(NextResponse.json({ success: true, answer: cleanAnswer }));
+  } catch (error: unknown) {
+    const message = formatUnknownError(error, 'Failed to process answer');
+    return respond(jsonError(message, 500));
   }
 }
 
 export async function GET(req: NextRequest) {
-  let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
-  try {
-    session = getOrCreateAgentApiSession(req);
-    const pending = (globalThis as any).__pendingAskUser || {};
-    const pendingQuestions = Object.entries(pending)
-      .filter(([_, value]: [string, any]) => {
-        if (value.status !== 'pending') return false;
-        if (value.sessionId) return value.sessionId === session!.sessionId;
-        if (value.chatId) return ensureChatOwner(value.chatId, session!.sessionId);
-        return false;
-      })
-      .map(([key, value]: [string, any]) => ({
-        responseKey: key,
-        question: value.question,
-        mode: value.mode,
-        options: value.options,
-        questions: value.questions,
-        context: value.context,
-        defaultValue: value.defaultValue,
-        urgent: value.urgent,
-        createdAt: value.createdAt,
-      }));
-
-    return attachAgentApiSessionCookie(NextResponse.json({ pending: pendingQuestions }), session);
-  } catch (error: any) {
-    const response = NextResponse.json({
-      pending: [],
-      error: formatUnknownError(error, 'Failed to load pending questions'),
-    });
-    return session ? attachAgentApiSessionCookie(response, session) : response;
-  }
+  const session = getOrCreateAgentApiSession(req);
+  const pending = Object.entries(getPendingAskUser())
+    .filter(([, record]) => record.status === 'pending' && (record.sessionId
+      ? record.sessionId === session.sessionId
+      : record.chatId && ensureChatOwner(record.chatId, session.sessionId)))
+    .map(([responseKey, { question, mode, options, questions, context, defaultValue, placeholder, required, urgent, behavior, createdAt }]) => ({
+      responseKey, question, mode, options, questions, context, defaultValue, placeholder, required, urgent, behavior, createdAt,
+    }));
+  return attachAgentApiSessionCookie(NextResponse.json({ pending }), session);
 }

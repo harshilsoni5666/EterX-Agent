@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { ChevronRight, Search, X, type LucideIcon } from 'lucide-react';
 import { buildSettingsSearchIndex, searchSettings, type SettingsSearchResult, type SettingsSearchTab } from './settings-search-index';
+import settingsPanelStyles from './settings-panel.module.css';
 import styles from './settings-search.module.css';
 
 export type SettingsSearchTabInfo = { id: SettingsSearchTab; label: string; icon: LucideIcon };
@@ -114,7 +115,7 @@ export function SettingsSearch({ tabs, activeTab, onSelect }: {
         }}><X size={14} aria-hidden="true" /></button>}
       </div>
       {expanded && (
-        <div ref={dropdownRef} className={`${styles.dropdown} eterx-scrollbar`}>
+        <div ref={dropdownRef} className={`${settingsPanelStyles.menuSurface} ${styles.dropdown} eterx-scrollbar`}>
           <ul className={styles.list} id={listId} role="listbox" aria-label="Matching settings">
             {results.map((result, position) => {
               const tab = tabs.find(tab => tab.id === result.tab)!;

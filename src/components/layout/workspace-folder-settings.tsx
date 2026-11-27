@@ -1,17 +1,20 @@
 'use client';
 
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent } from 'react';
-import { Check, ChevronDown, FolderClosed, ImagePlus, RefreshCw, Upload } from 'lucide-react';
+import { Check, ChevronDown, FolderClosed, Image as ImageIcon, ImageUp, LoaderCircle, RefreshCw, Type } from 'lucide-react';
 import { appStorage, subscribeAppStorageKeys } from '../../lib/client-storage';
 import { chatMatchesScope, type ChatScope } from '../../lib/chat-scope';
 import { isAbsolutePathLike } from '../../lib/path-utils';
 import { DEFAULT_WORKSPACE_PATH_KEY, projectFolderName, readRecentProjects, RECENT_PROJECTS_KEY } from '../../lib/project-folders';
 import { SCHEDULED_TASKS_STORAGE_KEY } from '../../lib/scheduled-tasks';
+import { listWorkspaceFolderChildren, type WorkspaceFolderEntry } from '../../lib/workspace-folder-list';
 import type { IdentityAvatarDescriptor } from '../ui/identity-avatar';
+import { Tooltip } from '../ui/tooltip';
 import {
-  assignWorkspaceAvatars, generateWorkspaceIcons, sameWorkspaceIcon, updateWorkspaceIcon, useWorkspaceIcon,
+  assignWorkspaceAvatars, updateWorkspaceIcon, useWorkspaceIcon,
   WorkspaceAvatar, workspaceIdentity, type WorkspaceIconChoice, type WorkspaceIdentity, type WorkspaceSource,
 } from '../ui/workspace-avatar';
+import { suggestWorkspaceIcons, workspaceGlyphs } from '../ui/workspace-icon-suggestions';
 import { ProjectFolderPicker, useProjectFolderBrowse } from './project-folder-picker';
 import styles from './appearance-controls.module.css';
 
@@ -22,6 +25,7 @@ const subscribeTaskFolders = (onChange: () => void) => subscribeAppStorageKeys([
 const readDefaultFolder = () => appStorage.getItem(DEFAULT_WORKSPACE_PATH_KEY);
 const readRecentFolders = () => appStorage.getItem(RECENT_PROJECTS_KEY);
 const readTaskFolders = () => appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY);
+const emptyFolderEntries: readonly Pick<WorkspaceFolderEntry, 'name' | 'type'>[] = [];
 
 function resolveTaskFolders(raw: string | null): WorkspaceSource[] {
   try {
@@ -59,12 +63,34 @@ function WorkspaceIconOptions({ workspace, path, descriptor }: {
 }) {
   const preference = useWorkspaceIcon(path);
   const [batch, setBatch] = useState(0);
+  const [entries, setEntries] = useState<typeof emptyFolderEntries | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const uploadRevision = useRef(0);
 
   useEffect(() => () => { uploadRevision.current += 1; }, []);
+
+  useEffect(() => {
+    if (!isAbsolutePathLike(path)) return;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      setEntries(emptyFolderEntries);
+      controller.abort();
+    }, 2000);
+    void listWorkspaceFolderChildren(path, false, controller.signal)
+      .then(items => {
+        if (!controller.signal.aborted) setEntries(items.map(({ name, type }) => ({ name, type })));
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setEntries(emptyFolderEntries);
+      })
+      .finally(() => window.clearTimeout(timeout));
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [path]);
 
   const onUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -87,17 +113,25 @@ function WorkspaceIconOptions({ workspace, path, descriptor }: {
     setError('');
     updateWorkspaceIcon(path, current => ({ ...current, choice }));
   };
-  const originalSelected = preference.choice === 'default';
-  const customSelected = preference.choice === 'custom';
-  const choices = generateWorkspaceIcons(workspace, batch);
+  const currentLabel = preference.choice === 'default'
+    ? 'Initials'
+    : preference.choice === 'custom' ? 'Custom image' : workspaceGlyphs[preference.choice].label;
+  const loadingSuggestions = entries === null && isAbsolutePathLike(path);
+  const choices = useMemo(
+    () => suggestWorkspaceIcons(workspace, entries ?? emptyFolderEntries, batch),
+    [workspace, entries, batch],
+  );
+  const openImagePicker = () => inputRef.current?.click();
 
   return (
     <div className={styles.workspaceSection} data-settings-search-target="focus-sidebar-icon" tabIndex={-1}>
       <div className={styles.iconHeader}>
-        <WorkspaceAvatar workspace={workspace} descriptor={descriptor} preference={preference} size={42} />
+        <span className={styles.currentIcon}>
+          <WorkspaceAvatar workspace={workspace} descriptor={descriptor} preference={preference} size={26} />
+        </span>
         <div className={styles.settingText}>
           <div className={styles.title}>Focus sidebar icon</div>
-          <p>Current icon for {workspace.name}</p>
+          <p>Current · {currentLabel}</p>
         </div>
         <input
           ref={inputRef}
@@ -107,69 +141,81 @@ function WorkspaceIconOptions({ workspace, path, descriptor }: {
           aria-label="Upload workspace icon"
           onChange={event => void onUpload(event)}
         />
-        {preference.image && (
-          <button type="button" className={styles.action} disabled={uploading} onClick={() => inputRef.current?.click()}>
-            <Upload size={14} aria-hidden="true" />
-            {uploading ? 'Preparing image…' : 'Replace image'}
+        <div className={styles.iconActions}>
+          <button
+            type="button"
+            className={styles.action}
+            aria-pressed={preference.choice === 'default'}
+            disabled={uploading}
+            onClick={() => chooseIcon('default')}
+          >
+            <Type size={14} aria-hidden="true" />
+            Initials
           </button>
-        )}
-      </div>
-      <div className={styles.iconSources} role="group" aria-label="Original and custom icons">
-        <button
-          type="button"
-          className={styles.sourceOption}
-          aria-pressed={originalSelected}
-          disabled={uploading}
-          onClick={() => chooseIcon('default')}
-        >
-          <WorkspaceAvatar workspace={workspace} descriptor={descriptor} preference={{ choice: 'default' }} size={28} />
-          <span>Original</span>
-          {originalSelected && <Check className={styles.selectionIcon} size={14} aria-hidden="true" />}
-        </button>
-        <button
-          type="button"
-          className={styles.sourceOption}
-          aria-pressed={preference.image ? customSelected : undefined}
-          disabled={uploading}
-          onClick={() => preference.image ? chooseIcon('custom') : inputRef.current?.click()}
-        >
           {preference.image ? (
-            <WorkspaceAvatar workspace={workspace} preference={{ ...preference, choice: 'custom' }} size={28} />
+            <>
+              <button
+                type="button"
+                className={styles.action}
+                aria-pressed={preference.choice === 'custom'}
+                disabled={uploading}
+                onClick={() => chooseIcon('custom')}
+              >
+                <ImageIcon size={14} aria-hidden="true" />
+                Custom
+              </button>
+              <Tooltip text="Replace image" showOnFocus>
+                <button type="button" className={styles.action} aria-label="Replace image" disabled={uploading} onClick={openImagePicker}>
+                  <ImageUp size={15} aria-hidden="true" />
+                </button>
+              </Tooltip>
+            </>
           ) : (
-            <span className={styles.controlIcon}><ImagePlus size={15} aria-hidden="true" /></span>
+            <button type="button" className={styles.action} disabled={uploading} onClick={openImagePicker}>
+              <ImageUp size={14} aria-hidden="true" />
+              Upload image
+            </button>
           )}
-          <span>{preference.image ? 'Custom image' : uploading ? 'Preparing image…' : 'Upload image'}</span>
-          {customSelected && <Check className={styles.selectionIcon} size={14} aria-hidden="true" />}
-        </button>
+        </div>
       </div>
+      {uploading && <p className={styles.iconStatus} role="status">Preparing image…</p>}
       {error && <p className={styles.error} role="alert">{error}</p>}
-      <div className={styles.generatedPanel}>
+      <div className={styles.suggestions}>
         <div className={styles.iconToolbar}>
-          <span>Generated icons</span>
-          <button type="button" className={styles.action} onClick={() => setBatch(value => value + 1)} aria-label="Refresh generated icons">
+          <span>Suggested icons</span>
+          <button type="button" className={styles.action} disabled={loadingSuggestions} onClick={() => setBatch(value => value + 1)} aria-label="Refresh suggested icons">
             <RefreshCw size={14} aria-hidden="true" />
             Refresh
           </button>
         </div>
-        <div className={styles.iconGrid} role="group" aria-label="Generated icons">
-          {choices.map(({ label, choice }) => {
-            const selected = sameWorkspaceIcon(preference.choice, choice);
-            return (
-              <button
-                key={label}
-                type="button"
-                className={styles.iconOption}
-                disabled={uploading}
-                aria-pressed={selected}
-                onClick={() => chooseIcon(choice)}
-              >
-                {selected && <Check className={styles.tileCheck} size={12} aria-hidden="true" />}
-                <WorkspaceAvatar workspace={workspace} descriptor={descriptor} preference={{ choice }} size={34} />
-                <span>{label}</span>
-              </button>
-            );
-          })}
-        </div>
+        {loadingSuggestions ? (
+          <div className={`${styles.iconGrid} ${styles.iconLoading}`} role="status">
+            <LoaderCircle className="motion-safe:animate-spin" size={15} aria-hidden="true" />
+            Finding icons…
+          </div>
+        ) : (
+          <div className={styles.iconGrid} role="group" aria-label="Suggested icons">
+            {choices.map(choice => {
+              const { icon: Icon, label } = workspaceGlyphs[choice];
+              const selected = preference.choice === choice;
+              return (
+                <button
+                  key={choice}
+                  type="button"
+                  className={styles.iconOption}
+                  disabled={uploading}
+                  aria-pressed={selected}
+                  onClick={() => chooseIcon(choice)}
+                >
+                  {selected && <Check className={styles.tileCheck} size={12} aria-hidden="true" />}
+                  <Icon className={styles.suggestedIcon} size={19} strokeWidth={1.8} aria-hidden="true" />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <span className="sr-only" role="status">{batch > 0 && `Suggested icons: ${choices.map(choice => workspaceGlyphs[choice].label).join(', ')}`}</span>
       </div>
     </div>
   );
@@ -185,9 +231,9 @@ export function WorkspaceFolderSettings({ sources, scope }: { sources?: readonly
   const trigger = useRef<HTMLButtonElement>(null);
 
   const recents = useMemo(() => readRecentProjects(recentSnapshot), [recentSnapshot]);
-  const path = (defaultFolder ?? recents.find(project => isAbsolutePathLike(project.path))?.path)?.trim() || null;
+  const path = defaultFolder?.trim() || recents.find(project => isAbsolutePathLike(project.path))?.path.trim() || null;
   const name = path ? projectFolderName(path) : 'Choose a folder';
-  const workspace = workspaceIdentity({ workspacePath: path });
+  const workspace = useMemo(() => workspaceIdentity({ workspacePath: path }), [path]);
   const descriptor = useMemo(() => {
     const known = sources ?? recents.map(project => ({ workspacePath: project.path }));
     const visible = scope ? known.filter(source => chatMatchesScope(source, scope)) : known;
@@ -221,7 +267,7 @@ export function WorkspaceFolderSettings({ sources, scope }: { sources?: readonly
         <div className={styles.folderRow}>
           <div className={styles.settingText}>
             <div className={styles.title}>Workspace folder</div>
-            <p>{!defaultFolder && path ? 'Last used folder. Select it to use it for new chats.' : 'Choose the folder for new chats.'}</p>
+            <p>{!defaultFolder?.trim() && path ? 'Last used folder. Select it to use it for new chats.' : 'Choose the folder for new chats.'}</p>
           </div>
           <button
             ref={trigger}
@@ -233,7 +279,7 @@ export function WorkspaceFolderSettings({ sources, scope }: { sources?: readonly
             title={path ?? undefined}
             onClick={() => setPickerOpen(value => !value)}
           >
-            <span className={styles.controlIcon}><FolderClosed size={16} aria-hidden="true" /></span>
+            <FolderClosed className={styles.folderSymbol} size={18} strokeWidth={1.8} aria-hidden="true" />
             <span className={styles.folderLabel}>
               <strong>{name}</strong>
               {path && <small>{path}</small>}

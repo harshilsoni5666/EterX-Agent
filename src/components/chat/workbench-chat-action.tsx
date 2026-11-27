@@ -19,7 +19,7 @@ type ActionStyle = { icon: LucideIcon; running: string; finished: string; view: 
 const deviceView = { view: 'devices', button: 'Open Devices' } as const;
 const virtualView = { ...deviceView, button: 'Open virtual machines', mode: 'windows' as const };
 const actions: Record<WorkbenchAction, ActionStyle> = {
-  activity: { icon: Activity, running: 'Reading Workbench activity', finished: 'Read Workbench activity', view: 'runs', button: 'Open Workbench' },
+  activity: { icon: Activity, running: 'Reading Workbench activity', finished: 'Read Workbench activity', view: 'services', button: 'Open Workbench' },
   show_runs: { icon: TerminalSquare, running: 'Sharing run output', finished: 'Shared run output', view: 'runs', button: 'Open runs' },
   publish: { icon: Globe, running: 'Sharing local service', finished: 'Shared local service', view: 'services', button: 'Open Services' },
   browser: { icon: Globe, running: 'Using browser preview', finished: 'Browser preview observed', view: 'services', button: 'Open Services' },
@@ -34,7 +34,7 @@ const actions: Record<WorkbenchAction, ActionStyle> = {
   machines: { icon: Monitor, running: 'Finding virtual machines', finished: 'Found virtual machines', ...virtualView },
   start_machine: { icon: Monitor, running: 'Starting virtual machine', finished: 'Virtual machine startup requested', ...virtualView },
 };
-const generic: ActionStyle = { icon: PanelRight, running: 'Using Workbench', finished: 'Workbench action', view: 'runs', button: 'Open Workbench' };
+const generic: ActionStyle = { icon: PanelRight, running: 'Using Workbench', finished: 'Workbench action', view: 'services', button: 'Open Workbench' };
 const labels = { pending: 'Running', done: '', requested: 'Requested', failed: 'Failed', stopped: 'Stopped', unknown: 'Result unavailable' };
 const countLabel = (amount: number, noun: string) => amount + ' ' + noun + (amount === 1 ? '' : 's');
 

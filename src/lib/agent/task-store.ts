@@ -19,6 +19,7 @@ import {
   isFeedTraceExplicitlySettled,
   isFeedTraceOpen,
   isFeedTurnBoundary,
+  upsertAskUserTrace,
 } from '../chat-feed-lifecycle';
 import { formatUnknownError } from './error-format';
 import { sameUserAdmission } from '../steering-delivery';
@@ -991,6 +992,8 @@ export const taskStore = {
       } else {
         task.traceLogs.push(timedEvent);
       }
+    } else if (timedEvent?.type === 'ask_user') {
+      upsertAskUserTrace(task.traceLogs, timedEvent);
     } else if (timedEvent?.type === 'model_usage') {
       upsertModelUsageReceipt(task.traceLogs, timedEvent);
     } else if (timedEvent?.type === 'context_usage') {

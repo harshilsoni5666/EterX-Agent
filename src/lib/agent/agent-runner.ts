@@ -61,6 +61,7 @@ import { appendRuntimeContext, buildRuntimeContextSections, RUNTIME_CONTEXT_POLI
 import { getOrCreateAgentCache, handleAgentCacheNotFound } from './agent-cache';
 import { sanitizeGeminiHistory } from './context-hot-path';
 import { toolResultCompactor } from './memory/tool-result-compactor';
+import { AskUserInbox } from './ask-user-inbox';
 import { estimateRequestTokenBudget } from './request-token-budget';
 import { writeRuntimeTrace } from './runtime-trace';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
@@ -763,6 +764,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
 
     this.cancelled = false;
     const runAbortController = new AbortController();
+    const askUserInbox = new AskUserInbox();
+    const questionReceipts: AgentRunnerEvent[] = [];
     this.cancelController = runAbortController;
     const upstreamAbortSignal = config.pinnedContext?.abortSignal as AbortSignal | undefined;
     const abortFromUpstream = () => runAbortController.abort();
@@ -987,6 +990,14 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         if (this.cancelled) {
           yield { type: 'status', text: 'Cancelled by user.', timestamp: Date.now() };
           break;
+        }
+
+        for (const receipt of questionReceipts.splice(0)) yield receipt;
+        const questionReplies = askUserInbox.takeReplies();
+        if (questionReplies) {
+          const lastContent = contents[contents.length - 1];
+          if (lastContent?.role === 'user' && Array.isArray(lastContent.parts)) lastContent.parts.push({ text: questionReplies });
+          else contents.push({ role: 'user', parts: [{ text: questionReplies }] });
         }
 
         let accumulatedThought = '';
@@ -1342,6 +1353,15 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           const functionCalls: FunctionCallRecord[] = [];
           const responseHasToolCalls = candidate.content.parts.some((part: any) => !!part.functionCall);
           if (!responseHasToolCalls) {
+            if (askUserInbox.hasWork) {
+              const replies = await askUserInbox.waitForReply();
+              if (runAbortController.signal.aborted) throw new Error('CANCELLED_BY_USER');
+              if (replies) {
+                contents.push({ role: 'model', parts: candidate.content.parts as any });
+                contents.push({ role: 'user', parts: [{ text: replies }] });
+                continue;
+              }
+            }
             if (swarmEnabled && !swarmReminderSent && swarmCoordinator.snapshot(coordinationContext, 0, 1).total === 0) {
               swarmReminderSent = true;
               contents.push({ role: 'model', parts: candidate.content.parts as any });
@@ -1477,6 +1497,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                 const toolTimeoutMs = this.resolveToolTimeoutMs(call.name, call.args);
                 let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
                 try {
+                  if (askUserInbox.hasReplies) {
+                    result = { success: false, deferred: true, message: 'An Ask User reply is ready. Apply it before starting another tool.' };
+                    return;
+                  }
                   const execPromise = this.executeToolSafe(
                     call.name,
                     call.args,
@@ -1484,6 +1508,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                     pushSideEvent,
                     toolAbortController.signal,
                     call.uiToolCallId,
+                    askUserInbox,
+                    event => questionReceipts.push({ ...event, agentId: config.agentId, agentName } as AgentRunnerEvent),
                   );
                   if (toolTimeoutMs === null) {
                     result = await execPromise;
@@ -1594,14 +1620,13 @@ Current date/time and per-run evidence are supplied with the latest request.`);
 
             const askUserCall = functionCalls.find(call => call.name === 'ask_user');
             if (askUserCall) {
-              // ask_user is blocking and exclusive; defer siblings until the
-              // next model turn has the user's answer.
+              // Let the next model turn decide which actions can proceed.
               for (const call of functionCalls) {
                 if (call !== askUserCall) {
                   callResults.set(call, {
                     success: false,
                     deferred: true,
-                    error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
+                    error: 'Ask User takes precedence in this batch. Use its result to decide which work can proceed.',
                   });
                   yield {
                     type: 'tool_result', toolName: call.name,
@@ -1692,7 +1717,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               || lowerErrMsg.includes('forbidden')
               || lowerErrMsg.includes('invalid')
             );
-          if (cachedContentRejected) {
+          if (cachedContentRejected && customAgentCachedContent) {
             const cacheNotFound = lowerErrMsg.includes('not found') || lowerErrMsg.includes('404');
             customAgentCachedContent = cacheNotFound && cacheRecoveryAttempts < 1
               ? await handleAgentCacheNotFound(
@@ -1701,6 +1726,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                   resolvedModel,
                   cachedSystemInstruction,
                   funcDecls,
+                  customAgentCachedContent,
                 ).catch(() => null)
               : null;
             cacheRecoveryAttempts = cacheNotFound ? cacheRecoveryAttempts + 1 : 2;
@@ -1832,6 +1858,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       yield { type: 'done', agentName, agentId: config.agentId, timestamp: Date.now() };
 
     } finally {
+      askUserInbox.close();
       if (globalSubAgentSpawner.getBackgroundCount(config.chatId || `custom-agent-${config.agentId}`)) runAbortController.abort();
       upstreamAbortSignal?.removeEventListener('abort', abortFromUpstream);
       if (ownsLease) apiKeyPool.releaseKey(sessionId);
@@ -1860,6 +1887,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     onTrace?: (trace: any) => void,
     abortSignal?: AbortSignal,
     ownerTraceId?: string,
+    askUserInbox?: AskUserInbox,
+    onQuestionResolved?: (event: Record<string, unknown>) => void,
   ): Promise<unknown> {
     const agentId = config.agentId;
     const chatId = config.chatId || `custom-agent-${agentId}`;
@@ -1932,6 +1961,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       maxSubAgents: config.pinnedContext?.maxSubAgents,
       maxRetries: config.pinnedContext?.maxRetries,
       _onTrace: onTrace,
+      _onQuestionResolved: onQuestionResolved,
+      askUserInbox,
       ownerTraceId,
       workspaceEditInvocationId: ownerTraceId,
       subAgentId: config.pinnedContext?.subAgentId,

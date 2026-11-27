@@ -37,7 +37,6 @@
 :root .eterx-sidebar-menu,
 :root .eterx-sidebar-project-menu,
 :root .eterx-project-menu,
-:root .eterx-settings-select-menu,
 :root .eterx-workspace-menu,
 :root .eterx-workspace-add-menu,
 :root .eterx-workspace-folder-menu {
@@ -75,7 +74,6 @@
 :root .eterx-sidebar-menu,
 :root .eterx-sidebar-project-menu,
 :root .eterx-project-menu,
-:root .eterx-settings-select-menu,
 :root .eterx-workspace-menu,
 :root .eterx-workspace-add-menu,
 :root .eterx-mermaid-menu {
@@ -101,7 +99,7 @@
    visible so a menu is easy to scan without raising contrast everywhere. */
 :root .eterx-composer-shell :is(.eterx-status-menu-item, .eterx-agent-popout > button, .eterx-agent-popout .eterx-scrollbar button, .eterx-model-option-row > button),
 :root [role="menu"] [role^="menuitem"],
-:root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-work-menu-task-row, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button, .eterx-sidebar-project-menu-item, .eterx-project-menu-item:not(.eterx-project-menu-danger), .eterx-settings-select-menu button, .eterx-proxy-popout-item, .eterx-proxy-runtime-model-menu button, .eterx-github-menu button, .eterx-github-submenu button) {
+:root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-work-menu-task-row, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button, .eterx-sidebar-project-menu-item, .eterx-project-menu-item:not(.eterx-project-menu-danger), .eterx-proxy-popout-item, .eterx-proxy-runtime-model-menu button, .eterx-github-menu button, .eterx-github-submenu button) {
   border-radius: 11px !important;
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease !important;
 }
@@ -111,7 +109,7 @@
 :root .eterx-composer-shell .eterx-model-option-row > button:is(:hover, [aria-pressed="true"], [aria-checked="true"]),
 :root .eterx-composer-shell .eterx-model-option-row[data-thinking-open="true"] > button,
 :root [role="menu"] [role^="menuitem"]:not(.eterx-sidebar-menu-danger):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible, [data-highlighted], [aria-checked="true"], [data-active="true"]),
-:root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button:not(.eterx-sidebar-menu-danger), .eterx-sidebar-project-menu-item, .eterx-project-menu-item:not(.eterx-project-menu-danger), .eterx-settings-select-menu button, .eterx-proxy-popout-item, .eterx-proxy-runtime-model-menu button, .eterx-github-menu button, .eterx-github-submenu button):not(:disabled):is(:hover, :focus-visible, [aria-pressed="true"], [aria-checked="true"], [data-active="true"]) {
+:root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button:not(.eterx-sidebar-menu-danger), .eterx-sidebar-project-menu-item, .eterx-project-menu-item:not(.eterx-project-menu-danger), .eterx-proxy-popout-item, .eterx-proxy-runtime-model-menu button, .eterx-github-menu button, .eterx-github-submenu button):not(:disabled):is(:hover, :focus-visible, [aria-pressed="true"], [aria-checked="true"], [data-active="true"]) {
   background: var(--eterx-menu-hover) !important;
   color: var(--foreground, #f2f0ec) !important;
 }
@@ -119,7 +117,7 @@
 :root .eterx-composer-shell [data-adaptive-menu="true"] button:focus-visible,
 :root [role="menu"] [role^="menuitem"]:focus-visible,
 :root .eterx-model-thinking-popout button:focus-visible,
-:root :is(.eterx-agent-overflow-menu, .eterx-theme-menu, .eterx-help-menu, .eterx-github-menu, .eterx-github-submenu, .eterx-workspace-menu, .eterx-workspace-add-menu, .eterx-sidebar-menu, .eterx-sidebar-project-menu, .eterx-settings-select-menu) button:focus-visible {
+:root :is(.eterx-agent-overflow-menu, .eterx-theme-menu, .eterx-help-menu, .eterx-github-menu, .eterx-github-submenu, .eterx-workspace-menu, .eterx-workspace-add-menu, .eterx-sidebar-menu, .eterx-sidebar-project-menu) button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--foreground, #fff) 36%, transparent) !important;
   outline-offset: -2px;
 }
@@ -232,7 +230,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-help-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button, .eterx-sidebar-project-menu-item, .eterx-settings-select-menu button, .eterx-proxy-popout-item, .eterx-github-menu button, .eterx-github-submenu button) {
+  :root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-help-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button, .eterx-sidebar-project-menu-item, .eterx-proxy-popout-item, .eterx-github-menu button, .eterx-github-submenu button) {
     transition: none !important;
   }
 }

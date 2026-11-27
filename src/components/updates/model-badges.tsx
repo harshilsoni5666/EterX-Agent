@@ -13,6 +13,6 @@ export function ModelBadges({ provider, modelId }: { provider: string; modelId: 
   const badges = useContext(ModelBadgesContext).get(modelEntryKey(provider, modelId));
   if (!badges?.length) return null;
   return <span className="eterx-model-badges">{badges.map(badge => (
-    <span key={badge} className="eterx-model-badge" title={modelBadgeLabel(badge)}>{modelBadgeLabel(badge)}</span>
+    <span key={badge} className="eterx-model-badge" data-badge={badge} title={modelBadgeLabel(badge)}>{modelBadgeLabel(badge)}</span>
   ))}</span>;
 }

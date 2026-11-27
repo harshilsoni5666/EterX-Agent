@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, ArrowUpRight, Braces, Check, ChevronDown, CircleAlert, Globe, Loader2, Play, Plus, Radio, RotateCw, Search, Smartphone, Square, TerminalSquare, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowUpRight, Blocks, Braces, Check, ChevronDown, CircleAlert, Globe, Loader2, Play, Plus, Radio, RotateCw, Search, Smartphone, Square, TerminalSquare, X } from 'lucide-react';
 import { useAppVisibility } from '../../lib/app-visibility';
 import { createTerminal, showTerminal } from '../../lib/chat-terminal-store';
 import { stopManagedTerminal, type ManagedTerminalTask } from '../../lib/managed-terminal-client';
@@ -19,9 +19,7 @@ import { WorkbenchRunOutput } from './workbench-run-output';
 import { revealInWorkspaceScroller } from './workspace-scroll';
 
 const views = [
-  { id: 'runs', label: 'Runs', icon: Activity },
   { id: 'services', label: 'Services', icon: Radio },
-  { id: 'api', label: 'API', icon: Braces },
   { id: 'devices', label: 'Devices', icon: Smartphone },
 ] as const;
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -180,7 +178,7 @@ function WorkbenchServices({ chatId, activity, visible, selectedUrl, onOpen, onA
       <button type="submit" className="eterx-wb-button" disabled={adding || !entry.trim()}><Plus size={15} />Add</button>
     </form>
     {error && <p className="eterx-wb-error" role="alert">{error}</p>}
-    {!targets.length && <div className="eterx-wb-placeholder"><Radio size={29} strokeWidth={1.5} /><strong>No local services yet</strong><span>Run a server or add a local URL to open its live browser or API.</span></div>}
+    {!targets.length && <div className="eterx-wb-placeholder"><Radio size={29} strokeWidth={1.5} aria-hidden="true" /><strong>No local services yet</strong><span>Start a local service or add its URL to see it here.</span></div>}
     {targets.length > 0 && <ul className="eterx-wb-list">
       {targets.map(target => {
         const task = activity.tasks.find(item => item.id === target.taskId);
@@ -214,8 +212,7 @@ export function WorkspaceWorkbench({ owner, chatId, tab, workspacePath, isActive
   const current = useWorkbenchActivity(chatId, visible);
   const [error, setError] = useState('');
   const onShareChange = useCallback((workbenchWindow?: string) => updateWorkspaceTab(owner, tab.id, { workbenchWindow }), [owner, tab.id]);
-  const view = tab.workbenchView || 'runs';
-  const running = useMemo(() => current.snapshot.tasks.filter(task => task.status === 'running').length, [current.snapshot.tasks]);
+  const view = tab.workbenchView || 'services';
   const select = (next: WorkbenchView, url?: string) => updateWorkspaceTab(owner, tab.id, { workbenchView: next, ...(url && { workbenchUrl: url }) });
   const open = (url: string, label?: string) => {
     setError('');
@@ -224,15 +221,14 @@ export function WorkspaceWorkbench({ owner, chatId, tab, workspacePath, isActive
       else window.open(localWorkbenchUrl(url).href, '_blank', 'noopener,noreferrer');
     } catch (error) { setError(errorText(error)); }
   };
-  if (!chatId) return <div className="eterx-wb-placeholder"><Activity size={30} /><strong>Development workbench</strong><span>Start a conversation to follow its runs, services, and devices.</span></div>;
+  if (!chatId) return <div className="eterx-wb-placeholder"><Blocks size={30} aria-hidden="true" /><strong>Development workbench</strong><span>Start a conversation to follow its services and devices.</span></div>;
   return <div className="eterx-wb-shell">
     <header className="eterx-wb-heading">
       <div><h2>Workbench</h2><p title={workspacePath || undefined}>{workspacePath ? leaf(workspacePath) : 'Chat workspace'}</p></div>
-      {running > 0 && <span className="eterx-wb-status" data-status="running"><i />{running} running</span>}
       <button type="button" className="eterx-wb-icon" title="Refresh workbench" aria-label="Refresh workbench" onClick={() => notifyWorkbenchClient(chatId)}><RotateCw size={15} /></button>
     </header>
     <nav className="eterx-wb-nav" aria-label="Workbench views">
-      {views.map(({ id, label, icon: Icon }) => <button type="button" key={id} aria-current={view === id ? 'page' : undefined} onClick={() => select(id)}><Icon size={16} />{label}{id === 'services' && current.snapshot.targets.length > 0 && <small>{current.snapshot.targets.length}</small>}</button>)}
+      {views.map(({ id, label, icon: Icon }) => <button type="button" key={id} aria-current={view === id ? 'page' : undefined} onClick={() => select(id)}><Icon size={16} strokeWidth={1.8} aria-hidden="true" />{label}{id === 'services' && current.snapshot.targets.length > 0 && <small>{current.snapshot.targets.length}</small>}</button>)}
     </nav>
     {(error || current.error) && <p className="eterx-wb-error" role="alert">{error || current.error}</p>}
     {view === 'runs' && <WorkbenchRuns key={chatId} chatId={chatId} owner={owner} root={workspacePath} visible={visible}

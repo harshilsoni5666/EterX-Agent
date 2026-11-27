@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useMemo, useSyncExternalStore, type CSSProperties } from 'react';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
 import { appStorage, subscribeAppStorageKeys } from '../../lib/client-storage';
 import { chatWorkspaceKey, chatWorkspaceName } from '../../lib/chat-scope';
 import { assignFolderAvatars, IdentityAvatar, type IdentityAvatarDescriptor } from './identity-avatar';
+import { isWorkspaceGlyph, workspaceGlyphs, type WorkspaceGlyph } from './workspace-icon-suggestions';
 import styles from './workspace-avatar.module.css';
 
 export type WorkspaceSource = {
@@ -37,23 +38,20 @@ export function assignWorkspaceAvatars(sources: readonly WorkspaceSource[], task
   return assignFolderAvatars(folders);
 }
 
-const DESIGNS = [
-  { style: 'monogram', label: 'Monogram' },
-  { style: 'orbit', label: 'Orbit' },
-  { style: 'stack', label: 'Stack' },
-  { style: 'mosaic', label: 'Mosaic' },
-  { style: 'facet', label: 'Facet' },
-] as const;
-
-const HUES = [214, 159, 28, 270, 331, 193, 44, 234, 101];
-type GeneratedIcon = { style: typeof DESIGNS[number]['style']; hue: number; variant: 0 | 1 };
-export type WorkspaceIconChoice = 'default' | 'custom' | GeneratedIcon;
+export type WorkspaceIconChoice = 'default' | 'custom' | WorkspaceGlyph;
 export type WorkspaceIconPreference = {
   choice: WorkspaceIconChoice;
   image?: string;
 };
 
 const defaultIcon: WorkspaceIconPreference = { choice: 'default' };
+const legacyGlyphs = new Map<string, WorkspaceIconChoice>([
+  ['monogram', 'default'],
+  ['orbit', 'compass'],
+  ['stack', 'layers'],
+  ['mosaic', 'dashboard'],
+  ['facet', 'package'],
+]);
 const imagePattern = /^data:image\/(?:webp|png);base64,[a-z0-9+/]+=*$/i;
 
 const iconStorageKey = (path?: string | null) => {
@@ -67,13 +65,10 @@ function parseIconPreference(raw: string | null): WorkspaceIconPreference {
     const stored = JSON.parse(raw);
     const image = typeof stored?.image === 'string' && stored.image.length <= 250_000 && imagePattern.test(stored.image)
       ? stored.image as string : undefined;
-    const choice = stored?.choice;
+    const savedChoice = stored?.choice;
+    const choice = typeof savedChoice?.style === 'string' ? legacyGlyphs.get(savedChoice.style) : savedChoice;
     if (choice === 'custom' && image) return { choice, image };
-    if (
-      choice && typeof choice === 'object' &&
-      DESIGNS.some(design => design.style === choice.style) &&
-      HUES.includes(choice.hue) && (choice.variant === 0 || choice.variant === 1)
-    ) return { choice: { style: choice.style, hue: choice.hue, variant: choice.variant }, image };
+    if (isWorkspaceGlyph(choice)) return { choice, image };
     return image ? { choice: 'default', image } : defaultIcon;
   } catch {
     return defaultIcon;
@@ -104,28 +99,6 @@ export function updateWorkspaceIcon(path: string, update: (current: WorkspaceIco
   }
 }
 
-export function generateWorkspaceIcons({ identity, name }: WorkspaceIdentity, batch: number) {
-  let hash = 2166136261;
-  for (const character of `${identity}:${name.normalize('NFKC')}`) {
-    hash = Math.imul(hash ^ (character.codePointAt(0) || 0), 16777619);
-  }
-  const seed = hash >>> 0;
-  return DESIGNS.map(({ style, label }, index) => ({
-    label,
-    choice: {
-      style,
-      hue: HUES[(seed + index * 2 + batch) % HUES.length],
-      variant: ((seed + index + batch) % 2) as 0 | 1,
-    },
-  }));
-}
-
-export function sameWorkspaceIcon(a: WorkspaceIconChoice, b: WorkspaceIconChoice) {
-  return typeof a === 'object' && typeof b === 'object'
-    ? a.style === b.style && a.hue === b.hue && a.variant === b.variant
-    : a === b;
-}
-
 export function WorkspaceAvatar({ workspace, descriptor, preference, size }: {
   workspace: WorkspaceIdentity;
   descriptor?: IdentityAvatarDescriptor;
@@ -142,22 +115,11 @@ export function WorkspaceAvatar({ workspace, descriptor, preference, size }: {
       </span>
     );
   }
-  if (typeof choice === 'object') {
+  if (isWorkspaceGlyph(choice)) {
+    const { icon: Icon } = workspaceGlyphs[choice];
     return (
-      <span
-        className={`${styles.avatar} ${styles.generated}`}
-        data-design={choice.style}
-        data-variant={choice.variant}
-        aria-hidden="true"
-        style={{
-          width: size,
-          height: size,
-          fontSize: Math.round(size * 0.38),
-          '--workspace-icon-hue': choice.hue,
-        } as CSSProperties}
-      >
-        <span className={styles.pattern} />
-        {choice.style === 'monogram' && <span className={styles.initials}>{descriptor?.initials ?? Array.from(workspace.name).slice(0, 2).join('').toUpperCase()}</span>}
+      <span className={styles.glyph} style={{ width: size, height: size }} aria-hidden="true">
+        <Icon size={Math.round(size * 0.75)} strokeWidth={1.8} />
       </span>
     );
   }

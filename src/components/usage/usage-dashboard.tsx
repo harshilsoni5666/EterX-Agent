@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CalendarDays, ChevronDown, ChevronRight, Download, Info, RefreshCw } from 'lucide-react';
+import { ArrowLeft, CalendarDays, ChevronRight, Download, Info, Layers, RefreshCw } from 'lucide-react';
 import { ProviderIconAsset } from '../ui/provider-icon';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { useAntigravity } from '../../lib/antigravity-client';
@@ -9,7 +9,7 @@ import { useNativeProviders } from '../../lib/native-provider-client';
 import { dayKey, dateOfDay, daysEndingAt, selectUsageBuckets, summarizeRange, summarizeRates, type UsageReport, type UsageScope, type UsageTotals } from '../../lib/usage/summary';
 import { RecentUsageDays, SelectedDay, UsageBreakdown, type BreakdownPreferences } from './usage-breakdown';
 import { UsageChart } from './usage-chart';
-import { Segments } from './usage-controls';
+import { Segments, UsageSelect } from './usage-controls';
 import { UsageLimits } from './usage-limits';
 import type { SubscriptionProvider } from '../../lib/agent/model-selector-store';
 import { UsageLoadingContent } from './usage-loading';
@@ -22,6 +22,7 @@ import styles from './usage-dashboard.module.css';
 
 const filters = [['all', 'All'], ['api', 'API'], ['sub', 'Sub']] as const;
 const ranges = [['24h', 'Past 24h'], [7, '7 days'], [30, '30 days'], [90, '90 days']] as const;
+const allProviders = { label: 'All providers', icon: <Layers size={14} strokeWidth={1.75} /> };
 const updateTime = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
 type UsageRange = typeof ranges[number][0];
 type VisibleFilter = typeof filters[number][0];
@@ -161,10 +162,14 @@ export function UsageDashboard({ onManageSubscription }: { onManageSubscription:
     const buckets = byHour ? recent?.buckets : report?.buckets;
     return selectUsageBuckets(buckets ?? [], filter, null).filter(row => range.has(row.day));
   }, [report, recent, days, filter, byHour]);
-  const providerChoices = useMemo(() => {
+  const providerOptions = useMemo(() => {
     const ids = new Set(availableBuckets.map(row => row.provider));
     if (scope?.provider) ids.add(scope.provider);
-    return Array.from(ids).sort((a, b) => providerLabel(a).localeCompare(providerLabel(b)));
+    return Array.from(ids, provider => ({
+      value: provider,
+      label: providerLabel(provider),
+      icon: <ProviderIconAsset provider={provider} />,
+    })).sort((a, b) => a.label.localeCompare(b.label));
   }, [availableBuckets, scope?.provider]);
   const rangeBuckets = useMemo(() => scope ? selectUsageBuckets(availableBuckets, 'all', scope) : availableBuckets, [availableBuckets, scope]);
   const range = useMemo(() => summarizeRange(rangeBuckets, days), [rangeBuckets, days]);
@@ -215,7 +220,7 @@ export function UsageDashboard({ onManageSubscription }: { onManageSubscription:
     setScope(location.scope);
   }
 
-  function changeProvider(provider: string) {
+  function changeProvider(provider: string | null) {
     if (!provider) {
       if (scope) goBack(true);
       return;
@@ -278,15 +283,8 @@ export function UsageDashboard({ onManageSubscription }: { onManageSubscription:
           {historyVisible && <div className={styles.toolbar}>
             <div className={styles.controls}>
               <Segments label="Connection type" values={filters} selected={filter} onSelect={setFilter} />
-              <span className={styles.providerControl}>
-                {scope?.provider && <ProviderIconAsset provider={scope.provider} />}
-                <select aria-label="Provider" value={scope?.provider ?? ''} disabled={!providerChoices.length}
-                  onChange={event => changeProvider(event.target.value)}>
-                  <option value="">All providers</option>
-                  {providerChoices.map(provider => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
-                </select>
-                <ChevronDown className={styles.providerSelectChevron} size={13} aria-hidden="true" />
-              </span>
+              <UsageSelect label="Provider" value={scope?.provider ?? null} all={allProviders} options={providerOptions}
+                onSelect={changeProvider} className={styles.providerControl} />
             </div>
             <div className={styles.controls}>
               <Segments label="Date range" values={ranges} selected={period} onSelect={changePeriod} />

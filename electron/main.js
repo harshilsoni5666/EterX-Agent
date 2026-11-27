@@ -339,9 +339,11 @@ let desktopUpdateDownloadWatchdog = null;
 let DesktopUpdateCancellationToken = null;
 let desktopUpdateSemver = null;
 let desktopUpdateStartupOutcomeHandled = false;
+let desktopUpdateViewedInstall = null;
 const desktopUpdateNotifications = new Map();
 const DESKTOP_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const DESKTOP_UPDATE_RESUME_INTERVAL_MS = 5 * 60 * 1000;
+const DESKTOP_UPDATE_SUCCESS_NOTICE_MS = 6_000;
 const DESKTOP_UPDATE_VIEW_STATE_FILE = 'eterx-update-view-state.json';
 const pendingRendererFlushes = new Map();
 let rendererFlushSequence = 0;
@@ -683,17 +685,19 @@ async function finishDesktopUpdateInstallAttempt() {
       : new Date().toISOString();
     const completed = { ...attempt, status, observedVersion: currentVersion, completedAt };
     writeUpdateInstallAttempt(receiptPath, completed);
-    publishDesktopUpdateState({
-      lastInstall: {
-        status,
-        version: attempt.targetVersion,
-        completedAt,
-        message: succeeded
-          ? `Updated successfully. You are running EterX ${currentVersion}.`
-          : `The update to EterX ${attempt.targetVersion} did not finish. You are still running ${currentVersion}. Retry the update when ready.`,
-      },
-    });
-    logToFile(`[update] Restart outcome: ${status}; requested ${attempt.targetVersion}, running ${currentVersion}.`);
+    if (!succeeded || attempt.status !== 'succeeded') {
+      publishDesktopUpdateState({
+        lastInstall: {
+          status,
+          version: attempt.targetVersion,
+          completedAt,
+          message: succeeded
+            ? `Updated successfully. You are running EterX ${currentVersion}.`
+            : `The update to EterX ${attempt.targetVersion} did not finish. You are still running ${currentVersion}. Retry the update when ready.`,
+        },
+      });
+      logToFile(`[update] Restart outcome: ${status}; requested ${attempt.targetVersion}, running ${currentVersion}.`);
+    }
     if (succeeded && process.platform === 'linux' && attempt.appImage?.targetPath === attempt.installLocation) {
       // The server and main window have now loaded from the replacement. Keep
       // the previous image until this point, including across a failed launch.
@@ -733,7 +737,19 @@ function writeDesktopUpdateViewedVersion(version) {
   }
 }
 
-function markDesktopUpdateViewed() {
+function markDesktopUpdateViewed(successfulInstallCompletedAt) {
+  const lastInstall = desktopUpdateState.lastInstall;
+  if (lastInstall?.status === 'succeeded' &&
+      lastInstall.completedAt === successfulInstallCompletedAt &&
+      desktopUpdateViewedInstall !== lastInstall) {
+    desktopUpdateViewedInstall = lastInstall;
+    setTimeout(() => {
+      if (desktopUpdateState.lastInstall === lastInstall) {
+        publishDesktopUpdateState({ lastInstall: null });
+      }
+    }, DESKTOP_UPDATE_SUCCESS_NOTICE_MS).unref();
+  }
+
   const version = typeof desktopUpdateState.availableVersion === 'string'
     ? desktopUpdateState.availableVersion.trim()
     : '';
@@ -4376,7 +4392,7 @@ ipcMain.handle('gateway-deliver-agent-reply', async (_event, request) => {
 
 ipcMain.handle('desktop-update-get-state', () => desktopUpdateState);
 
-ipcMain.handle('desktop-update-mark-viewed', () => markDesktopUpdateViewed());
+ipcMain.handle('desktop-update-mark-viewed', (_event, successfulInstallCompletedAt) => markDesktopUpdateViewed(successfulInstallCompletedAt));
 
 ipcMain.on('desktop-update-network-online', (event) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) return;

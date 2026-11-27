@@ -1,4 +1,5 @@
-import { appStorage, appStorageReady } from '../client-storage';
+import { appStorage, appStorageReady, isAppStorageLoaded } from '../client-storage';
+import { isDesktopTelemetryRenderer, resolveTelemetryEnabled } from '../telemetry/preference';
 
 const prefix = 'eterx_pending_live_receipt:';
 const pending = new Map<string, string>();
@@ -38,7 +39,11 @@ export function recordLiveUsage(
 }
 
 function liveTelemetryEnabled() {
-  try { return JSON.parse(appStorage.getItem('eterx_settings') || '{}').telemetry === true; }
+  if (!isAppStorageLoaded()) return false;
+  try {
+    const settings = JSON.parse(appStorage.getItem('eterx_settings') ?? '{}');
+    return resolveTelemetryEnabled(settings.telemetry, isDesktopTelemetryRenderer());
+  }
   catch { return false; }
 }
 

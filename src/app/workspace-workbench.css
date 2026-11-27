@@ -5,9 +5,6 @@
   --wb-tint:color-mix(in srgb,var(--wb-accent) 10%,var(--ws-bg));
 }
 html[data-theme="light"] .eterx-side-workspace { --wb-accent:#16705a; --wb-danger:#a63840; }
-.eterx-wb-quick { display:grid; place-items:center; position:relative; flex:0 0 32px; height:32px; border-radius:50%; color:var(--sidebar-muted-text); }
-.eterx-wb-quick:hover,.eterx-wb-quick:focus-visible { background:var(--sidebar-toggle-hover-bg); color:var(--sidebar-hover-text); }
-.eterx-wb-quick i:not([hidden]) { position:absolute; top:5px; right:5px; width:6px; height:6px; border-radius:50%; background:var(--ws-added,#55bd9d); box-shadow:0 0 0 2px var(--background); }
 .eterx-workspace-launcher-grid > button[data-featured="true"] {
   background:linear-gradient(110deg,var(--wb-tint),var(--ws-surface));
   border:1px solid color-mix(in srgb,var(--wb-accent) 24%,var(--ws-border));
@@ -46,9 +43,9 @@ html[data-theme="light"] .eterx-side-workspace { --wb-accent:#16705a; --wb-dange
 .eterx-wb-heading h2 { margin:0; font-size:16px; font-weight:600; letter-spacing:-.025em; }
 .eterx-wb-heading p { margin:3px 0 0; color:var(--ws-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .eterx-wb-nav {
-  padding:0 12px;
+  padding:6px 12px 8px;
   border-bottom:1px solid var(--ws-border);
-  gap:2px;
+  gap:5px;
   overflow:auto hidden;
   scrollbar-width:none;
 }
@@ -58,16 +55,33 @@ html[data-theme="light"] .eterx-side-workspace { --wb-accent:#16705a; --wb-dange
   gap:6px;
   justify-content:center;
   flex:0 0 auto;
-  min-height:37px;
-  border-bottom:2px solid transparent;
-  padding:6px 10px;
+  min-height:34px;
+  border:1px solid transparent;
+  border-radius:8px;
+  padding:5px 10px;
   color:var(--ws-muted);
   font-weight:500;
   white-space:nowrap;
+  transition:background-color 200ms ease,color 200ms ease,border-color 200ms ease;
 }
 .eterx-wb-nav button:hover { color:var(--ws-text); background:var(--ws-surface); }
-.eterx-wb-nav button[aria-current="page"] { color:var(--wb-accent); border-bottom-color:var(--wb-accent); }
-.eterx-wb-nav small { color:inherit; font-size:10px; }
+.eterx-wb-nav button[aria-current="page"] {
+  color:var(--wb-accent);
+  border-color:color-mix(in srgb,var(--wb-accent) 22%,var(--ws-border));
+  background:var(--wb-tint);
+}
+.eterx-wb-nav small { color:inherit; font-size:10px; font-variant-numeric:tabular-nums; }
+.eterx-wb-shell > :is(.eterx-wb-services,.eterx-wb-devices) {
+  animation:eterx-wb-view-appear 260ms cubic-bezier(.22,.8,.3,1);
+}
+@keyframes eterx-wb-view-appear {
+  from { opacity:0; transform:translateY(4px); }
+  to { opacity:1; transform:none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eterx-wb-nav button { transition:none; }
+  .eterx-wb-shell > :is(.eterx-wb-services,.eterx-wb-devices) { animation:none; }
+}
 .eterx-wb-icon,.eterx-wb-button,.eterx-wb-device-form > button {
   display:inline-flex;
   align-items:center;

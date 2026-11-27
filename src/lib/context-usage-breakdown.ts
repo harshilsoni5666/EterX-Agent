@@ -523,16 +523,15 @@ export const formatContextUsagePercent = (percent: number): string => {
   return `${Math.round(percent)}%`;
 };
 
-export const formatContextUsageTokenCount = (value: number, options?: { prefixTilde?: boolean }) => {
+export const formatContextUsageTokenCount = (value: number) => {
   const safeValue = Math.max(0, Math.round(Number.isFinite(value) ? value : 0));
-  const prefix = options?.prefixTilde ? '~' : '';
-  if (safeValue < 1_000) return `${prefix}${safeValue.toLocaleString()}`;
+  if (safeValue < 1_000) return safeValue.toLocaleString();
   if (safeValue >= 1_000_000) {
     const formatted = (safeValue / 1_000_000).toFixed(safeValue >= 10_000_000 ? 0 : 1).replace(/\.0$/, '');
-    return `${prefix}${formatted}M`;
+    return `${formatted}M`;
   }
   const formatted = (safeValue / 1_000).toFixed(safeValue >= 10_000 ? 0 : 1).replace(/\.0$/, '');
-  return `${prefix}${formatted}K`;
+  return `${formatted}K`;
 };
 
 export const sumContextUsageBreakdown = (breakdown: ContextUsageBreakdown): number =>

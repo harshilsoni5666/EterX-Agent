@@ -120,11 +120,11 @@ export function useDesktopUpdates(enabled = true) {
     }
   }, [applyDesktopUpdateState]);
 
-  const markUpdateViewed = useCallback(() => {
+  const markUpdateViewed = useCallback((successfulInstallCompletedAt?: string) => {
     const api = (window as any).electronAPI;
     if (typeof api?.markUpdateViewed !== 'function') return;
     // A failed acknowledgement must not block downloading or erase availability.
-    void api.markUpdateViewed().then(applyDesktopUpdateState).catch(() => {});
+    void api.markUpdateViewed(successfulInstallCompletedAt).then(applyDesktopUpdateState).catch(() => {});
   }, [applyDesktopUpdateState]);
 
   return { updateState, updateActionError, updateActionPending, runUpdateAction, markUpdateViewed };

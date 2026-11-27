@@ -9,8 +9,12 @@ import { ChatMediaContext, ChatMediaOwnerContext, ChatMediaItem, findChatMedia }
 import { PASTED_TEXT_MIME } from '../../lib/pasted-text';
 import { openLocalFilePath } from './local-file-link';
 import { ThinkingProcess, ProfessionalThought, ShowThinkingInContainerContext } from '../chat/thought-sequence';
+import type { TurnPendingMode } from './live-pending-indicator';
 import { getTextPlaybackId, TextPlaybackScope } from './use-paced-text';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
+import { getAskUserResponseKey, getAskUserStatus, isAskUserPrompt, isPendingAskUser, type AskUserStatus } from '../../lib/ask-user';
+import { readFocusTrace, type FocusQuestionTarget } from '../../lib/chat-focus';
+import { useLiveChat, type LiveChatLedger } from '../../lib/live-chat-ledger';
 import { Tooltip } from '../ui/tooltip';
 import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { Shimmer } from '../ui/shimmer';
@@ -38,6 +42,12 @@ import { reconcileModelUsageLogs, summarizeModelUsage } from '../../lib/model-us
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { useActivityScrollHandoff } from './use-activity-scroll-handoff';
 
+export interface FocusedQuestion extends FocusQuestionTarget {
+  ledger: LiveChatLedger;
+  onAnswer: (timestamp: number, answer: string | null) => void;
+  onHide: (restoreFocus?: boolean) => void;
+}
+
 interface ChatFeedProps {
   workspaceOwner?: string;
   scrollContainerId?: string;
@@ -56,7 +66,8 @@ interface ChatFeedProps {
   onOpenWorkbenchSettings?: (tab: 'connections' | 'computer') => void;
   subAgentAssetIndexes?: Record<string, number>;
   isFeedActivityPaused?: boolean;
-  onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
+  onAnswerAskUser?: (timestamp: number, answer: string | null, responseKey?: string) => void;
+  focusedQuestion?: FocusedQuestion;
   onEditUserMessage?: (text: string) => void;
   isSubAgentTab?: boolean;
   liveState?: string;
@@ -1806,8 +1817,8 @@ const renderFeedContextCompaction = (log: any) => <ContextCompactionNotice log={
 const EMPTY_LIVE_SEQUENCE_LOGS: any[] = [];
 
 const ThoughtSequence = ({
-  logs, liveLogs = EMPTY_LIVE_SEQUENCE_LOGS, isThinking, isLast, hasAnswer, showLiveIndicator = false, showStartupIndicator = false, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes, isTurnNavigationWorkNote = false
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number>, isTurnNavigationWorkNote?: boolean }) => {
+  logs, liveLogs = EMPTY_LIVE_SEQUENCE_LOGS, isThinking, isLast, hasAnswer, showLiveIndicator = false, pendingIndicatorMode, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes, isTurnNavigationWorkNote = false
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, showLiveIndicator?: boolean, pendingIndicatorMode?: TurnPendingMode, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number>, isTurnNavigationWorkNote?: boolean }) => {
   const showThinkingInContainer = React.useContext(ShowThinkingInContainerContext);
   // The trace stream is more precise than the briefly stale global running
   // flag. Scan the whole turn: terminal events are often followed by late
@@ -1919,7 +1930,7 @@ const ThoughtSequence = ({
             isThinking={isLiveThinking}
             isLast={isLast}
             showLiveIndicator={showLiveIndicator}
-            showStartupIndicator={showStartupIndicator}
+            pendingIndicatorMode={pendingIndicatorMode}
             onOpenAgentTeam={onOpenAgentTeam}
             assetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
@@ -1942,7 +1953,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'thinkingTitle', 'reasoningTitle', 'heading', 'statusText', 'label',
   'subAgent', 'subAgentId', 'subAgentChatId', 'parentAgentId', 'parentAgentName', 'depth', 'isSubAgent', 'agentRole', 'terminalTask', 'agentName', 'status', 'state', 'finishReason', 'finish_reason', 'progress', 'error',
   'question', 'mode', 'options', 'questions', 'context', 'defaultValue',
-  'urgent', 'responseKey', 'answeredWith', 'answeredAt', 'attachments',
+  'urgent', 'required', 'placeholder', 'behavior', 'responseKey', 'questionStatus', 'resolvedAt', 'interrupted', 'answeredWith', 'answeredAt', 'attachments',
   'filename', 'fileName', 'filepath', 'filePath', 'path', 'preview',
   'lineCount', 'totalLines', 'truncated', 'command', 'result', 'toolName',
   'operation', 'isEdit', 'staged', 'language', 'artifactKind', '_diffLinesStripped',
@@ -2014,10 +2025,38 @@ const haveSameRenderedLog = (left: any, right: any) => {
   return true;
 };
 
+function AskUserTraceCard({ log, status, onAnswer, sourceTitle, onHide }: {
+  log: any;
+  status: AskUserStatus;
+  onAnswer?: ChatFeedProps['onAnswerAskUser'];
+  sourceTitle?: string;
+  onHide?: () => void;
+}) {
+  return <AskUserPrompt
+    question={log.question}
+    mode={log.mode}
+    options={log.options}
+    questions={log.questions}
+    context={log.context}
+    defaultValue={log.defaultValue}
+    placeholder={log.placeholder}
+    required={log.required}
+    urgent={log.urgent}
+    behavior={log.behavior}
+    timestamp={log.timestamp}
+    responseKey={getAskUserResponseKey(log)}
+    status={status}
+    answeredWith={log.answeredWith}
+    sourceTitle={sourceTitle}
+    onHide={onHide}
+    onAnswer={answer => onAnswer?.(log.timestamp, answer, getAskUserResponseKey(log))}
+  />;
+}
+
 const ChatFeedMessageGroup = React.memo(({
   group,
   groupIdx,
-  showStartupIndicator = false,
+  pendingIndicatorMode,
   dateLabel,
   turnStartedAt,
   isThinkingTurn,
@@ -2027,6 +2066,7 @@ const ChatFeedMessageGroup = React.memo(({
   onOpenAgentTeam,
   subAgentAssetIndexes,
   onAnswerAskUser,
+  pinnedQuestionKeys,
   onEditUserMessage,
   isSubAgentTab,
   isAgentBuilder,
@@ -2035,7 +2075,7 @@ const ChatFeedMessageGroup = React.memo(({
 }: {
   group: any[];
   groupIdx: number;
-  showStartupIndicator?: boolean;
+  pendingIndicatorMode?: TurnPendingMode;
   dateLabel?: string;
   turnStartedAt?: number | null;
   isThinkingTurn: boolean;
@@ -2044,7 +2084,8 @@ const ChatFeedMessageGroup = React.memo(({
   isCompressed: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
   subAgentAssetIndexes?: Record<string, number>;
-  onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
+  onAnswerAskUser?: ChatFeedProps['onAnswerAskUser'];
+  pinnedQuestionKeys?: ReadonlySet<string>;
   onEditUserMessage?: (text: string) => void;
   isSubAgentTab: boolean;
   isAgentBuilder: boolean;
@@ -2305,6 +2346,7 @@ const ChatFeedMessageGroup = React.memo(({
     isInternalStatusThought(log) || (
       isLiveUserVisibleTrace(log) &&
       RENDERABLE_TIMELINE_TYPES.has(String(log?.type || '')) &&
+      (log?.type !== 'ask_user' || isAskUserPrompt(log)) &&
       (log?.type !== 'thought_stream' || shouldRenderThoughtStream(log))
     )
   );
@@ -2325,11 +2367,6 @@ const ChatFeedMessageGroup = React.memo(({
     ...displayProcessLogs,
     ...tailWorkLogs,
   ]);
-  const isAskUserInteractionLog = (log: any) =>
-    log?.type === 'ask_user' &&
-    typeof log.question === 'string' &&
-    log.question.trim().length > 0 &&
-    Number.isFinite(Number(log.timestamp));
   // Snapshot reconciliation happens by responseKey/event identity before
   // rendering. Do not run a second question-content filter here; it could
   // suppress a valid repeated prompt from a later phase.
@@ -2375,7 +2412,8 @@ const ChatFeedMessageGroup = React.memo(({
       // existing work sequence. It must not split one query into two separate
       // Working/Worked containers.
       currentThoughts.push(log);
-    } else if (isAskUserInteractionLog(log)) {
+    } else if (isAskUserPrompt(log)) {
+      if (pinnedQuestionKeys?.has(getAskUserResponseKey(log))) return;
       if (currentThoughts.length > 0) {
         segments.push({ type: 'thoughts', logs: currentThoughts });
         currentThoughts = [];
@@ -2452,24 +2490,10 @@ const ChatFeedMessageGroup = React.memo(({
           return <AgentRunStatusNotice key={`status-${segmentIdentity(seg, segIdx)}`} notice={seg.notice} />;
         }
         if (seg.type === 'ask_user') {
-          return (
-            <AskUserPrompt
-              key={`ask-${ segmentIdentity(seg, segIdx) }`}
-              question={seg.log.question}
-              mode={seg.log.mode || 'text'}
-              options={seg.log.options || []}
-              questions={Array.isArray(seg.log.questions) ? seg.log.questions : undefined}
-              context={seg.log.context}
-              defaultValue={seg.log.defaultValue}
-              urgent={seg.log.urgent}
-              timestamp={seg.log.timestamp}
-              responseKey={seg.log.responseKey}
-              answeredWith={seg.log.answeredWith}
-              onAnswer={(answer) => {
-                onAnswerAskUser?.(seg.log.timestamp, answer, seg.log.responseKey);
-              }}
-            />
-          );
+          const status = getAskUserStatus(seg.log);
+          return <AskUserTraceCard key={`ask-${getAskUserResponseKey(seg.log)}`} log={seg.log}
+            status={status === 'pending' && !isThinkingTurn && !isLiveSessionActive ? 'closed' : status}
+            onAnswer={onAnswerAskUser} />;
         }
 
         // The first live phase exists before its first event. Keep its ordinal
@@ -2513,7 +2537,7 @@ const ChatFeedMessageGroup = React.memo(({
             isLast={isLastThoughts}
             hasAnswer={hasSettledAnswer && isLastThoughts}
             showLiveIndicator={!displayFinalAnswer && segIdx === segments.length - 1}
-            showStartupIndicator={showStartupIndicator && segIdx === 0}
+            pendingIndicatorMode={segIdx === 0 ? pendingIndicatorMode : undefined}
             stepCount={stepCount}
             turnStartedAt={seg.phaseKey === 'root' ? turnStartedAt : undefined}
             turnEndedAt={terminalTurnEndedAt}
@@ -2610,7 +2634,7 @@ const ChatFeedMessageGroup = React.memo(({
   );
 }, (previous, next) => {
   if (previous.groupIdx !== next.groupIdx) return false;
-  if (previous.showStartupIndicator !== next.showStartupIndicator) return false;
+  if (previous.pendingIndicatorMode !== next.pendingIndicatorMode) return false;
   if (previous.dateLabel !== next.dateLabel) return false;
   if (previous.turnStartedAt !== next.turnStartedAt) return false;
   if (previous.isThinkingTurn !== next.isThinkingTurn) return false;
@@ -2623,6 +2647,7 @@ const ChatFeedMessageGroup = React.memo(({
   if (previous.onOpenAgentTeam !== next.onOpenAgentTeam) return false;
   if (previous.subAgentAssetIndexes !== next.subAgentAssetIndexes) return false;
   if (previous.onAnswerAskUser !== next.onAnswerAskUser) return false;
+  if (previous.pinnedQuestionKeys !== next.pinnedQuestionKeys && previous.group.some(isAskUserPrompt)) return false;
   if (previous.onEditUserMessage !== next.onEditUserMessage) return false;
   if (previous.setPreviewUserMessage !== next.setPreviewUserMessage) return false;
   if (previous.group === next.group) return true;
@@ -2681,9 +2706,17 @@ const ChatDateDivider = React.memo(({ label }: { label: string }) => (
 
 const ChatFeedContent = React.memo<ChatFeedProps>(({
   scrollContainerId = 'chat-container',
+  focusedQuestion,
   traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState, workspacePath, media
 }) => {
   const isAgentBuilderFeed = String(chatId || '').startsWith('agent_builder_');
+  const questionSource = useLiveChat(focusedQuestion?.ledger, focusedQuestion?.chatId || '');
+  const focusedRequest = focusedQuestion && questionSource
+    ? readFocusTrace(questionSource.traceLogs).pendingQuestions.get(focusedQuestion.responseKey)
+    : undefined;
+  useEffect(() => {
+    if (focusedQuestion && !focusedRequest) focusedQuestion.onHide();
+  }, [focusedQuestion, focusedRequest]);
   const workspaceLogs = useTraceSelection(incomingTraceLogs, isWorkspaceTouchTrace);
   const localFilePaths = useMemo(() => collectWorkspaceTouches(workspaceLogs, chatId || '', workspacePath)
     .filter(item => item.kind === 'file').map(item => item.path), [workspaceLogs, chatId, workspacePath]);
@@ -2851,6 +2884,18 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
   );
   const transportWorkActive = rawTransportActive || liveTransportActive;
   const activeBoundary = activeFeedTurnLogs.find(isFeedTurnBoundary);
+  const pendingQuestionLogs = useMemo(() => {
+    if (activeTurnHasTerminalTrace || activeTurnHasExplicitFinalAnswer) return [];
+    const runId = activeBoundary?.runId;
+    const runLogs = runId ? orderedTraceLogs.filter(log => log.runId === runId || log.rootRunId === runId) : activeFeedRunLogs;
+    const pending = runLogs.filter(isPendingAskUser);
+    return Array.from(new Map(pending.map(log => [getAskUserResponseKey(log), log])).values());
+  }, [activeBoundary, activeFeedRunLogs, activeTurnHasTerminalTrace, activeTurnHasExplicitFinalAnswer, orderedTraceLogs]);
+  const pinnedQuestionKeys = useMemo(() => new Set(pendingQuestionLogs.map(getAskUserResponseKey)), [pendingQuestionLogs]);
+  const waitingForQuestion = pendingQuestionLogs.some(log => log.behavior !== 'continue');
+  const focusedLocalKey = focusedQuestion?.chatId === chatId && focusedRequest && pinnedQuestionKeys.has(focusedQuestion.responseKey)
+    ? focusedQuestion.responseKey : undefined;
+  const hasQuestionDock = pendingQuestionLogs.length > 0 || Boolean(focusedRequest);
   const activityScope = `${ String(chatId || 'chat') }::${ String(
     activeBoundary?._feedBoundaryId || activeBoundary?.id || activeBoundary?.steeringId || activeBoundary?.turnId || activeBoundary?.runId || 'preamble'
   ) }::occurrence:${ activeFeedBoundaryIndex }`;
@@ -3500,11 +3545,12 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
           )}
           <div
             id={scrollContainerId}
+            data-ask-docked={hasQuestionDock || undefined}
             className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden eterx-scrollbar [scrollbar-gutter:stable] ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
               }`}
             style={{
-              paddingBottom: 'max(10rem, var(--eterx-chat-composer-inset, 10rem))',
-              scrollPaddingBottom: 'max(10rem, var(--eterx-chat-composer-inset, 10rem))',
+              paddingBottom: hasQuestionDock ? '0.75rem' : 'max(10rem, var(--eterx-chat-composer-inset, 10rem))',
+              scrollPaddingBottom: hasQuestionDock ? '0.75rem' : 'max(10rem, var(--eterx-chat-composer-inset, 10rem))',
             }}
             ref={scrollContainerRef}
             onScroll={handleScrollWrap}
@@ -3563,7 +3609,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
                   // "Recovered request" bubble. The following work group stays
                   // mounted, so genuine thoughts and actions remain visible.
                   if (isHiddenRecoveredUserBoundary(group[0])) return null;
-                  const isThinkingTurn = feedWorkActive && groupIdx === activeWorkGroupIndex;
+                  const isThinkingTurn = feedWorkActive && !waitingForQuestion && groupIdx === activeWorkGroupIndex;
                   const isLiveSessionActive =
                     liveTransportActive && group.some(log => log?.isLive === true
                       && !log?._liveCommitKey && isFeedTraceOpen(log));
@@ -3575,13 +3621,19 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
                   const showDateDivider = Boolean(thisDateKey && thisDateKey !== prevDateKey);
                   const dateLabel = showDateDivider ? formatDateLabel(thisDateKey) : '';
 
+                  const previousBoundary = prevGroup?.[0];
+                  let pendingIndicatorMode: TurnPendingMode | undefined;
+                  if (isFeedTurnBoundary(previousBoundary) && !isHiddenRecoveredUserBoundary(previousBoundary)) {
+                    pendingIndicatorMode = groupIdx === startupIndicatorGroupIndex ? 'startup' : 'thinking';
+                  }
+
                   return (
                       <ChatFeedMessageGroup
                         key={`group-${ conversationIdentity }-${ visibleGroupMountKeys[visibleGroupIdx] }`}
                         dateLabel={dateLabel}
                         group={group}
                         groupIdx={groupIdx}
-                        showStartupIndicator={groupIdx === startupIndicatorGroupIndex}
+                        pendingIndicatorMode={pendingIndicatorMode}
                         turnStartedAt={turnStartedAt}
                         isThinkingTurn={isThinkingTurn}
                         isLiveSessionActive={isLiveSessionActive}
@@ -3590,6 +3642,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
                         onOpenAgentTeam={onOpenAgentTeam}
                         subAgentAssetIndexes={subAgentAssetIndexes}
                         onAnswerAskUser={onAnswerAskUser}
+                        pinnedQuestionKeys={pinnedQuestionKeys}
                         onEditUserMessage={onEditUserMessage}
                         isSubAgentTab={isSubAgentTab}
                         isAgentBuilder={isAgentBuilderFeed}
@@ -3626,6 +3679,30 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
             )}
           </div>
         </div>
+        {hasQuestionDock && (
+          <section className="eterx-ask-dock" aria-label="Questions awaiting your reply">
+            <div className={`eterx-ask-dock-items eterx-scrollbar ${isCompressed ? 'max-w-[460px]' : 'max-w-[var(--eterx-reference-composer-max)]'}`}>
+              {focusedRequest && focusedQuestion && !focusedLocalKey && (
+                <AskUserTraceCard
+                  key={`focus:${focusedQuestion.chatId}:${focusedQuestion.responseKey}`}
+                  log={focusedRequest}
+                  status="pending"
+                  sourceTitle={questionSource?.title}
+                  onAnswer={focusedQuestion.onAnswer}
+                  onHide={() => focusedQuestion.onHide(true)}
+                />
+              )}
+              {pendingQuestionLogs.map(log => {
+                const key = getAskUserResponseKey(log);
+                const localFocus = key === focusedLocalKey ? focusedQuestion : undefined;
+                return <AskUserTraceCard key={key} log={log} status="pending"
+                  onAnswer={localFocus?.onAnswer || onAnswerAskUser}
+                  onHide={localFocus ? () => localFocus.onHide(true) : undefined}
+                />;
+              })}
+            </div>
+          </section>
+        )}
       </div>
       <AnimatePresence>
         {previewUserMessage && (

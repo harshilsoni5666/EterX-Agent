@@ -1,4 +1,5 @@
 import { normalizeRegistryToolName, getToolInputJsonSchema } from './registry';
+import { normalizeAskUserMode } from '../../ask-user';
 import type { ToolDefinition } from '../schemas';
 import { normalizeWorkspaceEditChunk } from '../workspace/edit-input';
 import { getSubAgentCreationArgumentGaps, SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
@@ -275,11 +276,11 @@ export function normalizeRegistryToolArgs(toolName: string, args: any): any {
         while (seenIds.has(id)) id += `_${index + 1}`;
         seenIds.add(id);
         return { ...question, id, ...(options !== undefined ? { options } : {}),
-          mode: question.mode ?? (Array.isArray(options) && options.length > 1 ? 'choice' : 'text') };
+          mode: normalizeAskUserMode(question.mode) || (Array.isArray(options) && options.length ? 'choice' : 'text') };
       });
     }
-    if (input.mode === undefined) input.mode = input.questions?.length ? 'questions'
-      : input.options?.length > 1 ? 'choice' : 'text';
+    input.mode = input.questions?.length ? 'questions'
+      : normalizeAskUserMode(input.mode) || (input.options?.length ? 'choice' : 'text');
   }
   if (name === 'task_decomposer') {
     if (input.complexTask === undefined) input.complexTask = input.task ?? input.complex_task;

@@ -1,4 +1,4 @@
-.dashboard {
+.dashboard, .selectMenu {
   --usage-bg: var(--background, #101011);
   --usage-text: var(--foreground, #edece9);
   --usage-muted: color-mix(in srgb, var(--usage-text) 62%, var(--usage-bg));
@@ -6,6 +6,8 @@
   --usage-card: color-mix(in srgb, var(--usage-text) 3%, var(--usage-bg));
   --usage-elevated: color-mix(in srgb, var(--usage-text) 7%, var(--usage-bg));
   --usage-chip: color-mix(in srgb, var(--usage-text) 10%, var(--usage-bg));
+}
+.dashboard {
   --usage-shimmer-base: color-mix(in srgb, var(--usage-text) 8%, var(--usage-bg));
   --usage-shimmer-light: color-mix(in srgb, var(--usage-text) 16%, var(--usage-bg));
   --usage-api: #78d2b5;
@@ -101,8 +103,8 @@
   background: transparent;
   border: 0;
 }
-.dashboard :is(button, select, summary, a):focus-visible {
-  outline: 2px solid var(--usage-api);
+.dashboard :is(button, summary, a):focus-visible {
+  outline: 1px solid var(--usage-muted);
   outline-offset: 2px;
 }
 .dashboard .segments button { min-height: 27px; padding: 3px 10px; border-radius: 6px; font-size: 12px; white-space: nowrap; font-weight: 550; }
@@ -112,18 +114,100 @@
 .iconButton { display: grid; place-items: center; width: 35px; height: 35px; flex: 0 0 auto; }
 .dashboard .actionButton { gap: 6px; padding: 0 11px; min-height: 35px; font-size: 12px; color: var(--usage-text); white-space: nowrap; font-weight: 540; text-decoration: none; }
 .dashboard a.actionButton:hover { background: var(--usage-chip); }
-.providerControl { position: relative; display: flex; min-width: 0; max-width: min(220px, 50cqw); color: var(--usage-muted); }
-.providerControl select {
-  appearance: none; min-width: 0; min-height: 35px; max-width: 100%; padding: 0 27px 0 10px;
-  color: var(--usage-text); background: var(--usage-card); border: 1px solid var(--usage-line); border-radius: 8px;
-  font-size: 12px; cursor: pointer; text-overflow: ellipsis;
+.selectTrigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 35px;
+  max-width: 100%;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--usage-elevated);
+  color: var(--usage-text);
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.35;
+  text-align: start;
+  cursor: pointer;
 }
-.providerControl select:disabled { opacity: .55; cursor: default; }
-.providerControl:has(> :first-child:not(select)) select { padding-left: 29px; }
-.providerControl > :first-child:not(select) {
-  position: absolute; width: 15px; height: 15px; left: 8px; top: 50%; transform: translateY(-50%); pointer-events: none;
+.selectTrigger:enabled:is(:hover, [data-state="open"]) { background: var(--usage-chip); }
+.dashboard .selectTrigger:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--usage-text) 18%, var(--usage-bg));
 }
-.providerSelectChevron { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.dashboard .selectTrigger:focus-visible .selectLabel { text-decoration: underline; text-underline-offset: 3px; }
+.selectLabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selectIcon, .selectCheck {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--usage-muted);
+}
+.selectIcon > :first-child { width: 14px; height: 14px; }
+.selectCheck { color: var(--usage-text); }
+.selectChevron { flex: none; color: var(--usage-muted); }
+.selectTrigger[data-state="open"] .selectChevron { transform: rotate(180deg); }
+.providerControl { width: min(152px, 50cqw); }
+.selectMenu {
+  --usage-menu-width: var(--radix-select-content-available-width, calc(100vw - 24px));
+  --usage-menu-thumb: color-mix(in srgb, var(--usage-text) 28%, transparent);
+  z-index: 10000;
+  width: max-content;
+  min-width: min(var(--usage-menu-width), max(152px, var(--radix-select-trigger-width, 0px)));
+  max-width: min(300px, var(--usage-menu-width));
+  max-height: min(332px, var(--radix-select-content-available-height, calc(100dvh - 24px)));
+  overflow: hidden;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--usage-text) 9%, var(--usage-bg));
+  color: var(--usage-text);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 34%), 0 2px 8px rgb(0 0 0 / 18%);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+  -webkit-app-region: no-drag;
+}
+:global(:root[data-theme="light"]) .selectMenu {
+  background: color-mix(in srgb, #fff 86%, var(--usage-bg));
+  box-shadow: 0 12px 32px rgb(0 0 0 / 13%), 0 2px 8px rgb(0 0 0 / 8%);
+}
+/* Radix hides the viewport scrollbar by default. */
+.selectMenu .selectViewport {
+  min-height: 0;
+  padding: 4px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--usage-menu-thumb) transparent;
+}
+.selectMenu .selectViewport::-webkit-scrollbar { display: block; width: 6px; }
+.selectMenu .selectViewport::-webkit-scrollbar-thumb { border-radius: 6px; background: var(--usage-menu-thumb); }
+.selectItem {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) 15px;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  outline: none;
+  cursor: pointer;
+  user-select: none;
+  overflow-wrap: anywhere;
+}
+.selectItem[data-state="checked"] { background: color-mix(in srgb, var(--usage-text) 8%, transparent); font-weight: 600; }
+.selectItem[data-highlighted] { background: color-mix(in srgb, var(--usage-text) 13%, transparent); }
+.selectDivider { height: 1px; margin: 4px 5px; background: var(--usage-line); }
+@media (prefers-reduced-motion: no-preference) {
+  .selectMenu[data-state="open"] { animation: usageMenuIn .11s ease-out; }
+}
+@keyframes usageMenuIn { from { opacity: 0; } to { opacity: 1; } }
+@media (forced-colors: active) {
+  .selectMenu, .selectTrigger { border: 1px solid ButtonText; }
+  .dashboard .selectTrigger:focus-visible, .selectItem[data-highlighted] { outline: 1px solid Highlight; outline-offset: -1px; }
+}
 .dashboard button:disabled { opacity: .5; cursor: default; }
 .spinning { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -190,20 +274,9 @@
 .plot { min-width: 0; height: clamp(212px, 22cqw, 310px); margin: auto 0; padding-top: 11px; cursor: crosshair; }
 .overview > .chartPanel .plot { flex: 1; min-height: clamp(232px, 25cqw, 338px); }
 .chartFooter { justify-content: flex-start; flex-wrap: wrap; gap: 7px 13px; min-height: 25px; margin-top: 4px; }
-.daySelect { gap: 6px; color: var(--usage-muted); font-size: 11px; }
-.selectControl { position: relative; color: var(--usage-text); }
-.selectControl svg { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); pointer-events: none; }
-.selectControl select {
-  appearance: none;
-  max-width: 100%;
-  padding: 3px 23px 3px 7px;
-  background: var(--usage-bg);
-  border: 1px solid var(--usage-line);
-  border-radius: 6px;
-  color: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
+.daySelect { gap: 6px; min-width: 0; max-width: 100%; margin-inline-start: auto; color: var(--usage-muted); font-size: 11px; }
+.daySelect > span { flex: none; white-space: nowrap; }
+.daySelect .selectTrigger { min-height: 28px; max-width: min(200px, 52cqw); padding-inline: 7px; font-size: 11px; }
 .legend { justify-content: flex-start; flex-wrap: wrap; gap: 7px 13px; color: var(--usage-muted); font-size: 11px; }
 .tooltip { background: var(--usage-elevated); color: var(--usage-text); padding: 9px 12px; border: 1px solid var(--usage-line); border-radius: 8px; font-size: 12px; box-shadow: 0 6px 24px #0003; }
 .tooltip > div, .tooltip span { display: flex; align-items: center; }

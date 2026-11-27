@@ -1,47 +1,26 @@
 {
   "$schema": "./docs/release-notes.schema.json",
-  "version": "0.1.54",
-  "summary": "Added separate provider sign-ins and Development Workbench controls, and expanded Usage, workspace customization, and chat visualizations.",
+  "version": "0.1.55",
+  "summary": "Improved Focus questions and scheduled tasks, restored context and subscription details, and refreshed Settings and appearance controls.",
   "sections": [
-    {
-      "kind": "new",
-      "items": [
-        {
-          "title": "Separate provider sign-ins",
-          "description": "Added isolated sign-in profiles for Codex, Antigravity, Cursor, Grok Build, and Claude Code. Codex supported separately saved ChatGPT accounts with its manual Change & Resume flow. Antigravity kept Google accounts in separate profiles, while Cursor, Grok Build, and Claude Code kept their own browser or CLI sign-in state."
-        },
-        {
-          "title": "Development Workbench",
-          "description": "Added Connections for setting up Mac and Linux computers over SSH, plus Workbench views for devices and running commands. You could manage simulators and phones, install and launch builds, control supported devices, and follow command output or open listening services."
-        },
-        {
-          "title": "Usage views",
-          "description": "Added separate Cost, Tokens, and Limits views. Cost separated reported charges, public rate estimates, and subscription equivalents. Tokens showed processed and cached counts and how many responses reported usage. Limits showed the last observed status and retry time for each connected ChatGPT account. Added provider and Past 24h filters, selectable time buckets, and matching CSV exports."
-        },
-        {
-          "title": "Project and readability controls",
-          "description": "Added project and folder preferences for the last-used workspace and new chats, with folder icons from uploads or refreshable designs. Added a contrast slider and four diff palettes that applied across diff views, editor highlights, and change counts."
-        },
-        {
-          "title": "Visual answers and chat tables",
-          "description": "Added direct chart, timeline, metric, and expandable-note responses for agent work when a visual helped. Chat tables gained spreadsheet-ready copy, horizontal scrolling, and an expandable view with CSV export."
-        }
-      ]
-    },
     {
       "kind": "improved",
       "items": [
         {
-          "title": "Provider models and subscription settings",
-          "description": "Added provider API keys in Settings → API and automatically listed compatible returned models in the chat picker. Removed the separate Models tab and its top-bar shortcut. Refined subscription menus, active-state styling, spacing, and keyboard focus while keeping the green Active indicator."
+          "title": "Focus questions and scheduled tasks",
+          "description": "Updated pending questions to show Input by default and reveal Answer on hover or keyboard focus. Opening a question displayed it above the current composer and routed replies to the chat that asked without leaving the chat in view. Hiding the card left the question pending. Limited Focus alarms to scheduled tasks, including settled tasks, with Run now as the only alarm action. Running a daily task early added a one-time run and preserved its saved schedule in both Focus and Tasks."
         },
         {
-          "title": "Development activity in chat and Work Panel",
-          "description": "Added direct Workbench activity rows with Lucide icons, observed outcomes, and controls to open the relevant view. Boot requests remained labeled Requested until readiness was confirmed. The Work Panel showed development activity only when the chat had a related device, window, VM, command, or service."
+          "title": "Settings and token activity",
+          "description": "Refreshed Settings backgrounds, sidebars, Profile colors, and dropdowns in both themes. Restored scrollable loading skeletons for All chats and Action usage, and showed an error when Action usage failed to load. Removed User manual from General and Settings search."
         },
         {
-          "title": "Focus mode and appearance",
-          "description": "Updated Focus mode so Settle appeared on hover for eligible chats and scheduled items could return when due. Refreshed the System, Light, and Dark theme previews, removed the UI font-size readout, and placed project and readability controls below UI density."
+          "title": "Project and folder appearance",
+          "description": "Redesigned Appearance → Project/Folder with a compact layout and neutral Lucide icons. Suggestions used the folder name and top-level filenames; Refresh showed five different symbols without changing the selection. Selected icons updated the existing Focus sidebar slot, custom uploads were preserved, and saved generated icons mapped to Lucide equivalents."
+        },
+        {
+          "title": "Performance telemetry control",
+          "description": "Added a Settings toggle to enable or disable PostHog performance telemetry. Telemetry was enabled by default in the desktop app."
         }
       ]
     },
@@ -49,16 +28,25 @@
       "kind": "fixed",
       "items": [
         {
-          "title": "Git workspace controls",
-          "description": "Kept the GitHub button available in chats with a Git workspace. Switching to Tasks, Agents, or Channels now hid the button and closed its menu."
+          "title": "Chat replies and steering",
+          "description": "Corrected the Chat agent type and filtered the false “Agent connection did not start” warning from saved chats and completed replies. Steer now interrupted the active reply and started a direct response with the new guidance and conversation history, while keeping text already shown in the feed."
         },
         {
-          "title": "Chat loading and search",
-          "description": "Kept saved chats visible during background refreshes and showed Retry only when a failed load prevented the history or conversation from appearing. Chat search waited for history, side chats kept message and dictation errors separate from history errors, and successful startup loads cancelled pending retries."
+          "title": "Context counts and provider caches",
+          "description": "Kept context usage measured against the selected model after switching models, and removed the approximate-count prefix from chat, Work Panel, and Settings. The cache badge followed the current request, and Gemini cache recovery no longer discarded a newly rebuilt cache."
         },
         {
-          "title": "Focus status behavior",
-          "description": "Kept Working chats and unanswered questions in their current status on hover and hid Settle for them in the chat menu. Scheduled items returned to Attention Needed when their next run was due."
+          "title": "Subscription settings",
+          "description": "Restored the Subscription provider panel, account controls, and subscription limit alerts."
+        }
+      ]
+    },
+    {
+      "kind": "new",
+      "items": [
+        {
+          "title": "Update status and announcements",
+          "description": "Removed the automatic Update available card that appeared when a release was detected. Settings → Updates now cleared its green success banner six seconds after it first appeared and did not show that same update's banner again on later launches. Updated the announcement dialog's dark background to match the supplied reference."
         }
       ]
     }

@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Activity, ArrowUpRight, FolderOpen, GitBranch, GitFork, Globe, Lightbulb, Loader2, Maximize2, Minimize2, PanelRightClose, Plus, TerminalSquare, X } from 'lucide-react';
+import { ArrowUpRight, Blocks, FolderOpen, GitBranch, GitFork, Globe, Lightbulb, Loader2, Maximize2, Minimize2, PanelRightClose, Plus, TerminalSquare, X } from 'lucide-react';
 import { openPlanInWorkspace, WorkspacePlan } from './task-plan-card';
 import { planViewKey, type TaskTrackerState } from '../../lib/task-plan-trace';
 import { addWorkspaceFolder, addWorkspaceTab, closeWorkspaceTab, resolveWorkspaceOwner, updateWorkspace, useSideWorkspace, type WorkspaceKind } from '../../lib/side-workspace-store';
@@ -28,7 +28,7 @@ import { useWorkspaceScrollBoundary } from './use-workspace-scroll-boundary';
 import { revealInWorkspaceScroller } from './workspace-scroll';
 
 const workspaceChoices = [
-  { kind: 'workbench', title: 'Workbench', detail: 'Follow local runs, services, and devices', icon: Activity, key: 'W' },
+  { kind: 'workbench', title: 'Workbench', detail: 'Follow local services and devices', icon: Blocks, key: 'W' },
   { kind: 'plan', title: 'Plan', detail: 'Read the plan and follow its steps', icon: Lightbulb, key: 'P' },
   { kind: 'chat', title: 'Side chat', detail: 'Keep two conversations in view', icon: MessagesCircle, key: 'S' },
   { kind: 'subagents', title: 'Sub-Agents', detail: 'Follow agents and switch between their chats', icon: GitFork, key: 'A' },

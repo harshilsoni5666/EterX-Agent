@@ -407,13 +407,13 @@
   border-color: var(--light-line-hover) !important;
 }
 
-:root[data-theme="light"] :is(.eterx-settings-dialog, .eterx-connectors-panel, .eterx-skill-action-dialog-card) {
+:root[data-theme="light"] :is(.eterx-connectors-panel, .eterx-skill-action-dialog-card) {
   background: var(--light-canvas) !important;
   color: var(--light-body) !important;
   border-color: var(--light-line) !important;
 }
 
-:root[data-theme="light"] :is(.eterx-settings-tab, .eterx-settings-back-button, .eterx-connectors-tab, .eterx-connectors-close, .eterx-agent-icon-button, .eterx-agent-open-button):not(:disabled):hover {
+:root[data-theme="light"] :is(.eterx-connectors-tab, .eterx-connectors-close, .eterx-agent-icon-button, .eterx-agent-open-button):not(:disabled):hover {
   background: var(--light-hover) !important;
   color: var(--light-ink) !important;
 }
@@ -435,7 +435,7 @@
   color: var(--light-ink) !important;
 }
 
-:root[data-theme="light"] :is(.eterx-setting-description, .eterx-connectors-desc, .eterx-settings-select-option [class~="text-[#8F8F8F]"]) {
+:root[data-theme="light"] :is(.eterx-setting-description, .eterx-connectors-desc) {
   color: var(--light-muted) !important;
 }
 
@@ -448,12 +448,12 @@
   color: var(--light-danger) !important;
 }
 
-:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-settings-tab, .eterx-settings-segment) {
+:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-segment {
   color: var(--light-secondary) !important;
 }
 
-:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-settings-tab[data-active="true"], .eterx-settings-segment[aria-pressed="true"]),
-:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-settings-tab[data-active="true"], .eterx-settings-segment[aria-pressed="true"]):hover {
+:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-segment[aria-pressed="true"],
+:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-segment[aria-pressed="true"]:hover {
   background: var(--light-selected) !important;
   color: var(--light-ink) !important;
 }
@@ -463,19 +463,6 @@
   color: var(--light-ink) !important;
 }
 
-:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-select-trigger {
-  background: var(--light-surface) !important;
-  border-color: var(--light-line-hover) !important;
-  color: var(--light-body) !important;
-}
-
-:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-select-trigger:is(:hover, [aria-expanded="true"]) {
-  background: var(--light-hover) !important;
-  border-color: var(--light-line-strong) !important;
-  color: var(--light-ink) !important;
-}
-
-:root[data-theme="light"] .eterx-settings-select-menu,
 :root[data-theme="light"] .eterx-tooltip-card,
 :root[data-theme="light"] .eterx-work-menu,
 :root[data-theme="light"] .eterx-composer-shell [data-adaptive-menu="true"],
@@ -486,21 +473,11 @@
   box-shadow: var(--light-menu-shadow) !important;
 }
 
-:root[data-theme="light"] .eterx-settings-select-option {
-  color: var(--light-body) !important;
-}
-
-:root[data-theme="light"] :is(.eterx-settings-select-option, .eterx-work-menu-row, .eterx-work-menu-task-row, .eterx-chat-action-menu-item):not(:disabled):not([data-danger="true"]):not([class*="text-red-"]):hover {
+:root[data-theme="light"] :is(.eterx-work-menu-row, .eterx-work-menu-task-row, .eterx-chat-action-menu-item):not(:disabled):not([data-danger="true"]):not([class*="text-red-"]):hover {
   background: var(--light-hover) !important;
 }
 
-:root[data-theme="light"] .eterx-settings-select-option[data-active="true"],
-:root[data-theme="light"] .eterx-settings-select-option[data-active="true"]:hover {
-  background: var(--light-selected) !important;
-  color: var(--light-ink) !important;
-}
-
-:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-settings-select-option, .eterx-settings-select-trigger, .eterx-settings-segment):not(:disabled):active {
+:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-segment:not(:disabled):active {
   background: var(--light-pressed) !important;
 }
 
@@ -566,11 +543,11 @@
 }
 
 :root[data-theme="light"] [role="switch"][aria-checked="false"] {
-  background: #c3cad3 !important;
+  background: var(--settings-toggle-off, #c3cad3) !important;
 }
 
 :root[data-theme="light"] [role="switch"][aria-checked="true"] {
-  background: var(--light-link) !important;
+  background: var(--settings-toggle-on, var(--light-link)) !important;
 }
 
 :root[data-theme="light"] [role="switch"] > :is(span, div) {
@@ -578,11 +555,11 @@
 }
 
 :root[data-theme="light"] [role="switch"][aria-checked="false"]:not(:disabled):hover {
-  background: #aeb8c5 !important;
+  background: var(--settings-toggle-off-hover, #aeb8c5) !important;
 }
 
 :root[data-theme="light"] [role="switch"][aria-checked="true"]:not(:disabled):hover {
-  background: var(--light-link-hover) !important;
+  background: var(--settings-toggle-on-hover, var(--light-link-hover)) !important;
 }
 
 /* Links use color and underline; statuses retain their distinct meaning. */

@@ -11,6 +11,8 @@ export interface ScheduledTaskRun {
   agentId: string | null;
   agentName: string;
   error?: string;
+  /** Manual runs resume this schedule. Null means there was no pending schedule. */
+  scheduleStatusAfterRun?: 'scheduled' | 'queued' | 'paused' | null;
 }
 
 export interface ScheduledTaskRecord {
@@ -35,6 +37,7 @@ export interface ScheduledTaskRecord {
   scheduledTimestamp: number;
   status: ScheduledTaskStatus;
   executedAt?: number;
+  runNowRequestedAt?: number;
   focusSettledAt?: number | null;
   chatId?: string;
   runCount?: number;
@@ -43,6 +46,25 @@ export interface ScheduledTaskRecord {
 }
 
 export type ScheduledFocusUpdate = { action: 'reschedule'; at: number | 'now' } | { action: 'settle' | 'restore' };
+
+export function hasActiveTaskSchedule(task: ScheduledTaskRecord) {
+  return task.status === 'scheduled' || task.status === 'queued';
+}
+
+export function isScheduledTaskDue(task: ScheduledTaskRecord, now: number) {
+  return hasActiveTaskSchedule(task) && task.scheduledTimestamp <= now;
+}
+
+export function canRunTaskFromFocus(task: ScheduledTaskRecord, settled: boolean) {
+  return task.status !== 'running' && !task.runNowRequestedAt && (settled || hasActiveTaskSchedule(task));
+}
+
+export function queueScheduledTaskRunNow(task: ScheduledTaskRecord, now = Date.now()) {
+  if (task.runNowRequestedAt) return;
+  task.runNowRequestedAt = now;
+  task.updatedAt = now;
+  task.focusSettledAt = null;
+}
 
 export function rescheduleTask(task: ScheduledTaskRecord, at: number, now: number): ScheduledTaskRecord {
   const date = new Date(at);
@@ -55,18 +77,20 @@ export function rescheduleTask(task: ScheduledTaskRecord, at: number, now: numbe
     dateOption: 'custom',
     customDate: [date.getFullYear(), pad(date.getMonth() + 1), pad(date.getDate())].join('-'),
     triggerTime: pad(date.getHours()) + ':' + pad(date.getMinutes()),
+    runNowRequestedAt: undefined,
     focusSettledAt: null,
   };
 }
 
-export function scheduledTaskSection(status: ScheduledTaskStatus) {
-  if (status === 'queued' || status === 'running') return 'queue';
+export function scheduledTaskSection({ status, runNowRequestedAt }: Pick<ScheduledTaskRecord, 'status' | 'runNowRequestedAt'>) {
+  if (runNowRequestedAt || status === 'queued' || status === 'running') return 'queue';
   if (status === 'scheduled' || status === 'paused') return 'my-list';
   return 'completed';
 }
 
 export const SCHEDULED_TASKS_STORAGE_KEY = 'eterx_scheduled_tasks';
 export const SCHEDULED_TASKS_UPDATED_EVENT = 'eterx_scheduled_tasks_updated';
+const CUSTOM_INTERVAL = /^(\d+)\s*(min|mins|minute|minutes|hour|hours|day|days|week|weeks)$/;
 
 const fieldMatches = (value: number, field: string, min: number, max: number): boolean => {
   const token = String(field || '*').trim();
@@ -130,7 +154,7 @@ export function computeNextScheduledRun(recurrence: string, after = Date.now()):
   }
   if (rule.startsWith('custom:')) {
     const custom = rule.slice('custom:'.length).trim();
-    const interval = custom.match(/^(\d+)\s*(min|mins|minute|minutes|hour|hours|day|days|week|weeks)$/);
+    const interval = custom.match(CUSTOM_INTERVAL);
     if (interval) {
       const amount = Number(interval[1]);
       const unit = interval[2];
@@ -146,6 +170,80 @@ export function computeNextScheduledRun(recurrence: string, after = Date.now()):
     return nextCronOccurrence(custom, after);
   }
   return null;
+}
+
+function nextTaskOccurrence(task: ScheduledTaskRecord, completedAt: number): number | null {
+  const rule = task.recurrence.trim().toLowerCase();
+  const plannedAt = Number.isFinite(task.scheduledTimestamp) ? task.scheduledTimestamp : completedAt;
+  const after = Math.max(plannedAt, completedAt);
+
+  if (rule === 'daily' || rule === 'weekdays' || rule === 'weekly') {
+    const planned = new Date(plannedAt);
+    const candidate = new Date(after);
+    const time = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(task.triggerTime);
+    const hour = time ? Number(time[1]) : planned.getHours();
+    const minute = time ? Number(time[2]) : planned.getMinutes();
+    if (rule === 'weekly') {
+      candidate.setDate(candidate.getDate() + (planned.getDay() - candidate.getDay() + 7) % 7);
+    }
+    const setRunTime = () => candidate.setHours(hour, minute, planned.getSeconds(), planned.getMilliseconds());
+    setRunTime();
+    if (candidate.getTime() <= after) {
+      candidate.setDate(candidate.getDate() + (rule === 'weekly' ? 7 : 1));
+      setRunTime();
+    }
+    if (rule === 'weekdays') {
+      while (candidate.getDay() === 0 || candidate.getDay() === 6) candidate.setDate(candidate.getDate() + 1);
+      setRunTime();
+    }
+    return candidate.getTime();
+  }
+
+  if (rule.startsWith('custom:') && !CUSTOM_INTERVAL.test(rule.slice('custom:'.length).trim())) {
+    return computeNextScheduledRun(rule, after);
+  }
+
+  const first = computeNextScheduledRun(rule, plannedAt);
+  if (first === null || !Number.isFinite(first) || first <= plannedAt) return null;
+  const interval = first - plannedAt;
+  return plannedAt + (Math.floor((after - plannedAt) / interval) + 1) * interval;
+}
+
+export function finishScheduledTaskRun(
+  task: ScheduledTaskRecord,
+  run: ScheduledTaskRun,
+  status: 'completed' | 'failed',
+  completedAt: number,
+  error?: string,
+) {
+  run.status = status;
+  run.completedAt = completedAt;
+  run.error = error;
+  task.executedAt = completedAt;
+  task.lastError = error;
+
+  const resume = run.scheduleStatusAfterRun;
+  if (resume === null || resume === 'scheduled' || resume === 'queued' || resume === 'paused') {
+    task.status = resume ?? status;
+    return;
+  }
+
+  const next = nextTaskOccurrence(task, completedAt);
+  if (next === null || !Number.isFinite(new Date(next).getTime())) {
+    task.status = status;
+    return;
+  }
+
+  const date = new Date(next);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const rule = task.recurrence.trim().toLowerCase();
+  task.status = 'scheduled';
+  task.scheduledTimestamp = next;
+  task.customDate = [date.getFullYear(), pad(date.getMonth() + 1), pad(date.getDate())].join('-');
+  task.dateOption = 'custom';
+  if (rule !== 'daily' && rule !== 'weekdays' && rule !== 'weekly') {
+    task.triggerTime = pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
 }
 
 export function normalizeScheduledTask(task: Partial<ScheduledTaskRecord>): ScheduledTaskRecord {
@@ -182,6 +280,8 @@ export function normalizeScheduledTask(task: Partial<ScheduledTaskRecord>): Sche
       ? task.status as ScheduledTaskStatus
       : 'scheduled',
     executedAt: task.executedAt,
+    runNowRequestedAt: typeof task.runNowRequestedAt === 'number' && Number.isFinite(task.runNowRequestedAt) && task.runNowRequestedAt > 0
+      ? task.runNowRequestedAt : undefined,
     focusSettledAt: typeof task.focusSettledAt === 'number' && Number.isFinite(task.focusSettledAt) ? task.focusSettledAt : null,
     chatId: task.chatId,
     runCount: Number(task.runCount || task.history?.length || 0),

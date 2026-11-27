@@ -7,6 +7,7 @@ import { getEterxDataDir } from '../agent/storage-paths';
 import bundledRates from '../usage/bundled-rates.json';
 import { openOutbox } from './outbox';
 import { readPostHogConfig, sendToPostHog, type CaptureReceipt } from './posthog';
+import { resolveTelemetryEnabled } from './preference';
 import {
   BATCH_LIMIT, catalogModel, isObject, normalizeDimensions,
   normalizeMeasurements, normalizeProperties, restrictModelProperties,
@@ -48,6 +49,7 @@ const state = globalState.__eterxProductTelemetry ??= {
 };
 
 const publicModels = bundledRates.providers as Record<string, Record<string, unknown>>;
+const isDesktopRuntime = () => Boolean(process.env.ETERX_DESKTOP_PARENT_PID || process.env.ETERX_DESKTOP_DEV === '1');
 
 function enabled(refresh = false): boolean {
   const policy = process.env.ETERX_TELEMETRY_ENABLED?.trim().toLowerCase();
@@ -55,13 +57,23 @@ function enabled(refresh = false): boolean {
   const now = Date.now();
   if (!refresh && now - state.preference.checkedAt < 1_000) return state.preference.enabled;
   try {
-    const file = path.join(getEterxDataDir(), 'settings', 'preferences.json');
-    const stat = statSync(file);
-    const signature = [stat.ino, stat.mtimeMs, stat.size].join(':');
+    const settingsDir = path.join(getEterxDataDir(), 'settings');
+    let file = path.join(settingsDir, 'preferences.json');
+    let stat = statSync(file, { throwIfNoEntry: false });
+    if (!stat) {
+      file = path.join(settingsDir, 'preferences.backup.json');
+      stat = statSync(file, { throwIfNoEntry: false });
+    }
+    if (!stat) {
+      state.preference = { checkedAt: now, enabled: isDesktopRuntime() };
+      return state.preference.enabled;
+    }
+    const signature = [file, stat.ino, stat.mtimeMs, stat.size].join(':');
     if (signature !== state.preference.signature) {
-      const preferences = JSON.parse(readFileSync(file, 'utf8'));
-      const settings = JSON.parse(preferences.eterx_settings || '{}');
-      state.preference = { checkedAt: now, signature, enabled: settings.telemetry === true };
+      const preferences: unknown = JSON.parse(readFileSync(file, 'utf8'));
+      const rawSettings = isObject(preferences) ? preferences.eterx_settings : null;
+      const settings: unknown = rawSettings === undefined ? {} : typeof rawSettings === 'string' ? JSON.parse(rawSettings) : null;
+      state.preference = { checkedAt: now, signature, enabled: isObject(settings) && resolveTelemetryEnabled(settings.telemetry, isDesktopRuntime()) };
     }
   } catch {
     state.preference = { checkedAt: now, enabled: false };
@@ -84,7 +96,7 @@ function withStore<T>(use: (store: ReturnType<typeof openOutbox>) => T): T | und
 
 function runtimeContext() {
   const version = process.env.ETERX_APP_VERSION || appPackage.version;
-  const desktop = Boolean(process.env.ETERX_DESKTOP_PARENT_PID || process.env.ETERX_DESKTOP_DEV === '1');
+  const desktop = isDesktopRuntime();
   const platform = ['darwin', 'win32', 'linux'].includes(process.platform) ? process.platform : 'other';
   const serverOs = platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : platform;
   const arch = ['arm64', 'x64', 'ia32', 'arm'].includes(process.arch) ? process.arch : 'other';

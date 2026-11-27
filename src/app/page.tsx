@@ -13,14 +13,14 @@ import type { ImportOrigin } from '../lib/imports/types';
 import { mergeChatWorkspaceSelection } from '../lib/imports/workspace';
 import { createDictationCapture, DICTATION_FINISH_TIMEOUT_MS, type DictationPhase } from '../lib/microphone';
 import { useDesktopUpdates } from '../lib/desktop-updates';
-import { UpdateNotification } from '../components/updates/update-notification';
 import { SubscriptionLimitAlert } from '../components/layout/subscription-limit-alerts';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
 import Loading from './loading';
 import { reloadApp } from '../lib/reload-app';
 import { normalizeImportedTraces } from '../lib/imports/presentation';
 import { recoverRecordedEditTrace } from '../lib/recorded-edit-diff';
-import { mergeFeedTracePayload } from '../lib/chat-feed-lifecycle';
+import { mergeFeedTracePayload, upsertAskUserTrace } from '../lib/chat-feed-lifecycle';
+import { getAskUserResponseKey, isPendingAskUser } from '../lib/ask-user';
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
@@ -31,7 +31,7 @@ import { CommandPalette } from '../components/layout/command-palette';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
 import { ChatInput } from '../components/layout/chat-input';
-import { ChatFeed } from '../components/chat/chat-feed';
+import { ChatFeed, type FocusedQuestion } from '../components/chat/chat-feed';
 import { ChatHistoryNotice, type ChatHistoryStatus } from '../components/chat/chat-history-notice';
 import { NewChatRipple } from '../components/chat/new-chat-ripple';
 import { NewChatAtmosphere } from '../components/chat/new-chat-atmosphere';
@@ -113,7 +113,7 @@ import { formatVisibleWorkNote } from '../lib/agent/work-note';
 import { isLiveUserVisibleTrace } from '../lib/agent/trace-visibility';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../lib/agent/tool-trace';
 import { canonicalizeThoughtStreamLogs, closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
-import { agentIdentitiesOverlap, areLikelySameFeedActionLifecycle, createStoppedRunTrace, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isConclusiveSettledAnswerTrace, isContextTurnBoundary, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary, isSettledAnswerTrace, isTerminalWorkTrace, isTurnWorkActive, mergeFeedTraceHistories, mergeUserTurnBoundaries, orderFeedTimelineLogs, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles } from '../lib/chat-feed-lifecycle';
+import { AGENT_POLL_TIMEOUT_MESSAGES, agentIdentitiesOverlap, areLikelySameFeedActionLifecycle, createStoppedRunTrace, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isConclusiveSettledAnswerTrace, isContextTurnBoundary, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary, isSettledAnswerTrace, isTerminalWorkTrace, isTurnWorkActive, mergeFeedTraceHistories, mergeUserTurnBoundaries, orderFeedTimelineLogs, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles } from '../lib/chat-feed-lifecycle';
 import { resolveChatSendTarget } from '../lib/chat-send-lifecycle';
 import { projectSteeringDelivery, sameUserAdmission, steeringMessageIds, upsertQueuedSteering, settledQueueAdmissionIds, normalizeAdmissionId, queuedFollowUpKey } from '../lib/steering-delivery';
 import { mergeUserAttachments } from '../lib/chat-user-payload';
@@ -153,14 +153,15 @@ import { collectSpawnedAgentKeys, projectSubAgentFeed } from '../lib/sub-agent-f
 import { getFeedTraceWorkerScope } from '../lib/chat-feed-lifecycle';
 import {
   computeNextScheduledRun,
+  finishScheduledTaskRun,
+  isScheduledTaskDue,
   normalizeScheduledTask,
   scheduledTaskSection,
   SCHEDULED_TASKS_STORAGE_KEY,
-  SCHEDULED_TASKS_UPDATED_EVENT,
   type ScheduledTaskRecord,
   type ScheduledTaskRun,
 } from '../lib/scheduled-tasks';
-import { flushScheduledTaskWrites, pendingScheduledTaskWriteAt, scheduledTaskFocusWriteInFlight, persistScheduledTasks as persistScheduledTaskRecords } from '../lib/scheduled-task-sync';
+import { flushScheduledTaskWrites, pendingScheduledTaskWriteAt, readLocalScheduledTasks, runScheduledTaskNow, scheduledTaskFocusWriteInFlight, persistScheduledTasks as persistScheduledTaskRecords } from '../lib/scheduled-task-sync';
 import {
   buildSubAgentPinnedContext,
   DEFAULT_SUB_AGENT_RUNTIME_SETTINGS,
@@ -168,7 +169,7 @@ import {
 } from '../lib/agent/sub-agent-settings';
 import { PollingConcurrencyGate } from '../lib/agent/polling-coordinator';
 import { LiveChatLedger, projectChatMetadata } from '../lib/live-chat-ledger';
-import { mergeChatFocusDisposition, readFocusTrace, type ChatFocusDisposition, type FocusGroup } from '../lib/chat-focus';
+import { mergeChatFocusDisposition, readFocusTrace, type ChatFocusDisposition, type FocusGroup, type FocusQuestionTarget } from '../lib/chat-focus';
 import { CHAT_GIT_COMMIT_EVENT } from '../lib/git/client';
 import { mergeChatCommitReceipts, type ChatCommitReceipt } from '../lib/git/chat-commits';
 import { yieldToMainThread } from '../lib/yield-to-main';
@@ -621,6 +622,12 @@ type QueuedRunOptions = {
   userSource?: string;
   delegatedBy?: string;
   scheduledTaskId?: string;
+};
+
+type DirectChatRun = {
+  id: string;
+  pendingPredecessors: string[];
+  redirected?: true;
 };
 
 let lastClientAdmissionTimestamp = 0;
@@ -2105,6 +2112,7 @@ function DeepWorkUI() {
   const [isRecording, setIsRecording] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarFocusGroup, setSidebarFocusGroup] = useState<FocusGroup | null>(null);
+  const [focusQuestionTarget, setFocusQuestionTarget] = useState<(FocusQuestionTarget & { trigger: HTMLButtonElement }) | null>(null);
   const [desktopPlatform, setDesktopPlatform] = useState<'windows' | 'macos' | 'linux' | 'web'>('web');
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -2342,12 +2350,8 @@ function DeepWorkUI() {
   const [isUsageOpen, setIsUsageOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<string>('general');
   const { updateState: desktopUpdate, updateActionError, runUpdateAction, markUpdateViewed } = useDesktopUpdates();
-  const [dismissedUpdateNotice, setDismissedUpdateNotice] = useState<string | null>(null);
   const handledUpdateSettingsRequest = useRef<number | null>(null);
   const hasAvailableUpdate = Boolean(desktopUpdate.availableVersion);
-  const updateNoticeKey = desktopUpdate.availableVersion
-    ? `${desktopUpdate.availableVersion}:${desktopUpdate.status === 'error' ? `error:${desktopUpdate.message}` : desktopUpdate.downloadReady ? 'ready' : 'available'}`
-    : null;
   const [activeTopbarMenu, setActiveTopbarMenu] = useState<'theme' | 'help' | null>(null);
   const topbarThemeOpen = activeTopbarMenu === 'theme';
   const topbarHelpOpen = activeTopbarMenu === 'help';
@@ -2534,9 +2538,15 @@ function DeepWorkUI() {
     setActiveViewState(view);
   }, []);
   const openFocusTask = useCallback((task: ScheduledTaskRecord) => {
-    setSelectedProjectSection(scheduledTaskSection(task.status));
+    setSelectedProjectSection(scheduledTaskSection(task));
     setFocusTaskRequest({ id: task.id });
     setActiveView('projects');
+  }, [setActiveView]);
+  const openFocusQuestion = useCallback((target: FocusQuestionTarget, trigger: HTMLButtonElement) => {
+    setActiveView('chat');
+    if (window.innerWidth < 960) setSidebarOpen(false);
+    setFocusQuestionTarget(current => current?.chatId === target.chatId && current.responseKey === target.responseKey
+      ? null : { ...target, trigger });
   }, [setActiveView]);
 
   const handleThemeChange = useCallback((newTheme: 'light' | 'dark') => {
@@ -2556,15 +2566,12 @@ function DeepWorkUI() {
     setSettingsSubscriptionProvider(subscriptionProvider);
     if (tab && typeof tab === 'string') {
       setSettingsInitialTab(tab);
-      if (tab === 'updates') {
-        markUpdateViewed();
-        setDismissedUpdateNotice(updateNoticeKey);
-      }
+      if (tab === 'updates') markUpdateViewed();
     } else {
       setSettingsInitialTab('general');
     }
     setIsSettingsOpen(true);
-  }, [setSettingsInitialTab, setIsSettingsOpen, markUpdateViewed, updateNoticeKey]);
+  }, [setSettingsInitialTab, setIsSettingsOpen, markUpdateViewed]);
 
   const closeSettingsWindow = useCallback(() => setIsSettingsOpen(false), []);
   const openWorkbenchDevices = useCallback(() => {
@@ -2820,8 +2827,7 @@ function DeepWorkUI() {
   // Chat-mode requests use their own API path and never register as agent
   // executions. This lets stop/reconcile logic leave the existing agent path
   // unchanged while still using the same composer lifecycle.
-  const directChatRunsRef = useRef<Set<string>>(new Set());
-  const directChatRunIdsRef = useRef<Map<string, string>>(new Map());
+  const directChatRunsRef = useRef(new Map<string, DirectChatRun>());
   // Per-chat polling intervals: Map<chatId, intervalId>
   const pollingIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   // Timer presence is not liveness: a timer is removed while its request is
@@ -2860,6 +2866,10 @@ function DeepWorkUI() {
   const pendingTemporaryTitlesRef = useRef<Map<string, string>>(new Map());
   // Invalidates in-flight poll callbacks when a poller is restarted or stopped.
   const pollGenerationRef = useRef<Map<string, number>>(new Map());
+  const canRecoverAgentPoll = (chatId: string, generation = pollGenerationRef.current.get(chatId) || 0) =>
+    !directChatRunsRef.current.has(chatId) &&
+    !activePollersRef.current.has(chatId) &&
+    (pollGenerationRef.current.get(chatId) || 0) === generation;
   const backgroundChatUpdatesRef = useRef<Map<string, Array<{
     apply: (logs: any[]) => any[];
     touchUpdatedAt: boolean;
@@ -3019,7 +3029,7 @@ function DeepWorkUI() {
           if (pendingScheduledTaskWriteAt()) return;
           if (response.ok) {
             const snapshot = await response.json();
-            if (pendingScheduledTaskWriteAt()) return;
+            if (pendingScheduledTaskWriteAt() || appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) !== raw) return;
             const durable = Array.isArray(snapshot?.tasks) ? snapshot.tasks.map(normalizeScheduledTask) : [];
             if (durable.length > 0 || tasks.length === 0 || Number(snapshot?.savedAt || 0) > 0) {
               tasks = durable;
@@ -3035,16 +3045,18 @@ function DeepWorkUI() {
         const dueTasks: ScheduledTaskRecord[] = [];
 
         tasks.forEach(task => {
-          if (task.status === 'scheduled' && now >= task.scheduledTimestamp) {
-            task.status = 'queued';
-            task.updatedAt = now;
-            updated = true;
-            dueTasks.push(task);
-          } else if (task.status === 'queued' && now >= task.scheduledTimestamp) {
+          const due = isScheduledTaskDue(task, now);
+          if (due || (task.runNowRequestedAt && task.status !== 'running')) {
+            if (due && task.status === 'scheduled') {
+              task.status = 'queued';
+              task.updatedAt = now;
+              updated = true;
+            }
             dueTasks.push(task);
           } else if (
             task.status === 'running' &&
             task.chatId &&
+            !scheduledTaskRunAdmissionsRef.current.has(task.id) &&
             now - schedulerMountedAtRef.current > 30_000 &&
             !runningChatsRef.current.has(task.chatId)
           ) {
@@ -3063,39 +3075,16 @@ function DeepWorkUI() {
               const terminalStatus = String(terminalLog?.status || terminalLog?.type || 'completed').toLowerCase();
               const failed = ['failed', 'error', 'stopped', 'cancelled', 'canceled'].includes(terminalStatus);
               const completedAt = Number(terminalLog?.endTime || terminalLog?.timestamp || settledAnswer?.endTime || settledAnswer?.timestamp || now);
-              latestRun.status = failed ? 'failed' : 'completed';
-              latestRun.completedAt = completedAt;
-              latestRun.error = failed
+              const error = failed
                 ? String(terminalLog?.detail || terminalLog?.text || `Task ${terminalStatus}.`)
                 : undefined;
-              const recoveredNextRun = computeNextScheduledRun(task.recurrence, completedAt);
-              task.status = recoveredNextRun === null ? latestRun.status : 'scheduled';
-              if (recoveredNextRun !== null) {
-                task.scheduledTimestamp = recoveredNextRun;
-                const nextDate = new Date(recoveredNextRun);
-                task.triggerTime = `${String(nextDate.getHours()).padStart(2, '0')}:${String(nextDate.getMinutes()).padStart(2, '0')}`;
-                task.customDate = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`;
-                task.dateOption = 'custom';
-              }
-              task.executedAt = completedAt;
+              finishScheduledTaskRun(task, latestRun, failed ? 'failed' : 'completed', completedAt, error);
               task.updatedAt = now;
-              task.lastError = latestRun.error;
               updated = true;
             } else if (latestRun && now - latestRun.startedAt > 2 * 60 * 1000) {
-              latestRun.status = 'failed';
-              latestRun.completedAt = now;
-              latestRun.error = 'The app restarted before this scheduled run could be reattached. Review its chat before running it again.';
-              const recoveredNextRun = computeNextScheduledRun(task.recurrence, now);
-              task.status = recoveredNextRun === null ? 'failed' : 'scheduled';
-              if (recoveredNextRun !== null) {
-                task.scheduledTimestamp = recoveredNextRun;
-                const nextDate = new Date(recoveredNextRun);
-                task.triggerTime = `${String(nextDate.getHours()).padStart(2, '0')}:${String(nextDate.getMinutes()).padStart(2, '0')}`;
-                task.customDate = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`;
-                task.dateOption = 'custom';
-              }
+              finishScheduledTaskRun(task, latestRun, 'failed', now,
+                'The app restarted before this scheduled run could be reattached. Review its chat before running it again.');
               task.updatedAt = now;
-              task.lastError = latestRun.error;
               updated = true;
             }
           }
@@ -3464,10 +3453,10 @@ function DeepWorkUI() {
         setProxyChatLoading(proxyLoadingChatIdsRef.current.has(targetChatId) || data.processing === true);
         if (!showProxyChat || !data.context) return;
         const observedRunId = String(data.context.run?.runId || '');
-        if ((data.context.run?.status === 'running' || (observedRunId && proxyObservedRunIdsRef.current.get(targetChatId) !== observedRunId)) && !activePollersRef.current.has(targetChatId)) {
+        if ((data.context.run?.status === 'running' || (observedRunId && proxyObservedRunIdsRef.current.get(targetChatId) !== observedRunId)) && canRecoverAgentPoll(targetChatId)) {
           const generation = pollGenerationRef.current.get(targetChatId) || 0;
           const poll = await fetchAgentPoll(targetChatId, -1, 5000);
-          if (cancelled || activeChatIdRef.current !== targetChatId || activePollersRef.current.has(targetChatId) || (pollGenerationRef.current.get(targetChatId) || 0) !== generation) return;
+          if (cancelled || activeChatIdRef.current !== targetChatId || !canRecoverAgentPoll(targetChatId, generation)) return;
           setChatLogsById(targetChatId, previous => {
             const next = mergeAgentPollSnapshot(previous, poll, targetChatId);
             observeWorkPanelSpawns(targetChatId, poll.traces || [], previous);
@@ -4590,7 +4579,7 @@ function DeepWorkUI() {
         if (targetChatId !== currentChatId || !isCurrentSession()) return;
         if (backgroundChatUpdatesRef.current.has(targetChatId)) flushBackgroundChatUpdates(targetChatId);
         const logs = chatsRef.current.find(chat => chat.id === targetChatId)?.traceLogs || [];
-        const activeRunId = requestedRunId || directChatRunIdsRef.current.get(targetChatId)
+        const activeRunId = requestedRunId || directChatRunsRef.current.get(targetChatId)?.id
           || pollRunIdRef.current.get(targetChatId);
         const boundary = [...logs].reverse().find(log => isFeedTurnBoundary(log)
           && (!activeRunId || log.runId === activeRunId || log.turnId === activeRunId));
@@ -5273,7 +5262,7 @@ function DeepWorkUI() {
                     success: true,
                     mode: 'steered_existing_run',
                     runId: liveDelegatedTurnsRef.current.get(originatingLiveTurnId)?.runId
-                      || directChatRunIdsRef.current.get(dispatchChatId) || pollRunIdRef.current.get(dispatchChatId) || null,
+                      || directChatRunsRef.current.get(dispatchChatId)?.id || pollRunIdRef.current.get(dispatchChatId) || null,
                     chatId: dispatchChatId,
                     chatTitle: dispatchChat?.title || 'Untitled',
                     message: `Instruction delivered to the running task in "${dispatchChat?.title || 'Untitled'}".`,
@@ -5362,7 +5351,7 @@ function DeepWorkUI() {
                         success: true,
                         mode: 'steered_existing_run',
                         runId: liveDelegatedTurnsRef.current.get(originatingLiveTurnId)?.runId
-                          || directChatRunIdsRef.current.get(dispatchChatId) || pollRunIdRef.current.get(dispatchChatId) || null,
+                          || directChatRunsRef.current.get(dispatchChatId)?.id || pollRunIdRef.current.get(dispatchChatId) || null,
                         chatId: dispatchChatId,
                         chatTitle: dispatchChat?.title || 'Untitled',
                         message: `Instruction delivered to the run that became active in "${dispatchChat?.title || 'Untitled'}".`,
@@ -5421,12 +5410,15 @@ function DeepWorkUI() {
               } catch {
                 tasks = [];
               }
-              if (!appStorage.getItem('eterx_scheduled_tasks_sync_pending')) {
+              if (!pendingScheduledTaskWriteAt()) {
+                const beforeFetch = appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY);
                 try {
                   const response = await fetch('/api/scheduled-tasks', { cache: 'no-store' });
                   if (response.ok) {
                     const snapshot = await response.json();
-                    if (Array.isArray(snapshot?.tasks)) {
+                    if (pendingScheduledTaskWriteAt() || appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) !== beforeFetch) {
+                      tasks = readLocalScheduledTasks();
+                    } else if (Array.isArray(snapshot?.tasks)) {
                       tasks = snapshot.tasks.map(normalizeScheduledTask);
                       appStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(tasks));
                     }
@@ -5616,6 +5608,7 @@ function DeepWorkUI() {
                   ].join('-');
                   existingTask.dateOption = 'custom';
                   existingTask.status = 'scheduled';
+                  existingTask.runNowRequestedAt = undefined;
                 }
                 if (Array.isArray(args.sources)) {
                   existingTask.sources = args.sources
@@ -5632,17 +5625,17 @@ function DeepWorkUI() {
                 return { success: true, taskId, task: existingTask, message: `Updated "${existingTask.title}".` };
               }
               if (operation === 'run_now') {
-                if (existingTask.status === 'running') return { error: `"${existingTask.title}" is already running.` };
-                existingTask.status = 'queued';
-                existingTask.scheduledTimestamp = Date.now();
-                existingTask.updatedAt = Date.now();
-                saveScheduledTasks(tasks);
-                window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task: existingTask } }));
-                return { success: true, taskId, message: `Started "${existingTask.title}".` };
+                try {
+                  runScheduledTaskNow(taskId);
+                  return { success: true, taskId, message: `Queued "${existingTask.title}" to run now.` };
+                } catch (error) {
+                  return { error: error instanceof Error ? error.message : 'Could not start this scheduled task.' };
+                }
               }
               if (operation === 'pause') {
                 if (existingTask.status === 'running') return { error: 'A running scheduled task cannot be paused. Stop its chat run first or wait for completion.' };
                 existingTask.status = 'paused';
+                existingTask.runNowRequestedAt = undefined;
                 existingTask.updatedAt = Date.now();
                 saveScheduledTasks(tasks);
                 return { success: true, taskId, task: existingTask, message: `Paused "${existingTask.title}".` };
@@ -5864,7 +5857,7 @@ function DeepWorkUI() {
               }
               const isRunning = runningChatsRef.current.has(targetChatId);
               const allLogs = targetChat.traceLogs || [];
-              const activeRunId = directChatRunIdsRef.current.get(targetChatId) || pollRunIdRef.current.get(targetChatId);
+              const activeRunId = directChatRunsRef.current.get(targetChatId)?.id || pollRunIdRef.current.get(targetChatId);
               const boundary = [...allLogs].reverse().find(log => isFeedTurnBoundary(log)
                 && log.isLive !== true && log._queuedFollowUp !== true
                 && (!activeRunId || log.runId === activeRunId || log.turnId === activeRunId));
@@ -5875,8 +5868,7 @@ function DeepWorkUI() {
                 && !log.subAgentChatId && !log.terminalTask && log.isLive !== true);
               const terminal = [...mainLogs].reverse().find(isTerminalWorkTrace);
               const answer = mainLogs.findLast((log, index) => isConclusiveSettledAnswerTrace(log, index, mainLogs));
-              const waitingForInput = !terminal && mainLogs.findLast(log => log.type === 'ask_user'
-                && log.answeredWith === undefined && !log.answeredAt);
+              const waitingForInput = !terminal && mainLogs.findLast(log => isPendingAskUser(log) && log.behavior !== 'continue');
               const terminalStatus = String(terminal?.status || terminal?.type || '').toLowerCase();
               const state = ['stopped', 'cancelled', 'canceled'].includes(terminalStatus) ? 'stopped'
                 : ['failed', 'error'].includes(terminalStatus) ? 'failed'
@@ -7846,23 +7838,13 @@ function DeepWorkUI() {
         setBuildingAgentName(titleMatch?.[1]?.trim() || null);
       }
 
-      // ALL pollers run at the same speed — no restart needed on chat switch.
-      // Just check if this chat has an active agent that isn't being polled yet.
-      if (activePollersRef.current.has(id)) {
-        // Already polling — the poller itself manages runningChats lifecycle.
-        // Do NOT blindly re-add here; it creates a race with removeRunningChat.
-      } else {
-        // No poller — check server for a running agent
+      if (canRecoverAgentPoll(id)) {
         const observedPollGeneration = pollGenerationRef.current.get(id) || 0;
         fetchAgentPoll(id, -1, 5000)
           .then(data => {
             const currentChat = chatsRef.current.find(candidate => candidate.id === id);
-            if (!currentChat) return;
+            if (!currentChat || !canRecoverAgentPoll(id, observedPollGeneration)) return;
             reconcileServerQueuedFollowUps(id, data.queuedFollowUps, data.queueRevision);
-            if (
-              activePollersRef.current.has(id) ||
-              (pollGenerationRef.current.get(id) || 0) !== observedPollGeneration
-            ) return;
 
             if (data.status === 'running') {
               // Agent is running! Merge server traces into the current turn.
@@ -8232,6 +8214,7 @@ function DeepWorkUI() {
       notifiedChatIdsRef.current.delete(chatId);
       abortControllersRef.current.get(chatId)?.abort();
       abortControllersRef.current.delete(chatId);
+      directChatRunsRef.current.delete(chatId);
       fetch('/api/agent/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -8341,22 +8324,6 @@ function DeepWorkUI() {
     setChats(next);
     void persistChats(next);
   }, [setChats]);
-
-  const setChatReminder = useEventCallback(async (id: string, at: number | 'now') => {
-    const previous = chatsRef.current;
-    const target = previous.find(chat => chat.id === id);
-    if (!target) throw new Error('This chat no longer exists.');
-    if (runningChatsRef.current.has(id)) throw new Error('This chat is already working.');
-    const now = Date.now();
-    const wakeAt = at === 'now' ? now : at;
-    if (!Number.isFinite(wakeAt) || wakeAt < now) throw new Error('Choose a future date and time.');
-    const next = previous.map(chat => chat === target ? {
-      ...chat, focusSettled: false, focusWakeAt: wakeAt,
-      focusUpdatedAt: Math.max(now, Number(chat.focusUpdatedAt || 0) + 1),
-    } : chat);
-    setChats(next);
-    void persistChats(next);
-  });
 
   const rememberWorkspaceCommit = useEventCallback((event: Event) => {
     const receipt = (event as CustomEvent<{ chatId: string; commit: ChatCommitReceipt }>).detail;
@@ -8509,27 +8476,40 @@ function DeepWorkUI() {
     }
   }, [activeChatId]);
 
-  const answerChatQuestion = useCallback((ownerChatId: string, timestamp: number, answer: string, responseKey?: string) => {
-    const answeredWith = String(answer || '').trim();
-    const normalizedResponseKey = String(responseKey || '').trim();
-    if ((!timestamp && !normalizedResponseKey) || !answeredWith) return;
+  const answerChatQuestion = useCallback((ownerChatId: string, timestamp: number, answer: string | null, responseKey?: string) => {
+    const key = getAskUserResponseKey({ responseKey, timestamp });
+    if (!key) return;
 
     const answeredAt = Date.now();
     const markAnswered = (logs: any[] = []) => logs.map((log: any) => {
       if (log?.type !== 'ask_user') return log;
-      const matches = normalizedResponseKey ? String(log.responseKey || '') === normalizedResponseKey
-        : timestamp && Number(log.timestamp) === Number(timestamp);
-      if (!matches) return log;
-      return { ...log, answeredWith, answeredAt };
+      if (getAskUserResponseKey(log) !== key) return log;
+      return answer === null ? { ...log, questionStatus: 'dismissed', resolvedAt: answeredAt }
+        : { ...log, questionStatus: 'answered', answeredWith: answer, answeredAt };
     });
 
     setChatLogsById(ownerChatId, markAnswered, { touchUpdatedAt: true });
   }, []);
 
-  const handleAnswerAskUser = useCallback((timestamp: number, answer: string, responseKey?: string) => {
-    const owner = activeChatIdRef.current;
-    if (owner) answerChatQuestion(owner, timestamp, answer, responseKey);
-  }, [answerChatQuestion]);
+  const handleAnswerAskUser = useCallback((timestamp: number, answer: string | null, responseKey?: string) => {
+    if (activeChatId) answerChatQuestion(activeChatId, timestamp, answer, responseKey);
+  }, [activeChatId, answerChatQuestion]);
+
+  const focusedQuestion = useMemo<FocusedQuestion | undefined>(() => {
+    if (!focusQuestionTarget) return undefined;
+    const { chatId, responseKey, trigger } = focusQuestionTarget;
+    const close = (restoreFocus = false) => {
+      setFocusQuestionTarget(current => current === focusQuestionTarget ? null : current);
+      if (restoreFocus && trigger.isConnected && window.innerWidth >= 960) trigger.focus({ preventScroll: true });
+    };
+    return {
+      chatId, responseKey, ledger: liveChatLedger, onHide: close,
+      onAnswer: (timestamp, answer) => {
+        answerChatQuestion(chatId, timestamp, answer, responseKey);
+        close();
+      },
+    };
+  }, [answerChatQuestion, focusQuestionTarget, liveChatLedger]);
 
   const getPollCursor = (data: any): number => {
     const maxIndex = Number(data?.maxIndex);
@@ -9099,54 +9079,7 @@ function DeepWorkUI() {
           });
         }
       } else if (trace.type === 'ask_user') {
-        const question = String(trace.question || '').trim();
-        if (!question) {
-          continue;
-        }
-
-        const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${ trace.timestamp }` : '')).trim();
-        let askIdx = -1;
-        for (let i = logs.length - 1; i >= 0; i--) {
-          if (isFeedTurnBoundary(logs[i])) break;
-          if (logs[i].type !== 'ask_user') continue;
-          if (!traceTurnOwnershipMatches(logs[i], processedLog)) continue;
-          const sameResponseKey = responseKey && logs[i].responseKey === responseKey;
-          const sameQuestion = String(logs[i].question || '').trim() === question;
-          if (sameResponseKey || sameQuestion) {
-            askIdx = i;
-            break;
-          }
-        }
-
-        const existingAsk = dedupScope.find((l: any) =>
-          l.type === 'ask_user' &&
-          traceTurnOwnershipMatches(l, processedLog) &&
-          (responseKey ? l.responseKey === responseKey : String(l.question || '').trim() === question)
-        );
-
-        const nextAskLog = {
-          ...processedLog,
-          ...trace,
-          type: 'ask_user',
-          question,
-          responseKey: responseKey || processedLog.responseKey,
-          timestamp: Number(trace.timestamp || processedLog.timestamp || traceAt),
-          startTime: processedLog.startTime,
-          endTime: traceAt,
-          answeredWith: existingAsk?.answeredWith || trace.answeredWith,
-          answeredAt: existingAsk?.answeredAt || trace.answeredAt,
-        };
-
-        if (askIdx >= 0) {
-          logs[askIdx] = {
-            ...logs[askIdx],
-            ...nextAskLog,
-            answeredWith: nextAskLog.answeredWith || logs[askIdx].answeredWith,
-            answeredAt: nextAskLog.answeredAt || logs[askIdx].answeredAt,
-          };
-        } else {
-          logs.push(nextAskLog);
-        }
+        upsertAskUserTrace(logs, processedLog);
       } else if (trace.type === 'context_compaction') {
         upsertContextCompactionTrace(logs, processedLog);
       } else if (trace.type === 'context_usage') {
@@ -10002,6 +9935,7 @@ function DeepWorkUI() {
     runStartedAfter?: number,
     expectedRunId?: string
   ) => {
+    if (directChatRunsRef.current.has(chatId)) return;
     // A replacement poller gets its own generation. Any old request that
     // resolves later becomes a no-op instead of clearing the new run's UI.
     if (activePollersRef.current.has(chatId) || pollingIntervalsRef.current.has(chatId) || pollAbortControllersRef.current.has(chatId)) {
@@ -10040,7 +9974,6 @@ function DeepWorkUI() {
       ? Math.max(-1, Math.floor(Number(initialCursor)))
       : -1;
     pollCursorsRef.current.set(chatId, normalizedInitialCursor);
-    let idleCount = 0; // Track consecutive idle responses
     let errorBackoff = 0; // Exponential backoff on errors (0 = no error)
     let lastHadData = false; // Track if last poll had new data
     let lastRequestedCursor = -2;
@@ -10067,46 +10000,41 @@ function DeepWorkUI() {
       if (!ownsPollGeneration()) return;
       const failedRunId = String(pollRunIdRef.current.get(chatId) || expectedRunId || '').trim();
       flushBackgroundChatUpdates(chatId);
-      const settledLocally = failedRunId && (chatsRef.current.find(chat => chat.id === chatId)?.traceLogs || []).some((log: any) =>
-        String(log?.runId || log?.turnId || '').trim() === failedRunId && log?.mainTurnTerminal === true
-      );
+      const logs = chatsRef.current.find(chat => chat.id === chatId)?.traceLogs || [];
+      const boundaryIndex = logs.findLastIndex(isFeedTurnBoundary);
+      const boundary = logs[boundaryIndex];
       stopPolling(chatId);
       clearAgentConnectionStatus(chatId);
       removeRunningChat(chatId);
-      // Recovery can race a final committed answer. Never append a startup
-      // failure to a run whose terminal result is already in the transcript.
-      if (settledLocally) return;
-      markChatUnreadIfBackground(
-        chatId,
-        `run:${expectedRunId || pollRunIdRef.current.get(chatId) || runStartedAfter || 'pending'}:start-error`,
+      // A timeout can only describe the current, unresolved registry turn.
+      if (!failedRunId || !boundary || boundary.chatMode === true ||
+        String(boundary.runId || boundary.turnId || '').trim() !== failedRunId) return;
+      const turnLogs = selectMainContextLogs(logs.slice(boundaryIndex + 1), chatId).filter(log =>
+        (!log.runId || log.runId === failedRunId) &&
+        (!log.turnId || !boundary.turnId || log.turnId === boundary.turnId)
       );
-      setChatLogsById(chatId, logs => {
-        const failedBoundary = [...logs].reverse().find((log: any) =>
-          log?.type === 'user_action' &&
-          (!failedRunId || String(log?.runId || log?.turnId || '').trim() === failedRunId)
-        );
-        return [
-          ...stripAgentConnectionLogs(logs),
-          agentStatusLog('failed', 'Agent unavailable', message, Date.now(), {
-            ownerChatId: chatId,
-            runId: failedRunId || undefined,
-            turnId: String(failedBoundary?.turnId || failedRunId || '').trim() || undefined,
-            mainTurnTerminal: true,
-          })
-        ];
-      });
+      if (turnLogs.some((log, index) =>
+        log.mainTurnTerminal === true || isTerminalWorkTrace(log) || isConclusiveSettledAnswerTrace(log, index, turnLogs)
+      )) return;
+      markChatUnreadIfBackground(chatId, `run:${failedRunId}:start-error`);
+      setChatLogsById(chatId, logs => [
+        ...stripAgentConnectionLogs(logs),
+        agentStatusLog('failed', 'Agent unavailable', message, Date.now(), {
+          ownerChatId: chatId,
+          runId: failedRunId,
+          turnId: String(boundary.turnId || failedRunId).trim(),
+          mainTurnTerminal: true,
+        }),
+      ]);
     };
 
     const handleStartPending = () => {
-      idleCount++;
       lastHadData = false;
       // Use wall-clock time rather than response count. A network outage can
       // back off individual requests to five seconds; a response-count limit
       // would otherwise leave a dead startup poller alive for many minutes.
       if (Date.now() - pendingStartAt >= 120_000) {
-        finishDisconnectedStart(observedRun
-          ? 'The agent run is no longer available on the server. Reconnect or retry this message.'
-          : 'Agent connection did not start. Please retry this message.');
+        finishDisconnectedStart(observedRun ? AGENT_POLL_TIMEOUT_MESSAGES.reconnect : AGENT_POLL_TIMEOUT_MESSAGES.start);
         return false;
       }
       scheduleNextPoll();
@@ -10279,17 +10207,15 @@ function DeepWorkUI() {
             serverRunId || expectedRunId,
           );
 
-          // Track idle responses — stop after 30 seconds of continuous idle
-          // (agent never started, or server restarted)
           for (const trace of data.traces) {
             const traceIdentity = String(
               trace?.id || trace?._traceIdx || trace?.responseKey || trace?.timestamp || Date.now()
             );
-            if (trace?.type === 'ask_user') {
+            if (isPendingAskUser(trace)) {
               announceLiveTaskEvent(
                 chatId,
-                'blocked',
-                String(trace.question || trace.text || 'The task needs your input to continue.'),
+                trace.behavior === 'continue' ? 'progress' : 'blocked',
+                String(trace.question || trace.questions?.[0]?.question || 'The task needs your input.'),
                 serverRunId || expectedRunId || undefined,
                 traceIdentity,
               );
@@ -10322,7 +10248,6 @@ function DeepWorkUI() {
             if (!handleStartPending()) return;
             return; // Don't process â€” agent hasn't started yet
           }
-          idleCount = 0; // Agent exists, reset idle counter
 
           lastHadData = data.traces && data.traces.length > 0;
           const responseCursor = getPollCursor(data);
@@ -10724,46 +10649,7 @@ function DeepWorkUI() {
                     });
                   }
                 } else if (trace.type === 'ask_user') {
-                  const question = String(trace.question || '').trim();
-                  if (!question) {
-                    continue;
-                  }
-
-                  const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${ trace.timestamp }` : '')).trim();
-                  let askIdx = -1;
-                  for (let i = logs.length - 1; i >= 0; i--) {
-                    if (isFeedTurnBoundary(logs[i])) break;
-                    if (logs[i].type !== 'ask_user') continue;
-                    if (!traceTurnOwnershipMatches(logs[i], timedTrace)) continue;
-                    const sameResponseKey = responseKey && logs[i].responseKey === responseKey;
-                    const sameQuestion = String(logs[i].question || '').trim() === question;
-                    if (sameResponseKey || sameQuestion) {
-                      askIdx = i;
-                      break;
-                    }
-                  }
-
-                  const nextAskLog = {
-                    ...timedTrace,
-                    ...trace,
-                    type: 'ask_user',
-                    question,
-                    responseKey: responseKey || timedTrace.responseKey,
-                    timestamp: Number(trace.timestamp || timedTrace.timestamp || traceAt),
-                    startTime: timedTrace.startTime,
-                    endTime: traceAt,
-                  };
-
-                  if (askIdx >= 0) {
-                    logs[askIdx] = {
-                      ...logs[askIdx],
-                      ...nextAskLog,
-                      answeredWith: nextAskLog.answeredWith ?? logs[askIdx].answeredWith,
-                      answeredAt: nextAskLog.answeredAt ?? logs[askIdx].answeredAt,
-                    };
-                  } else {
-                    logs.push(nextAskLog);
-                  }
+                  upsertAskUserTrace(logs, timedTrace);
                 } else if (trace.type === 'context_compaction') {
                   upsertContextCompactionTrace(logs, timedTrace);
                 } else if (trace.type === 'context_usage') {
@@ -11096,7 +10982,6 @@ function DeepWorkUI() {
             if (!successorHandoffPending) {
               successorHandoffPending = true;
               pendingStartAt = Date.now();
-              idleCount = 0;
             }
             // The predecessor's final rows are committed. Keep its cursor
             // while awaiting the successor notification; rewinding here
@@ -11295,7 +11180,9 @@ function DeepWorkUI() {
       const ids = new Set<string>();
       // Read the live ref inside the interval. Capturing `runningChats` here
       // leaves newly started background chats outside the recovery safety net.
-      runningChatsRef.current.forEach(id => ids.add(id));
+        runningChatsRef.current.forEach(id => {
+          if (!directChatRunsRef.current.has(id)) ids.add(id);
+        });
       // A run can be admitted just before runningChats state commits. Keep
       // that narrow startup recovery path without probing an ordinary idle
       // active chat forever.
@@ -11326,8 +11213,7 @@ function DeepWorkUI() {
         // tenth live chat recover tens of seconds after the first. The shared
         // PollingConcurrencyGate still provides fair bounded admission.
         await Promise.all(Array.from(ids, async chatId => {
-          if (cancelled) return;
-          if (activePollersRef.current.has(chatId)) return;
+          if (cancelled || !canRecoverAgentPoll(chatId)) return;
           // Skip chats being explicitly stopped — avoids re-adding them during the cleanup race window
           if (stoppingChatsRef.current.has(chatId)) return;
 
@@ -11336,8 +11222,7 @@ function DeepWorkUI() {
             const data = await fetchAgentPoll(chatId, -1, 5000);
             if (cancelled) return;
             if (
-              activePollersRef.current.has(chatId) ||
-              (pollGenerationRef.current.get(chatId) || 0) !== observedPollGeneration ||
+              !canRecoverAgentPoll(chatId, observedPollGeneration) ||
               stoppingChatsRef.current.has(chatId)
             ) return;
             reconcileServerQueuedFollowUps(chatId, data.queuedFollowUps, data.queueRevision);
@@ -11446,7 +11331,7 @@ function DeepWorkUI() {
       }
     };
     const mainLogs = selectMainContextLogs(chatsRef.current.find(chat => chat.id === chatId)?.traceLogs || [], chatId);
-    const stopRunId = directChatRunIdsRef.current.get(chatId) || pollRunIdRef.current.get(chatId)
+    const stopRunId = directChatRunsRef.current.get(chatId)?.id || pollRunIdRef.current.get(chatId)
       || String(mainLogs.findLast(isContextTurnBoundary)?.runId || '').trim();
     const stopBoundary = mainLogs.findLast(log => isContextTurnBoundary(log)
       && (!stopRunId || String(log.runId || log.turnId || '').trim() === stopRunId));
@@ -11464,10 +11349,7 @@ function DeepWorkUI() {
       clearStoppedCompaction();
       abortControllersRef.current.get(chatId)?.abort();
       abortControllersRef.current.delete(chatId);
-      if (!stopRunId || directChatRunIdsRef.current.get(chatId) === stopRunId) {
-        directChatRunIdsRef.current.delete(chatId);
-        directChatRunsRef.current.delete(chatId);
-      }
+      directChatRunsRef.current.delete(chatId);
       pendingTitleRequestsRef.current.delete(chatId);
       removeRunningChat(chatId);
       setChatLogsById(chatId, previous => {
@@ -11694,6 +11576,17 @@ function DeepWorkUI() {
     if (cancelledQueuedFollowUpsRef.current.has(queuedFollowUpKey(targetChatId, immutableSteeringId))) return true;
     const admissionKey = makeFollowUpAdmissionKey(targetChatId, steerMessage, [], undefined, immutableSteeringId);
     if (!targetChatId || !steerMessage) return false;
+    const directRun = directChatRunsRef.current.get(targetChatId);
+    if (directRun) {
+      if (expectedRunId && expectedRunId !== directRun.id) return false;
+      return handleSendLatestRef.current(steerMessage, nextAttachments, targetChatId, {
+        selectedAgent: { agentId: null, agentName: 'Chat', chatMode: true },
+        followUpBehavior: 'steer',
+        clientRunId: immutableSteeringId,
+        clientCreatedAt: requestedCreatedAt,
+        clearComposer,
+      });
+    }
     if (steeringAdmissionsRef.current.has(admissionKey)) return true;
     steeringAdmissionsRef.current.add(admissionKey);
     // Steering can be invoked outside the main composer submit path (for
@@ -11708,7 +11601,6 @@ function DeepWorkUI() {
     const targetUserLog = [...targetLogs].reverse().find((log: any) => log?.type === 'user_action');
     const targetRunId = String(
       expectedRunId ||
-      directChatRunIdsRef.current.get(targetChatId) ||
       pollRunIdRef.current.get(targetChatId) ||
       targetUserLog?.runId ||
       targetUserLog?.turnId ||
@@ -12124,10 +12016,8 @@ function DeepWorkUI() {
     }
 
     if (directChatRunsRef.current.has(targetChatId)) {
-      // Direct Chat has no AgentRegistry steering endpoint. Going through the
-      // optimistic steering path makes the query appear, disappear on 404,
-      // then return as a queued successor. Admit it once into the renderer's
-      // FIFO and preserve the same immutable turn ID through dispatch.
+      // Send handles direct steering before this path. Queued follow-ups and
+      // runtime switches wait locally for the current Chat reply to finish.
       return queueFollowUpForChat(
         targetChatId,
         followUpMessage,
@@ -12367,7 +12257,7 @@ function DeepWorkUI() {
     const cleanSummary = formatLiveSpeech(sourceMarkdown, 'brief');
     const latestBoundary = chat?.traceLogs?.findLast(log => isFeedTurnBoundary(log)
       && log.isLive !== true && log._queuedFollowUp !== true);
-    const currentRunId = directChatRunIdsRef.current.get(chatId) || pollRunIdRef.current.get(chatId)
+    const currentRunId = directChatRunsRef.current.get(chatId)?.id || pollRunIdRef.current.get(chatId)
       || latestBoundary?.runId || latestBoundary?.turnId;
     // A late event can describe an earlier run in this chat. Keep its result
     // available without changing the newer task's Mission status.
@@ -12653,6 +12543,7 @@ function DeepWorkUI() {
       createNewChat?: boolean;
       backgroundChat?: boolean;
       followUpBehavior?: 'queue' | 'steer';
+      clearComposer?: boolean;
       initialTitle?: string;
       pinnedItems?: PinnedItem[];
       clientRunId?: string;
@@ -12661,7 +12552,7 @@ function DeepWorkUI() {
       delegatedBy?: string;
       scheduledTaskId?: string;
     },
-  ) => {
+  ): Promise<boolean> => {
     if (dictationSessionRef.current && !runOptionsOverride?.backgroundChat) stopSpeechDictation();
     const currentInputValue = inputValueRef.current;
     const promptText = (typeof overridePrompt === 'string' ? overridePrompt : currentInputValue).trim();
@@ -12781,9 +12672,8 @@ function DeepWorkUI() {
     const latestAdmissionRunId = String(
       latestAdmissionBoundary?.runId || latestAdmissionBoundary?.turnId || '',
     ).trim();
-    const observedRuntimeRunId = targetChatIdAtSend
-      ? String(pollRunIdRef.current.get(targetChatIdAtSend) || '').trim()
-      : '';
+    const currentDirectRun = directChatRunsRef.current.get(targetChatIdAtSend);
+    const observedRuntimeRunId = currentDirectRun?.id || pollRunIdRef.current.get(targetChatIdAtSend);
     const latestTurnIsTerminal = latestAdmissionTurnLogs.some(log =>
       isTerminalWorkTrace(log) || isExplicitFinalAnswerTrace(log),
     );
@@ -12793,14 +12683,14 @@ function DeepWorkUI() {
       observedRuntimeRunId === latestAdmissionRunId
     );
     const rendererClaimsActive = Boolean(
-      (targetChatIdAtSend && runningChatsRef.current.has(targetChatIdAtSend)) ||
+      currentDirectRun || runningChatsRef.current.has(targetChatIdAtSend) ||
       targetHasLiveSession
     );
     const targetRunIsActive = rendererClaimsActive && !(
       terminalClosesObservedRuntime &&
       targetChatIdAtSend !== null &&
       !activePollersRef.current.has(targetChatIdAtSend) &&
-      !directChatRunsRef.current.has(targetChatIdAtSend) &&
+      !currentDirectRun &&
       !targetHasLiveSession
     );
     if (rendererClaimsActive && !targetRunIsActive && targetChatIdAtSend) {
@@ -12817,23 +12707,31 @@ function DeepWorkUI() {
       });
       stopPolling(targetChatIdAtSend);
     }
-    if (targetRunIsActive) {
+    const runSelectedAgent = normalizePrimaryAgentSelection(
+      runOptionsOverride?.selectedAgent || composerContext.selectedAgent,
+    );
+    const isBuilderChat = targetChatIdAtSend.startsWith('agent_builder_');
+    const runChatMode = runSelectedAgent.chatMode === true && !isBuilderChat;
+    if (currentDirectRun?.id === admissionClientRunId) return true;
+    const directSteeringFrom = targetRunIsActive && currentDirectRun && runChatMode &&
+      !runOptionsOverride?.planImplementation && !targetHasLiveSession &&
+      !stopRequestsRef.current.has(targetChatIdAtSend) &&
+      (runOptionsOverride?.followUpBehavior || readFollowUpBehavior()) === 'steer'
+      ? currentDirectRun : undefined;
+    if (targetRunIsActive && !directSteeringFrom) {
       if (runOptionsOverride?.planImplementation) return false;
       // A stale renderer flag or a second submit can reach this handler even
       // though the chat already owns a real backend execution. Deliver it as
       // the configured steer/queue follow-up instead of silently dropping it.
       if (!targetChatIdAtSend) return false;
-      const requestedSelection = normalizePrimaryAgentSelection(
-        runOptionsOverride?.selectedAgent || composerContext.selectedAgent,
-      );
       const runtimeChanged = shouldQueueForAgentSwitch(
         targetAdmissionLogs,
-        pollRunIdRef.current.get(targetChatIdAtSend),
-        requestedSelection,
+        currentDirectRun?.id || pollRunIdRef.current.get(targetChatIdAtSend),
+        runSelectedAgent,
       );
       const queuedRunOptions: QueuedRunOptions = {
         modelSelection: runOptionsOverride?.modelSelection || composerContext.modelSelection,
-        selectedAgent: requestedSelection,
+        selectedAgent: runSelectedAgent,
         thinkingLevel: runOptionsOverride?.thinkingLevel || composerContext.thinkingLevel,
         pinnedItems: [...(runOptionsOverride?.pinnedItems || targetComposerState?.pinnedItems || pinnedItems)],
         clientRunId: admissionClientRunId,
@@ -12901,9 +12799,6 @@ function DeepWorkUI() {
     const runAgentMode = MODEL_PROVIDER_MODE[runModelEntry.provider];
     const contextBudgetModelEntry = runModelEntry;
     const runThinkingLevel = runOptionsOverride?.thinkingLevel || composerContext.thinkingLevel;
-    const runSelectedAgent = normalizePrimaryAgentSelection(
-      runOptionsOverride?.selectedAgent || composerContext.selectedAgent,
-    );
     const runPinnedItems = runOptionsOverride?.pinnedItems || (useActiveComposerContext ? pinnedItems : targetComposerState?.pinnedItems || []);
     const runSelectedAgentId = runSelectedAgent.agentId;
     const runSelectedAgentName = runSelectedAgent.agentName;
@@ -12939,17 +12834,23 @@ function DeepWorkUI() {
       _queuedFollowUp: false,
       status: 'running',
     };
-    const historySourceLogs = targetChatIdAtSend && !shouldCreateTargetChat
+    const previousLogs = targetChatIdAtSend && !shouldCreateTargetChat
       ? stripAgentConnectionLogs(
           chatsRef.current.find(chat => chat.id === targetChatIdAtSend)?.traceLogs
           || (targetChatIdAtSend === activeChatIdRef.current ? traceLogs : [])
         )
       : [];
+    // A redirected reply can supply context up to its last displayed chunk.
+    const historySourceLogs = directSteeringFrom
+      ? settleOpenFeedRowsForTurn(previousLogs, directSteeringFrom.id, directSteeringFrom.id, runStartedAt)
+      : previousLogs;
     lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
     // The reserved ID is not the composer state key until the chat is
     // committed. Clear `new_chat` for a visible fresh send, while background
     // and existing-chat sends continue clearing only their own drafts.
-    clearDraftComposerState(sendTarget.fromFreshComposer ? null : targetChatIdAtSend);
+    if (runOptionsOverride?.clearComposer !== false) {
+      clearDraftComposerState(sendTarget.fromFreshComposer ? null : targetChatIdAtSend);
+    }
 
     let chatIdToUse = targetChatIdAtSend;
 
@@ -13113,9 +13014,7 @@ function DeepWorkUI() {
         selectedModel: runModelEntry || undefined,
       });
     } else {
-      const storedTargetLogs = chatsRef.current.find(chat => chat.id === chatIdToUse)?.traceLogs;
-      const baseTargetLogs = storedTargetLogs || (chatIdToUse === activeChatId ? traceLogs : []);
-      const updatedLogs = [...stripAgentConnectionLogs(baseTargetLogs), userLog];
+      const updatedLogs = [...historySourceLogs, userLog];
       setChatLogsById(chatIdToUse, updatedLogs, { touchUpdatedAt: true });
 
       // Name once initially, then only on every twentieth admitted user turn.
@@ -13187,9 +13086,7 @@ function DeepWorkUI() {
     // Build chat history for context
     const chatHistory = buildAgentHistory(historySourceLogs);
 
-    const isBuilderChat = !!chatIdToUse && chatIdToUse.startsWith('agent_builder_');
     const builderAgentId = isBuilderChat ? chatIdToUse!.replace('agent_builder_', '') : null;
-    const runChatMode = runSelectedAgent.chatMode === true && !isBuilderChat;
 
     // Chat mode has a deliberately separate backend path. It receives the
     // same complete chat history and media context as the normal chat request, but
@@ -13197,9 +13094,21 @@ function DeepWorkUI() {
     if (runChatMode) {
       const controller = new AbortController();
       let directReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-      directChatRunsRef.current.add(chatIdToUse!);
-      directChatRunIdsRef.current.set(chatIdToUse!, clientRunId);
+      const previousController = directSteeringFrom && abortControllersRef.current.get(chatIdToUse!);
+      const directRun: DirectChatRun = {
+        id: clientRunId,
+        // A rapid second steer may arrive while the first replacement is
+        // still being admitted. It can take over any known predecessor.
+        pendingPredecessors: directSteeringFrom
+          ? [directSteeringFrom.id, ...directSteeringFrom.pendingPredecessors]
+          : [],
+      };
+      stopPolling(chatIdToUse!);
+      directChatRunsRef.current.set(chatIdToUse!, directRun);
       abortControllersRef.current.set(chatIdToUse!, controller);
+      if (directSteeringFrom) directSteeringFrom.redirected = true;
+      previousController?.abort();
+      const ownsDirectRun = () => directChatRunsRef.current.get(chatIdToUse!) === directRun;
 
       try {
         const response = await fetch('/api/chat/direct', {
@@ -13219,6 +13128,7 @@ function DeepWorkUI() {
               runModelEntry ? modelEntryKey(runModelEntry.provider, runModelEntry.modelId) : runModelSelection
             ),
             runId: clientRunId,
+            ...(directRun.pendingPredecessors.length ? { replacesRunIds: directRun.pendingPredecessors } : {}),
             contextCompaction: readContextCompactionSettings(runModelEntry, chatIdToUse),
             selectedModel: runModelEntry
               ? { provider: runModelEntry.provider, modelId: runModelEntry.modelId }
@@ -13234,13 +13144,15 @@ function DeepWorkUI() {
 
         const reader = response.body.getReader();
         directReader = reader;
+        controller.signal.throwIfAborted();
+        directRun.pendingPredecessors = [];
         const decoder = new TextDecoder();
         let buffer = '';
         let streamCompleted = false;
         let streamAnswerText = '';
         let streamAnswerId = `direct_answer_${ clientRunId }`;
         const handleDirectEvent = (event: any) => {
-          if (!event || typeof event !== 'object') return;
+          if (!event || typeof event !== 'object' || controller.signal.aborted || !ownsDirectRun()) return;
           if (event.type === 'trace' && event.data && typeof event.data === 'object') {
             const trace = {
               ...event.data,
@@ -13307,6 +13219,7 @@ function DeepWorkUI() {
 
         while (!streamCompleted) {
           const { value, done } = await reader.read();
+          controller.signal.throwIfAborted();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           const frames = buffer.split(/\r?\n\r?\n/);
@@ -13334,8 +13247,10 @@ function DeepWorkUI() {
         }
         return true;
       } catch (error: any) {
+        if (controller.signal.aborted || !ownsDirectRun() || error?.name === 'AbortError') {
+          return directRun.redirected === true;
+        }
         pendingTitleRequestsRef.current.delete(chatIdToUse!);
-        if (error?.name === 'AbortError') return false;
         const failedAt = Date.now();
         setChatLogsById(
           chatIdToUse!,
@@ -13366,8 +13281,7 @@ function DeepWorkUI() {
         }
         // Cleanup is run-owned. A late finalizer from an older stream must not
         // clear a successor that was admitted for the same chat.
-        if (directChatRunIdsRef.current.get(chatIdToUse!) === clientRunId) {
-          directChatRunIdsRef.current.delete(chatIdToUse!);
+        if (ownsDirectRun()) {
           directChatRunsRef.current.delete(chatIdToUse!);
           if (abortControllersRef.current.get(chatIdToUse!) === controller) {
             abortControllersRef.current.delete(chatIdToUse!);
@@ -13463,6 +13377,11 @@ function DeepWorkUI() {
         setChatLogsById(chatIdToUse!, logs => {
           const cleanLogs = stripAgentConnectionLogs(logs);
 
+          if (enriched.type === 'ask_user') {
+            const next = [...cleanLogs];
+            upsertAskUserTrace(next, enriched);
+            return next;
+          }
           if (enriched.type === 'task_plan') {
             const next = [...cleanLogs];
             mergeTaskPlanLog(next, enriched);
@@ -14175,6 +14094,7 @@ function DeepWorkUI() {
         ...(item.runOptions || {}),
         clientRunId: item.id,
         clientCreatedAt: item.createdAt,
+        clearComposer: false,
       });
       accepted = result === true || wasAdmitted();
       return accepted;
@@ -14371,7 +14291,7 @@ function DeepWorkUI() {
     const historyRunId = String(boundary?.runId || '').trim() || undefined;
     const requestedDuringRun = runningChatsRef.current.has(chatId);
     const runId = requestedDuringRun
-      ? directChatRunIdsRef.current.get(chatId) || pollRunIdRef.current.get(chatId) || historyRunId : undefined;
+      ? directChatRunsRef.current.get(chatId)?.id || pollRunIdRef.current.get(chatId) || historyRunId : undefined;
     setCompactingChats(current => ({ ...current, [chatId]: true }));
     const job: Promise<void> = (async () => {
       const response = await fetch('/api/agent/compact', {
@@ -14445,14 +14365,14 @@ function DeepWorkUI() {
     const generation = pollGenerationRef.current.get(id) || 0;
     connection.promise = (async () => {
       for (let attempt = 0; attempt < 12; attempt++) {
-        if (connection.cancelled || (pollGenerationRef.current.get(id) || 0) !== generation) return;
+        if (connection.cancelled || directChatRunsRef.current.has(id) || (pollGenerationRef.current.get(id) || 0) !== generation) return;
         if (activePollersRef.current.has(id)) {
           catchUpPollersRef.current.get(id)?.();
           return;
         }
         try {
           const poll = await fetchAgentPoll(id, -1, 5000);
-          if (connection.cancelled || activePollersRef.current.has(id) || (pollGenerationRef.current.get(id) || 0) !== generation) return;
+          if (connection.cancelled || !canRecoverAgentPoll(id, generation)) return;
           setChatLogsById(id, previous => mergeAgentPollSnapshot(previous, poll, id));
           if (poll.status === 'running') {
             setRunningChats(previous => new Set(previous).add(id));
@@ -14920,47 +14840,54 @@ function DeepWorkUI() {
 
   // Automated real-time agent execution when scheduled task triggers
   useEffect(() => {
-    const handleTriggerTask = (e: CustomEvent<{ task: any }>) => {
-      const rawTask = e.detail?.task;
-      if (!rawTask?.id) return;
-      const task = normalizeScheduledTask(rawTask);
-      if (scheduledTaskRunAdmissionsRef.current.has(task.id)) return;
-      scheduledTaskRunAdmissionsRef.current.add(task.id);
-
-      const taskChatId = task.chatId || crypto.randomUUID();
+    const handleTriggerTask = (e: CustomEvent<{ task: ScheduledTaskRecord }>) => {
+      const taskId = e.detail?.task?.id;
+      if (!taskId || scheduledTaskRunAdmissionsRef.current.has(taskId)) return;
+      let tasks: ScheduledTaskRecord[];
+      try {
+        tasks = readLocalScheduledTasks();
+      } catch {
+        return;
+      }
+      const task = tasks.find(item => item.id === taskId);
+      if (!task || task.status === 'running') return;
       const taskRunId = `scheduled_run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const runStartedAt = Date.now();
+      const regularRunDue = isScheduledTaskDue(task, runStartedAt);
+      if (!regularRunDue && !task.runNowRequestedAt) return;
+
+      const taskChatId = task.chatId || task.history?.at(-1)?.chatId || crypto.randomUUID();
+      if (runningChatsRef.current.has(taskChatId)) return;
+      scheduledTaskRunAdmissionsRef.current.add(taskId);
+
+      const run: ScheduledTaskRun = {
+        id: taskRunId,
+        chatId: taskChatId,
+        status: 'running',
+        startedAt: runStartedAt,
+        model: task.model,
+        agentId: task.agentId,
+        agentName: task.agentName,
+      };
+      // Once an occurrence is due, one run can satisfy it and a Run now request.
+      if (!regularRunDue) {
+        run.scheduleStatusAfterRun = task.status === 'scheduled' || task.status === 'queued' || task.status === 'paused'
+          ? task.status : null;
+      }
+      task.status = 'running';
+      task.chatId = taskChatId;
+      task.updatedAt = runStartedAt;
+      task.lastError = undefined;
+      task.runNowRequestedAt = undefined;
+      task.focusSettledAt = null;
+      task.history = [...(task.history || []), run].slice(-100);
+      task.runCount = (task.runCount || 0) + 1;
+      void persistScheduledTaskRecords(tasks);
+
       const sourceContext = task.sources.length > 0
         ? `\n\nScheduled task sources:\n${task.sources.map(source => `- ${source.name}: ${source.path}`).join('\n')}`
         : '';
       const taskPrompt = `${task.description || task.title}${sourceContext}`;
-      const updateStoredTask = (mutate: (target: ScheduledTaskRecord, run: ScheduledTaskRun | undefined) => void) => {
-        try {
-          const parsed = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
-          const tasks = Array.isArray(parsed) ? parsed.map(normalizeScheduledTask) : [];
-          const target = tasks.find(item => item.id === task.id);
-          if (!target) return;
-          mutate(target, target.history?.find(run => run.id === taskRunId));
-          target.updatedAt = Date.now();
-          persistScheduledTaskRecords(tasks);
-        } catch { }
-      };
-      updateStoredTask(target => {
-        const run: ScheduledTaskRun = {
-          id: taskRunId,
-          chatId: taskChatId,
-          status: 'running',
-          startedAt: runStartedAt,
-          model: task.model,
-          agentId: task.agentId,
-          agentName: task.agentName,
-        };
-        target.status = 'running';
-        target.chatId = taskChatId;
-        target.lastError = undefined;
-        target.history = [...(target.history || []), run].slice(-100);
-        target.runCount = (target.runCount || 0) + 1;
-      });
 
       const resolvedModel = task.model || AUTO_MODEL_SELECTION;
       const taskChatExists = chatsRef.current.some(chat => chat.id === taskChatId);
@@ -14997,33 +14924,18 @@ function DeepWorkUI() {
         settled = true;
         clearInterval(checkInterval);
         scheduledTaskIntervalsRef.current.delete(task.id);
-        updateStoredTask((target, run) => {
-          const completedAt = Date.now();
-          if (run) {
-            run.status = status;
-            run.completedAt = completedAt;
-            run.error = error;
+        try {
+          const latestTasks = readLocalScheduledTasks();
+          const target = latestTasks.find(item => item.id === taskId);
+          const activeRun = target?.history?.at(-1);
+          if (target?.status === 'running' && activeRun?.id === taskRunId) {
+            const completedAt = Date.now();
+            finishScheduledTaskRun(target, activeRun, status, completedAt, error);
+            target.updatedAt = completedAt;
+            void persistScheduledTaskRecords(latestTasks);
           }
-          target.executedAt = completedAt;
-          target.chatId = taskChatId;
-          target.lastError = error;
-          const nextRun = computeNextScheduledRun(target.recurrence, completedAt);
-          if (nextRun !== null) {
-            target.status = 'scheduled';
-            target.scheduledTimestamp = nextRun;
-            const nextDate = new Date(nextRun);
-            target.triggerTime = nextDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-            target.customDate = [
-              nextDate.getFullYear(),
-              String(nextDate.getMonth() + 1).padStart(2, '0'),
-              String(nextDate.getDate()).padStart(2, '0'),
-            ].join('-');
-            target.dateOption = 'custom';
-          } else {
-            target.status = status;
-          }
-        });
-        scheduledTaskRunAdmissionsRef.current.delete(task.id);
+        } catch { }
+        finally { scheduledTaskRunAdmissionsRef.current.delete(taskId); }
       };
       const checkInterval = window.setInterval(() => {
         const isRunning = runningChatsRef.current?.has(taskChatId);
@@ -15046,7 +14958,7 @@ function DeepWorkUI() {
             failed ? 'failed' : 'completed',
             failed ? String(terminalLog?.secondary || terminalLog?.text || `Task ${terminalStatus}.`) : undefined,
           );
-        } else if (!isRunning && hasStartedRunning) {
+        } else if (!isRunning && (hasStartedRunning || Date.now() - runStartedAt >= 120_000)) {
           // React state and the poll transport can settle in different frames.
           // If the durable terminal row is still missing, query the registry
           // instead of completing early or leaving the task stuck forever.
@@ -15073,6 +14985,8 @@ function DeepWorkUI() {
                     failed ? 'failed' : 'completed',
                     failed ? formatAgentErrorDetail(data.error ?? data.finalAnswer, `Task ${data.status}.`) : undefined,
                   );
+                } else if (data.status === 'idle' && Date.now() - runStartedAt >= 120_000) {
+                  finishRun('failed', 'The scheduled run could not be reattached.');
                 }
               })
               .catch(() => undefined)
@@ -15129,9 +15043,11 @@ function DeepWorkUI() {
         // batches made chat nine wait for the first eight long polls even
         // when the browser and server had free capacity.
         await Promise.all(recoveryChats.map(async (chat) => {
+          if (!canRecoverAgentPoll(chat.id)) return;
+          const generation = pollGenerationRef.current.get(chat.id) || 0;
           try {
             const data = await fetchAgentPoll(chat.id, -1, 5000);
-            if (cancelled || !chatsRef.current.some(current => current.id === chat.id)) return;
+            if (cancelled || !canRecoverAgentPoll(chat.id, generation) || !chatsRef.current.some(current => current.id === chat.id)) return;
             reconcileServerQueuedFollowUps(chat.id, data.queuedFollowUps, data.queueRevision);
 
             if ((data.traces && data.traces.length > 0) || isTerminalAgentStatus(data.status)) {
@@ -15175,16 +15091,14 @@ function DeepWorkUI() {
           catchUpPollersRef.current.get(targetChatId)?.();
           return;
         }
+        if (!canRecoverAgentPoll(targetChatId)) return;
         const observedPollGeneration = pollGenerationRef.current.get(targetChatId) || 0;
         // User returned to tab — check if active chat's agent is still running
         fetchAgentPoll(targetChatId, -1, 5000)
           .then(data => {
-            if (!chatsRef.current.some(chat => chat.id === targetChatId)) return;
+            if (!canRecoverAgentPoll(targetChatId, observedPollGeneration) ||
+              !chatsRef.current.some(chat => chat.id === targetChatId)) return;
             reconcileServerQueuedFollowUps(targetChatId, data.queuedFollowUps, data.queueRevision);
-            if (
-              activePollersRef.current.has(targetChatId) ||
-              (pollGenerationRef.current.get(targetChatId) || 0) !== observedPollGeneration
-            ) return;
             if (data.status === 'running') {
               // Agent is running but we're not polling! Restart polling.
               console.log('[Visibility] Reconnecting to running agent...');
@@ -16187,7 +16101,7 @@ function DeepWorkUI() {
       selectedModel: parseModelEntryKey(effectiveMainModelSelection),
       fallbackModel: isAgentBuilderComposer ? { provider: fallback.provider, modelId: fallback.modelName } : undefined,
       running: isThinking,
-      activeRunId: activeChatId ? directChatRunIdsRef.current.get(activeChatId) || pollRunIdRef.current.get(activeChatId) : undefined,
+      activeRunId: activeChatId ? directChatRunsRef.current.get(activeChatId)?.id || pollRunIdRef.current.get(activeChatId) : undefined,
     });
   }, [activeChatId, agentMode, buildingAgentId, contextSettingsRevision, effectiveMainModelSelection,
     inputValue, isThinking, mainContextLogs, mainContextHistory]);
@@ -16953,14 +16867,6 @@ function DeepWorkUI() {
       <div className="pointer-events-none fixed right-4 top-14 z-[250] flex max-h-[calc(100dvh-4.5rem)] w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2.5">
         <SubscriptionLimitAlert visible={!isSettingsOpen && !isUsageOpen}
           onManage={provider => openSettingsWindow('subscription', provider)} />
-        {!isSettingsOpen && updateNoticeKey && dismissedUpdateNotice !== updateNoticeKey &&
-          ((desktopUpdate.status === 'available' && desktopUpdate.updateAvailableUnread) || desktopUpdate.status === 'ready' || desktopUpdate.status === 'error') && (
-          <UpdateNotification
-            state={desktopUpdate}
-            onOpen={() => openSettingsWindow('updates')}
-            onDismiss={() => { setDismissedUpdateNotice(updateNoticeKey); markUpdateViewed(); }}
-          />
-        )}
       </div>
       {updateActionError && isSettingsOpen && settingsInitialTab === 'updates' && (
         <div role="alert" className="fixed bottom-5 left-1/2 z-[10000] -translate-x-1/2 rounded-xl bg-[#402020] px-5 py-3 text-sm text-white">{updateActionError}</div>
@@ -16993,8 +16899,8 @@ function DeepWorkUI() {
             focusGroup={sidebarFocusGroup}
             onFocusGroupChange={setSidebarFocusGroup}
             onSetChatSettled={setChatSettled}
-            onSetChatReminder={setChatReminder}
-            onAnswerChatQuestion={answerChatQuestion}
+            focusedQuestion={focusQuestionTarget}
+            onOpenFocusQuestion={openFocusQuestion}
             onOpenFocusTask={openFocusTask}
             historyStatus={chatHistoryStatus}
             retryHistory={retryChatHistory}
@@ -17533,9 +17439,9 @@ function DeepWorkUI() {
                     </AnimatePresence>
                   </div>
                 )}
+                {canUseMonitor && activeChatId && <WorkspaceWorkbenchSync key={activeChatId} chatId={activeChatId} owner={terminalChatId} />}
                 {canUseMonitor && (
                   <>
-                    {activeChatId && <WorkspaceWorkbenchSync key={activeChatId} chatId={activeChatId} owner={terminalChatId} />}
                     <Tooltip text="Bottom terminal" side="bottom">
                       <button type="button" aria-label="Toggle bottom terminal" aria-pressed={terminalState.open && terminalState.placement === 'bottom'} onClick={() => { toggleTerminalPlacement(terminalChatId, 'bottom'); if (!terminalState.tabCount) void createTerminal(terminalChatId, activeWorkspacePath); }} className={`eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent transition-all duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/20 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] ${terminalState.open && terminalState.placement === 'bottom' ? 'bg-white/[0.12] text-white' : 'bg-transparent text-[var(--sidebar-muted-text)]'}`}>
                         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.15" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -17561,7 +17467,7 @@ function DeepWorkUI() {
                       className="eterx-header-icon-button eterx-work-panel-toggle flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
                       onClick={() => { setGithubDropdownOpen(false); setWorkPanel(workPanelOpen || !activeChatId ? null : { owner: activeChatId, revealAgents: false }); }}
                       onKeyDown={event => { if (event.key === 'Escape' && workPanelOpen) { event.stopPropagation(); closeWorkPanel(true); } }}>
-                      <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
+                      <ListTodo size={17} strokeWidth={1.85} aria-hidden="true" />
                     </button>
                   </Tooltip>
                 )}
@@ -17992,35 +17898,36 @@ function DeepWorkUI() {
                       </ProxyAgentControls>
                     )}
 
-                    {workPanelOpen && activeChatId && <WorkPanel
-                      key={activeChatId}
-                      cardRef={workPanelRef}
-                      chatRef={conversationPaneRef}
-                      triggerRef={workPanelTriggerRef}
-                      widthPreference={workPanelWidthPreference}
-                      attached={workspaceControls.open}
-                      panelId="eterx-chat-work-panel"
-                      owner={terminalChatId}
-                      chatId={activeChatId}
-                      workspacePath={activeWorkspacePath}
-                      workspaceName={currentWorkspacePicker?.name || projectFolderName(activeWorkspacePath)}
-                      workspaceLocked={Boolean(currentWorkspacePicker?.locked || activeSubAgentTab || isThinking)}
-                      traceLogs={traceLogs}
-                      media={chatMedia}
-                      mediaError={chatMediaError}
-                      retryMedia={retryChatMedia}
-                      pins={pinnedItems}
-                      plan={workPanelPlan}
-                      planRunning={workPanelPlanRunning}
-                      agents={autonomousSelected ? [] : realSubAgents}
-                      activeAgentId={activeSubAgentTab}
-                      revealAgents={Boolean(workPanel?.revealAgents)}
-                      assetIndexes={subAgentAssetIndexes}
-                      context={activeSubAgentTab ? activeSubAgentContextUsage : composerContextUsage}
-                      onSelectWorkspace={path => handleWorkspaceChange(path, 'local', path, { owner: terminalChatId, path: activeWorkspacePath, runLocation: activeRunLocation })}
-                      onSelectAgent={handleOpenAgentTeam}
-                      onClose={closeWorkPanel}
-                    />}
+                    <AnimatePresence key={activeChatId}>
+                      {workPanelOpen && activeChatId && <WorkPanel
+                        key="work-panel"
+                        cardRef={workPanelRef}
+                        chatRef={conversationPaneRef}
+                        triggerRef={workPanelTriggerRef}
+                        widthPreference={workPanelWidthPreference}
+                        attached={workspaceControls.open}
+                        panelId="eterx-chat-work-panel"
+                        owner={terminalChatId}
+                        chatId={activeChatId}
+                        workspacePath={activeWorkspacePath}
+                        workspaceName={currentWorkspacePicker?.name || projectFolderName(activeWorkspacePath)}
+                        workspaceLocked={Boolean(currentWorkspacePicker?.locked || activeSubAgentTab || isThinking)}
+                        traceLogs={traceLogs}
+                        media={chatMedia}
+                        mediaError={chatMediaError}
+                        retryMedia={retryChatMedia}
+                        pins={pinnedItems}
+                        plan={workPanelPlan}
+                        planRunning={workPanelPlanRunning}
+                        agents={autonomousSelected ? [] : realSubAgents}
+                        activeAgentId={activeSubAgentTab}
+                        revealAgents={Boolean(workPanel?.revealAgents)}
+                        context={activeSubAgentTab ? activeSubAgentContextUsage : composerContextUsage}
+                        onSelectWorkspace={path => handleWorkspaceChange(path, 'local', path, { owner: terminalChatId, path: activeWorkspacePath, runLocation: activeRunLocation })}
+                        onSelectAgent={handleOpenAgentTeam}
+                        onClose={closeWorkPanel}
+                      />}
+                    </AnimatePresence>
 
                     <div ref={conversationPaneRef} className="eterx-conversation-pane relative flex min-h-0 min-w-0 flex-1 flex-col">
                     <AnimatePresence initial={false}>
@@ -18077,6 +17984,7 @@ function DeepWorkUI() {
                       showScrollBottom={showScrollBottom}
                       isCompressed={isRightPanelVisible || sideTerminalVisible}
                       onAnswerAskUser={handleAnswerAskUser}
+                      focusedQuestion={focusedQuestion}
                       onEditUserMessage={handleEditFeedMessage}
                       onOpenAgentTeam={handleOpenAgentTeam}
                       onOpenWorkbenchSettings={openSettingsWindow}
