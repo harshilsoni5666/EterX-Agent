@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getEterxDataDir } from './agent/storage-paths';
+import { DEFAULT_APPEARANCE, normalizeAppearancePreferences } from './appearance-preferences';
 import { DEFAULT_THEME, isThemePreference, type ResolvedTheme, type ThemePreference } from './theme-config';
 
 const SETTINGS_KEY = 'eterx_settings';
@@ -10,7 +11,7 @@ const SETTINGS_KEY = 'eterx_settings';
  * complete AppData preference store after boot; this prevents the first paint
  * from using a different theme while that request is in flight.
  */
-export const readInitialThemePreference = (): ThemePreference => {
+export const readInitialThemeSettings = () => {
   const settingsDir = path.join(getEterxDataDir(), 'settings');
   for (const source of [path.join(settingsDir, 'preferences.json'), path.join(settingsDir, 'preferences.backup.json')]) {
     try {
@@ -19,13 +20,17 @@ export const readInitialThemePreference = (): ThemePreference => {
       const rawSettings = preferences?.[SETTINGS_KEY];
       if (typeof rawSettings !== 'string') continue;
       const settings = JSON.parse(rawSettings);
-      if (isThemePreference(settings?.theme)) return settings.theme;
+      if (isThemePreference(settings?.theme)) {
+        return { theme: settings.theme, ...normalizeAppearancePreferences(settings) };
+      }
     } catch {
       // The client-side store owns recovery from malformed preference data.
     }
   }
-  return DEFAULT_THEME;
+  return { theme: DEFAULT_THEME, ...DEFAULT_APPEARANCE };
 };
+
+export const readInitialThemePreference = (): ThemePreference => readInitialThemeSettings().theme;
 
 /**
  * Server rendering cannot inspect the user's OS color scheme. Dark is the

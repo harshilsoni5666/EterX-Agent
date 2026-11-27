@@ -422,7 +422,11 @@ Workspace: ${resolveChatWorkspaceContext(config?.chatId || 'custom-agent-' + (co
 Declared tools: ${activeTools.length}. Their schemas are authoritative.
 Current date/time and per-run evidence are supplied with the latest request.`);
 
-    parts.push(buildToolAvailabilityPrompt(activeTools.map(tool => tool.name), true));
+    const activeNames = activeTools.map(tool => tool.name);
+    parts.push(buildToolAvailabilityPrompt(activeNames, true));
+    if (activeNames.includes('workspace_workbench') && activeNames.includes('get_skill_guidelines')) {
+      parts.push('SKILL PATHWAYS\n- development_workbench: Load once for specialized preview, simulator, or SSH device setup.');
+    }
     const telegramContext = buildTelegramBotContext(config?.pinnedContext);
     if (telegramContext) parts.push(telegramContext);
     return parts.join('\n');
@@ -471,7 +475,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         // Builder and plan actions have deterministic, runtime-owned presentation.
         // Keeping UI-only arguments out of this schema saves tokens and avoids
         // raw or inconsistent labels from weaker models.
-        if (this.runtimeKind !== 'agent_builder' && tool.name !== 'task_decomposer' && tool.name !== 'task_checkpoint') {
+        if (this.runtimeKind !== 'agent_builder' && !['task_decomposer', 'task_checkpoint', 'workspace_workbench'].includes(tool.name)) {
           decl.parameters = addUiTraceFieldsToSchema(decl.parameters);
         }
         declarations.push(decl);

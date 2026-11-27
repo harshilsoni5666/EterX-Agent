@@ -5,30 +5,30 @@ function Placeholder({ width, size = 'label' }: { width: string; size?: 'caption
 }
 
 const rowWidths = ['60%', '46%', '68%', '54%'];
-const metricWidths = ['56%', '42%', '61%', '33%', '48%'];
+const metricWidths = ['56%', '42%', '61%', '33%', '48%', '67%'];
 
-export function UsageLoadingContent({ filter = 'all' }: { filter?: 'all' | 'api' | 'sub' }) {
+export function UsageLoadingContent() {
   return <>
     <span role="status" className={styles.srOnly}>Loading usage records…</span>
     <div className={styles.skeleton} aria-hidden="true">
-      <div className={styles.overview} data-api={filter === 'api' || undefined}>
+      <div className={styles.overview}>
         <div className={styles.valuePanel}>
           <div className={styles.valueHeading}><Placeholder width="82px" /><Placeholder width="22px" size="caption" /></div>
           <div className={styles.skeletonAmount}><Placeholder width="72%" size="total" /></div>
-          <Placeholder width="86%" size="caption" />
-          {filter !== 'all' ? <div className={styles.singleSource}><Placeholder width="94px" /></div> :
-            <div className={styles.sourceList}>{['API', 'Subscription'].map(source => <div key={source}>
-              <div className={styles.sourceLabel}><Placeholder width={source === 'API' ? '34px' : '85px'} /><Placeholder width="49px" /></div>
-              <div className={styles.track} />
-              <div className={styles.skeletonHint}><Placeholder width="60%" size="caption" /></div>
-            </div>)}</div>}
+          <Placeholder width="76%" size="caption" />
+          <div className={styles.seriesList}>
+            {rowWidths.map(width => <div className={styles.skeletonSeriesRow} key={width}>
+              <div className={styles.skeletonSeriesName}><Placeholder width={width} /><Placeholder width="44px" /></div>
+              <Placeholder width="69%" size="caption" />
+            </div>)}
+          </div>
         </div>
         <div className={styles.chartPanel}>
-          <div className={styles.sectionHead}><Placeholder width="108px" /><Placeholder width="87px" /></div>
+          <div className={styles.sectionHead}><Placeholder width="126px" /><Placeholder width="87px" /></div>
           <div className={styles.plot}>
             <div className={styles.skeletonPlot}>
               <div className={styles.skeletonAxis}>
-                {[0, 1, 2, 3].map(tick => <Placeholder key={tick} width="29px" size="caption" />)}
+                {[0, 1, 2, 3, 4].map(tick => <Placeholder key={tick} width="29px" size="caption" />)}
               </div>
               <div className={styles.skeletonGrid}>
                 <div className={styles.skeletonTicks}>
@@ -37,10 +37,9 @@ export function UsageLoadingContent({ filter = 'all' }: { filter?: 'all' | 'api'
               </div>
             </div>
           </div>
-          <div className={styles.chartFooter}>
-            <Placeholder width="102px" size="caption" />
-            <div className={styles.legend}><Placeholder width="39px" size="caption" /><Placeholder width="73px" size="caption" /></div>
-          </div>
+          <div className={styles.chartFooter}><div className={styles.legend}>
+            <Placeholder width="46px" size="caption" /><Placeholder width="66px" size="caption" /><Placeholder width="51px" size="caption" />
+          </div></div>
         </div>
       </div>
       <div className={styles.stats}>{metricWidths.map(width => <div className={styles.skeletonMetric} key={width}>
@@ -48,6 +47,15 @@ export function UsageLoadingContent({ filter = 'all' }: { filter?: 'all' | 'api'
         <Placeholder width={width} size="number" />
         <Placeholder width="82%" size="caption" />
       </div>)}</div>
+      <div className={styles.mix}>
+        {['36%', '44%'].map(width => <div className={styles.mixPanel} key={width}>
+          <Placeholder width="105px" />
+          <div className={styles.mixTrack}><Placeholder width="100%" size="caption" /></div>
+          <div className={styles.skeletonMixLabels}>
+            <Placeholder width={width} size="caption" /><Placeholder width="26%" size="caption" />
+          </div>
+        </div>)}
+      </div>
       <div className={styles.details}>
         <div className={styles.breakdown}>
           <div className={styles.sectionHead}><Placeholder width="116px" /><Placeholder width="118px" /></div>
@@ -76,15 +84,23 @@ export function UsageLoadingFallback() {
     <div className={styles.scrollPane}>
       <div className={styles.content}>
         <header className={styles.header}>
-          <div className={styles.headingGroup}>
-            <div className={styles.titleLine}><h1 id="usage-heading">Usage</h1></div>
-            <div aria-hidden="true" className={styles.skeletonDate}><Placeholder width="145px" size="caption" /></div>
+          <div className={styles.headerTop}>
+            <div className={styles.headingGroup}>
+              <div className={styles.titleLine}><h1 id="usage-heading">Usage</h1></div>
+              <div aria-hidden="true" className={styles.skeletonDate}><Placeholder width="145px" size="caption" /></div>
+            </div>
+            <div aria-hidden="true" className={styles.skeletonControl}><Placeholder width="156px" /></div>
           </div>
-          <div className={styles.controls} aria-hidden="true">
-            <div className={styles.skeletonControl}><Placeholder width="94px" /></div>
-            <div className={styles.skeletonControl}><Placeholder width="152px" /></div>
-            <div className={styles.skeletonControl}><Placeholder width="16px" /></div>
-            <div className={styles.skeletonControl}><Placeholder width="89px" /></div>
+          <div className={styles.toolbar} aria-hidden="true">
+            <div className={styles.controls}>
+              <div className={styles.skeletonControl}><Placeholder width="94px" /></div>
+              <div className={styles.skeletonControl}><Placeholder width="102px" /></div>
+            </div>
+            <div className={styles.controls}>
+              <div className={styles.skeletonControl}><Placeholder width="220px" /></div>
+              <div className={styles.skeletonControl}><Placeholder width="16px" /></div>
+              <div className={styles.skeletonControl}><Placeholder width="89px" /></div>
+            </div>
           </div>
         </header>
         <UsageLoadingContent />

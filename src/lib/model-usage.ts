@@ -18,7 +18,7 @@ export function readModelUsage(log: any) {
   let prompt = read('promptTokens', 'prompt_tokens', 'inputTokens', 'input_tokens',
     'totalInputTokens', 'total_input_tokens', 'promptTokenCount', 'prompt_token_count', 'inputTokenCount');
   const cacheRead = read('cache_read_input_tokens', 'cacheReadInputTokens');
-  const cacheWrite = read('cacheWriteTokens', 'cache_write_tokens', 'cacheCreationTokens',
+  const cacheWrite = read('cacheWriteTokens', 'cache_write_tokens', 'cacheCreationTokens', 'cache_creation_tokens',
     'cache_creation_input_tokens', 'cacheCreationInputTokens')
     ?? metric(usage.prompt_tokens_details?.cache_write_tokens, usage.input_tokens_details?.cache_write_tokens,
       usage.cache_creation ? (metric(usage.cache_creation.ephemeral_5m_input_tokens) || 0)
@@ -50,7 +50,7 @@ export function readModelUsage(log: any) {
   const reasoningMeasured = measured('reasoningTokensMeasured', reasoning);
   const promptTokens = inputMeasured ? prompt || 0 : 0;
   const outputTokens = outputMeasured ? output || 0 : reasoningMeasured ? reasoning || 0 : 0;
-  const cached = metric(read('prompt_cache_hit_tokens'), read('cachedTokens', 'cached_tokens', 'totalCachedTokens', 'total_cached_tokens',
+  const cached = metric(read('prompt_cache_hit_tokens'), read('cachedTokens', 'cached_tokens', 'cachedInputTokens', 'cached_input_tokens', 'totalCachedTokens', 'total_cached_tokens',
     'cacheReadTokens', 'cachedContentTokenCount', 'cached_content_token_count'), cacheRead,
     usage.prompt_tokens_details?.cached_tokens, usage.input_tokens_details?.cached_tokens);
   const explicitUncached = read('uncachedPromptTokens', 'uncached_prompt_tokens');

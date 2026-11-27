@@ -1,0 +1,11 @@
+.cursorLight, .cursorDark {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.cursorLight { display: none; }
+:global(:root[data-theme='light']) .cursorLight { display: block; }
+:global(:root[data-theme='light']) .cursorDark { display: none; }

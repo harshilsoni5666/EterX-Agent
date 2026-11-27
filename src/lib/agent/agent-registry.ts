@@ -34,7 +34,7 @@ import { getCodingMode } from '../code/coding-modes';
 import { sameUserAdmission, normalizeAdmissionId } from '../steering-delivery';
 import { normalizeChatPermissionMode, type ChatPermissionMode } from '../chat-permissions';
 import { runWithToolApprovals } from './tool-approval-runtime';
-import { beginTelemetryTurn } from '../telemetry/runtime';
+import { beginTelemetryTurn, recordTelemetry, updateTelemetryTurn } from '../telemetry/runtime';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -95,6 +95,7 @@ interface AgentExecution {
   cancelled: boolean;          // Per-chat cancel flag
   abortController: AbortController; // Per-run cancellation; later runs cannot reset it
   settled: boolean;            // Persistence and resource cleanup have finished
+  telemetrySessionActive?: () => boolean;
   promise: Promise<void>;      // The running execution
   keyLeaseId: string;          // API key lease identifier
   steeringQueue: SteeringMessage[]; // Live steering messages from user mid-run
@@ -1731,10 +1732,18 @@ class AgentRegistry {
     const triggerDelegatedBy = String(pinnedContext?.triggerDelegatedBy || '').trim();
     const telemetry = beginTelemetryTurn(JSON.stringify(['agent', chatId, execution.runId]), {
       mode: 'agent', provider: modelConfig.provider, model: execution.effectiveModel,
+      feature: pinnedContext?.agentRuntime === 'agent_builder' ? 'builder' : undefined,
       effort: pinnedContext?.thinkingLevel, permissions: normalizeChatPermissionMode(pinnedContext?.permissionMode),
       origin: proxyOrigin ? 'proxy' : pinnedContext?.scheduledTaskId || triggerSource === 'scheduled_task' ? 'scheduled'
         : triggerSource === 'gateway' ? 'gateway' : !triggerSource || triggerSource === 'human' ? 'interactive' : 'background',
+    }, {
+      hasInput: Boolean(prompt.trim()), attachmentCount: mediaAttachments.length, hasModel: Boolean(execution.effectiveModel),
+      hasCwd: Boolean(pinnedContext?.workspacePath || pinnedContext?.paths?.length),
+      workspace: pinnedContext?.workspacePath ? 'folder' : undefined,
+      workspaceStrategy: pinnedContext?.runLocation,
+      interactionMode: pinnedContext?.planMode === true ? 'plan' : 'agent',
     });
+    execution.telemetrySessionActive = telemetry.hasSession;
     // Every Main run begins with the same canonical user boundary. Human runs
     // may already have an optimistic local bubble; the client upserts this
     // server-owned trace by run ID. Proxy-started work therefore follows the
@@ -2213,7 +2222,7 @@ class AgentRegistry {
 
       } finally {
         const outcome = execution.status === 'running' ? terminalStatus : execution.status;
-        telemetry.finish(outcome === 'completed' ? 'succeeded' : outcome === 'stopped' ? 'cancelled' : 'failed');
+        const finishedAt = execution.completedAt ?? Date.now();
         if (execution.orchestratorProjectId) {
           try { stopUserProxyRuntime(execution.orchestratorProjectId); } catch { }
         }
@@ -2221,6 +2230,7 @@ class AgentRegistry {
         // give workers a bounded window to observe the signal before releasing
         // their leases; otherwise a successor can reuse a key still in flight.
         const subAgentProjectId = execution.orchestratorProjectId || chatId;
+        updateTelemetryTurn({ childrenRunning: globalSubAgentSpawner.getBackgroundCount(subAgentProjectId) > 0 });
         if (!execution.abortController.signal.aborted) {
           execution.abortController.abort(new Error('MAIN_RUN_SETTLED'));
         }
@@ -2231,6 +2241,8 @@ class AgentRegistry {
             new Promise<void>(resolve => setTimeout(resolve, 3000)),
           ]);
         } catch { }
+        telemetry.finish(outcome === 'completed' ? 'succeeded' : outcome === 'stopped' ? 'cancelled' : 'failed', finishedAt);
+        execution.telemetrySessionActive = undefined;
         if (globalSubAgentSpawner.getBackgroundCount(subAgentProjectId) === 0) {
           clearCancelState(subAgentProjectId);
         }
@@ -3608,25 +3620,34 @@ class AgentRegistry {
     this.desktopClosePolicy = options;
     this.desktopAdmissionEpoch = this.getDesktopAdmissionEpoch() + 1;
     const chatIds: string[] = [];
+    let stoppedSessionCount = 0;
     for (const [chatId, execution] of this.executions) {
       const context = execution.launchSpec?.pinnedContext;
       const source = String(context?.triggerSource || '').trim();
       if (options.keepScheduled && (source === 'scheduled_task' || context?.scheduledTaskId)) continue;
       if (options.keepChannels && source === 'gateway') continue;
       chatIds.push(chatId);
+      const sessionActive = execution.status === 'running' && execution.telemetrySessionActive?.();
       // Stop owns queue cancellation and child/proxy cleanup, while retaining
       // an already completed answer if completion won the close race.
-      this.stopAgent(chatId, 'Stopped when the app window closed.', undefined, execution.runId);
+      if (this.stopAgent(chatId, 'Stopped when the app window closed.', undefined, execution.runId) && sessionActive) {
+        stoppedSessionCount++;
+      }
+    }
+    if (!options.keepScheduled && !options.keepChannels) {
+      recordTelemetry('provider.sessions.stopped_all', { interactionMode: 'agent', stoppedSessionCount });
     }
     return chatIds;
   }
 
   public stopAll(): void {
+    let stoppedSessionCount = 0;
     cancelAllSubAgents();
     for (const chatId of this.userFollowUpQueues.keys()) this.clearQueuedFollowUps(chatId);
     this.pendingRunCancellations.clear();
     for (const [chatId, execution] of this.executions.entries()) {
       if (execution.status === 'running') {
+        if (execution.telemetrySessionActive?.()) stoppedSessionCount++;
         execution.cancelled = true;
         execution.abortController.abort(new Error('CANCELLED_BY_USER'));
         execution.status = 'stopped';
@@ -3643,6 +3664,7 @@ class AgentRegistry {
         }
       }
     }
+    recordTelemetry('provider.sessions.stopped_all', { interactionMode: 'agent', stoppedSessionCount });
     console.log(`[AgentRegistry] 🛑 Emergency stop — all agents stopped`);
   }
 }

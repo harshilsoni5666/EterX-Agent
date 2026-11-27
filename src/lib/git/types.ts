@@ -1,3 +1,5 @@
+import type { ChatCommitReceipt } from './chat-commits';
+
 export type GitView = 'changes' | 'branches' | 'history' | 'stashes';
 export type GitFileStats = { added: number; removed: number; binary: boolean };
 export type GitFile = {
@@ -51,4 +53,4 @@ export type GitMutation = {
   name?: string;
   email?: string;
 };
-export type GitMutationResult = { message: string };
+export type GitMutationResult = { message: string; commit?: ChatCommitReceipt };

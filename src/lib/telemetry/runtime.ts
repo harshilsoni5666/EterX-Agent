@@ -1,17 +1,25 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import appPackage from '../../../package.json';
 import { getEterxDataDir } from '../agent/storage-paths';
 import bundledRates from '../usage/bundled-rates.json';
 import { openOutbox } from './outbox';
+import { readPostHogConfig, sendToPostHog, type CaptureReceipt } from './posthog';
 import {
-  BATCH_LIMIT, TELEMETRY_VERSION, catalogModel, isObject, normalizeDimensions, normalizeMeasurements, telemetryEndpoint,
+  BATCH_LIMIT, catalogModel, isObject, normalizeDimensions,
+  normalizeMeasurements, normalizeProperties, restrictModelProperties,
   type DimensionInput, type Dimensions, type Measurements, type TelemetryEvent, type TelemetryEventName,
+  type PropertyInput, type TelemetryProperties,
 } from './protocol';
 
-type Scope = { dimensions: Dimensions; turnId?: string; turnFeature?: Dimensions['feature'] };
+type Scope = {
+  dimensions: Dimensions;
+  properties?: TelemetryProperties;
+  turnId?: string;
+  turnFeature?: Dimensions['feature'];
+};
 type Outcome = NonNullable<Dimensions['outcome']>;
 type Feature = NonNullable<Dimensions['feature']>;
 const TICK_MS = 5_000;
@@ -20,18 +28,22 @@ const CATCH_UP_MS = 1_250;
 const globalState = globalThis as typeof globalThis & {
   __eterxProductTelemetry?: {
     scope: AsyncLocalStorage<Scope>;
+    bootId: string;
     store?: ReturnType<typeof openOutbox>;
     timer?: ReturnType<typeof setInterval>;
     inFlight?: AbortController;
     heartbeatAt: number;
     maintenanceAt: number;
     retryStorageAt: number;
+    postHog?: ReturnType<typeof readPostHogConfig>;
+    configReadAt: number;
+    nextDeliveryWarning: number;
     preference: { checkedAt: number; signature?: string; enabled: boolean };
   };
 };
 const state = globalState.__eterxProductTelemetry ??= {
-  scope: new AsyncLocalStorage<Scope>(),
-  heartbeatAt: 0, maintenanceAt: 0, retryStorageAt: 0,
+  scope: new AsyncLocalStorage<Scope>(), bootId: randomUUID(),
+  heartbeatAt: 0, maintenanceAt: 0, retryStorageAt: 0, configReadAt: 0, nextDeliveryWarning: 0,
   preference: { checkedAt: 0, enabled: false },
 };
 
@@ -70,60 +82,172 @@ function withStore<T>(use: (store: ReturnType<typeof openOutbox>) => T): T | und
   }
 }
 
-function runtimeDimensions(): Dimensions {
+function runtimeContext() {
   const version = process.env.ETERX_APP_VERSION || appPackage.version;
+  const desktop = Boolean(process.env.ETERX_DESKTOP_PARENT_PID || process.env.ETERX_DESKTOP_DEV === '1');
   const platform = ['darwin', 'win32', 'linux'].includes(process.platform) ? process.platform : 'other';
-  const arch = ['arm64', 'x64'].includes(process.arch) ? process.arch : 'other';
-  return normalizeDimensions({
-    platform, arch, version,
-    runtime: process.env.ETERX_DESKTOP_PARENT_PID || process.env.ETERX_DESKTOP_DEV === '1' ? 'desktop' : 'server',
+  const serverOs = platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : platform;
+  const arch = ['arm64', 'x64', 'ia32', 'arm'].includes(process.arch) ? process.arch : 'other';
+  const dimensions = normalizeDimensions({
+    platform, arch, version, runtime: desktop ? 'desktop' : 'server',
     channel: process.env.NODE_ENV !== 'production' ? 'development' : version.includes('-') ? 'preview' : 'stable',
   });
+  return { dimensions, properties: { serverArch: arch, serverOs, serverAppVersion: appPackage.version,
+    appCoreVersion: process.env.ETERX_APP_CORE_VERSION || appPackage.version } };
 }
 
+const idNamespaces: Partial<Record<TelemetryEventName, string>> = {
+  'client.turn.requested': 'turn.requested',
+  'provider.turn.completed': 'turn.finished',
+  'provider.request.completed': 'model.request',
+};
+
 function eventId(token: string, name: TelemetryEventName, localKey?: string) {
-  return localKey ? createHmac('sha256', token).update(JSON.stringify([name, localKey])).digest('hex').slice(0, 32)
-    : randomBytes(16).toString('hex');
+  const namespace = idNamespaces[name] ?? name;
+  return localKey ? createHmac('sha256', token).update(JSON.stringify([namespace, localKey])).digest('hex').slice(0, 32)
+    : randomUUID().replaceAll('-', '');
 }
 
 function makeEvent(
-  token: string, name: TelemetryEventName, dimensions: Dimensions, measurements?: Measurements, localKey?: string, at = Date.now(),
+  token: string, name: TelemetryEventName, dimensions: Dimensions, measurements?: Measurements,
+  properties?: PropertyInput, localKey?: string, at = Date.now(),
 ): TelemetryEvent {
-  return { id: eventId(token, name, localKey), at, name, dimensions: { ...runtimeDimensions(), ...dimensions }, measurements };
+  const runtime = runtimeContext();
+  const safe = restrictModelProperties(normalizeProperties({
+    ...runtime.properties, ...properties, provider: dimensions.provider ?? properties?.provider,
+    model: dimensions.model ?? properties?.model,
+    clientAppVersion: properties?.clientAppVersion ?? (properties?.clientType === 'desktop' ? runtime.dimensions.version : undefined),
+  }), publicModels);
+  return { id: eventId(token, name, localKey), at, name, dimensions: { ...runtime.dimensions, ...dimensions, model: safe.model },
+    measurements, properties: safe, receivedAt: Date.now() };
 }
 
-function record(name: TelemetryEventName, dimensions: Dimensions, measurements?: Measurements, localKey?: string, turnId?: string, at?: number) {
-  if (!enabled()) return;
+export function recordTelemetry(
+  name: TelemetryEventName, properties: PropertyInput = {},
+  options: {
+    dimensions?: DimensionInput; measurements?: Measurements; key?: string; at?: number;
+    turnId?: string; usage?: 'main' | 'child';
+  } = {},
+): boolean {
+  if (!enabled()) return true;
   initializeTelemetry();
-  withStore(store => store.record(makeEvent(store.token, name, dimensions, measurements, localKey, at), turnId));
+  const scope = state.scope.getStore();
+  const dimensions = normalizeDimensions({ origin: scope?.dimensions.origin, ...(options.dimensions ?? scope?.dimensions) });
+  return withStore(store => {
+    store.record(
+      makeEvent(store.token, name, dimensions, options.measurements, { ...scope?.properties, ...properties }, options.key, options.at),
+      options.turnId, options.usage,
+    );
+    return true;
+  }) === true;
 }
 
-export function withTelemetryScope<T>(dimensions: DimensionInput, run: () => T): T {
+export function withTelemetryScope<T>(dimensions: DimensionInput, run: () => T, properties?: PropertyInput): T {
   const parent = state.scope.getStore();
-  return state.scope.run({ ...parent, dimensions: { ...parent?.dimensions, ...normalizeDimensions(dimensions) } }, run);
+  return state.scope.run({
+    ...parent, dimensions: normalizeDimensions({ ...parent?.dimensions, ...dimensions }),
+    properties: properties ? { ...parent?.properties, ...normalizeProperties(properties) } : parent?.properties,
+  }, run);
 }
 
-export function beginTelemetryTurn(localKey: string, input: DimensionInput) {
+export function publicTelemetryModel(provider: unknown, model: unknown) {
+  return catalogModel(publicModels, provider, model);
+}
+
+export function observeTelemetryClient(properties: PropertyInput, localSession: string) {
+  recordTelemetry('client.connected', properties, { key: JSON.stringify([state.bootId, localSession]) });
+}
+
+export function refreshTelemetryPreference() {
+  if (!enabled(true)) state.inFlight?.abort();
+}
+
+export function observeLocalInstallation(counts: { threadCount: number; projectCount: number }) {
+  if (runtimeContext().dimensions.runtime !== 'desktop') return;
+  recordTelemetry('install.owner_observed', { ...counts, observedBy: 'chat_store', ownerSource: 'local_profile' }, {
+    key: new Date().toISOString().slice(0, 10),
+  });
+}
+
+export async function measureMcpInvocation<T>(
+  tool: NonNullable<Dimensions['tool']>, operation: () => Promise<T>, failed: (value: T) => boolean = () => false,
+): Promise<T> {
+  const started = performance.now();
+  const scope = state.scope.getStore();
+  const callerOrigin = scope?.dimensions.origin === 'gateway' ? 'gateway'
+    : scope?.dimensions.role === 'main' || scope?.dimensions.role === 'child' ? 'agent' : 'user';
+  let outcome: 'success' | 'error' = 'error';
+  let errorCode: Dimensions['error'];
+  try {
+    const result = await operation();
+    outcome = failed(result) ? 'error' : 'success';
+    if (outcome === 'error') errorCode = 'upstream';
+    return result;
+  } catch (error) {
+    errorCode = providerErrorCategory(error);
+    throw error;
+  } finally {
+    const durationMs = Math.round(performance.now() - started);
+    recordTelemetry('mcp.tool.invoked', {
+      tool, outcome, errorCode, callerOrigin, callerDepth: scope?.properties?.callerDepth ?? (scope ? 0 : undefined),
+      callerProvider: scope?.dimensions.provider, callerModel: scope?.dimensions.model,
+    }, { measurements: { durationMs, durationReports: 1 } });
+  }
+}
+
+export function beginTelemetryTurn(localKey: string, input: DimensionInput, details: PropertyInput = {}) {
   const dimensions = normalizeDimensions({ ...input, role: 'main', model: catalogModel(publicModels, input.provider, input.model) });
+  const parent = state.scope.getStore();
+  const origin = dimensions.origin;
+  const properties = normalizeProperties({
+    ...parent?.properties,
+    clientType: origin === 'gateway' ? 'gateway' : origin && origin !== 'interactive' ? 'automation' : parent?.properties?.clientType,
+    surface: origin === 'gateway' ? 'gateway' : origin && origin !== 'interactive' ? 'background' : parent?.properties?.surface,
+    createdBy: origin === 'proxy' ? 'agent' : origin === 'scheduled' || origin === 'background' ? 'system' : 'user',
+    creationSource: origin === 'scheduled' ? 'scheduler' : origin === 'gateway' ? 'gateway' : origin === 'proxy' ? 'proxy'
+      : dimensions.feature === 'builder' ? 'builder' : 'composer',
+    scheduled: origin === 'scheduled', subagent: false, reportVersion: 1, ...details,
+  });
   let turnId: string | undefined;
   if (enabled()) {
     initializeTelemetry();
     turnId = withStore(store => {
-      const requested = makeEvent(store.token, 'turn.requested', dimensions, undefined, localKey);
-      return store.beginTurn(requested, eventId(store.token, 'turn.finished', localKey)) ? requested.id : undefined;
+      const requested = makeEvent(store.token, 'client.turn.requested', dimensions, undefined, properties, localKey);
+      return store.beginTurn(requested, eventId(store.token, 'provider.turn.completed', localKey)) ? requested.id : undefined;
     });
   }
   return {
     run<T>(operation: () => T): T {
-      return state.scope.run({ dimensions, turnId, turnFeature: dimensions.feature }, operation);
+      return state.scope.run({ dimensions, properties, turnId, turnFeature: dimensions.feature }, operation);
     },
-    finish(outcome: 'succeeded' | 'failed' | 'cancelled') {
-      if (turnId && enabled()) {
-        const id = turnId;
-        withStore(store => store.finishTurn(id, outcome));
-      }
+    finish(outcome: 'succeeded' | 'failed' | 'cancelled', at?: number) {
+      const id = turnId;
+      if (!id) return;
+      withStore(store => enabled() ? store.finishTurn(id, outcome, at) : store.discardTurn(id));
+    },
+    hasSession() {
+      const id = turnId;
+      return Boolean(id && withStore(store => store.hasSession(id)));
     },
   };
+}
+
+export function updateTelemetryTurn(properties: PropertyInput, counts: Measurements = {}) {
+  const id = state.scope.getStore()?.turnId;
+  if (id && enabled()) withStore(store => store.updateTurn(id, normalizeProperties(properties), normalizeMeasurements(counts)));
+}
+
+export function recordProviderDispatch(provider: string, model: string, serviceTier?: unknown) {
+  const scope = state.scope.getStore();
+  if (!scope?.turnId || scope.dimensions.role !== 'main' || scope.dimensions.feature !== scope.turnFeature || !enabled()) return;
+  const id = scope.turnId;
+  const dimensions = normalizeDimensions({ ...scope.dimensions, provider, model: publicTelemetryModel(provider, model), serviceTier });
+  const at = Date.now();
+  withStore(store => store.dispatchTurn(id,
+    makeEvent(store.token, 'provider.turn.sent', dimensions, undefined, scope.properties, id, at),
+    makeEvent(store.token, 'provider.session.started', dimensions, { sessionCount: 1 }, scope.properties, id, at),
+    eventId(store.token, 'provider.session.stopped', id),
+  ));
 }
 
 export function providerErrorCategory(error: unknown): Dimensions['error'] {
@@ -143,6 +267,8 @@ export function recordProviderRequest(input: {
   id: string;
   provider: string;
   model: string;
+  observedModel?: string;
+  serviceTier?: unknown;
   at?: number;
   outcome: Outcome;
   error?: Dimensions['error'];
@@ -151,15 +277,28 @@ export function recordProviderRequest(input: {
 }) {
   const scope = state.scope.getStore();
   const provider = normalizeDimensions({ provider: input.provider }).provider ?? 'unknown';
-  const role = scope?.dimensions.role ?? 'auxiliary';
   const feature = input.feature ?? scope?.dimensions.feature;
+  const role = scope?.dimensions.role === 'main' && feature !== scope.turnFeature
+    ? 'auxiliary' : scope?.dimensions.role ?? 'auxiliary';
+  const requestKind = feature ?? 'generation';
   const dimensions = normalizeDimensions({
     ...scope?.dimensions, provider, model: catalogModel(publicModels, provider, input.model), role,
-    feature, outcome: input.outcome, error: input.error,
+    feature, outcome: input.outcome, error: input.error, serviceTier: input.serviceTier, requestKind,
   });
-  record('model.request', dimensions, normalizeMeasurements({
-    ...input.measurements, requests: 1, durationReports: Number(input.measurements.durationMs !== undefined),
-  }), input.id, role === 'main' && feature === scope?.turnFeature ? scope?.turnId : undefined, input.at);
+  const usageReported = (input.measurements.usageReports ?? 0) > 0;
+  const roleInTurn = role === 'child' ? 'child' : role === 'main' && feature === scope?.turnFeature ? 'main' : undefined;
+  return recordTelemetry('provider.request.completed', {
+    observedModel: input.observedModel, terminalStatus: input.outcome === 'succeeded' ? 'completed' : input.outcome,
+    segment: role === 'child' ? 'child' : feature ?? role, usageScope: role === 'child' ? 'child' : 'request',
+    usageReported, reportVersion: 1,
+    usageStatus: !usageReported ? 'missing' : input.measurements.inputReports && input.measurements.outputReports ? 'reported' : 'partial',
+    durationSeconds: input.measurements.durationMs === undefined ? undefined : Math.round(input.measurements.durationMs / 1000),
+  }, {
+    dimensions, measurements: normalizeMeasurements({
+      ...input.measurements, requests: 1, durationReports: Number(input.measurements.durationMs !== undefined),
+    }),
+    key: input.id, at: input.at, turnId: roleInTurn ? scope?.turnId : undefined, usage: roleInTurn,
+  });
 }
 
 export async function measureFeature<T>(
@@ -185,21 +324,15 @@ export async function measureFeature<T>(
     throw error;
   } finally {
     const dimensions = normalizeDimensions({ ...parent, role, feature, outcome, provider, model });
-    record('feature.used', dimensions, { durationMs: Math.round(performance.now() - start), durationReports: 1 });
+    recordTelemetry('feature.used', {}, {
+      dimensions, measurements: { durationMs: Math.round(performance.now() - start), durationReports: 1 },
+    });
   }
 }
 
-function acknowledgedIds(value: unknown, sent: TelemetryEvent[]) {
-  if (!isObject(value) || value.version !== TELEMETRY_VERSION || !Array.isArray(value.accepted) || !Array.isArray(value.discarded)) return;
-  const expected = new Set(sent.map(event => event.id));
-  const ids = [...value.accepted, ...value.discarded];
-  if (ids.length !== expected.size || !ids.every(id => typeof id === 'string' && expected.delete(id)) || expected.size) return;
-  return ids as string[];
-}
-
-function retryDelay(failures: number, retryAfter: string | null) {
+function retryDelay(failures: number, retryAfter?: string, pause = false) {
   const ceiling = Math.min(300_000, 2_000 * 2 ** Math.min(failures, 8));
-  const delay = Math.round(ceiling * (0.5 + Math.random() * 0.5));
+  const delay = Math.max(pause ? 60_000 : 0, Math.round(ceiling * (0.5 + Math.random() * 0.5)));
   if (!retryAfter) return delay;
   const requested = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1_000 : Date.parse(retryAfter) - Date.now();
   return Number.isFinite(requested) ? Math.max(delay, Math.min(requested, 86_400_000)) : delay;
@@ -212,7 +345,11 @@ async function tick() {
   }
   if (state.inFlight) return;
   const now = Date.now();
-  const url = telemetryEndpoint(process.env.ETERX_TELEMETRY_URL, true);
+  if (now - state.configReadAt >= 60_000) {
+    state.configReadAt = now;
+    state.postHog = readPostHogConfig();
+  }
+  const config = state.postHog;
   const batch = withStore(store => {
     if (now >= state.maintenanceAt) {
       store.prune(now);
@@ -220,46 +357,44 @@ async function tick() {
       state.maintenanceAt = now + 60_000;
     }
     heartbeat(store, now);
-    const leased = url ? store.acquire(now) : undefined;
+    const leased = config ? store.acquire(now) : undefined;
     return leased ? { ...leased, token: store.token } : undefined;
   });
-  if (!url || !batch) return;
+  if (!config || !batch) return;
 
   const controller = new AbortController();
   state.inFlight = controller;
-  let accepted: string[] | undefined;
-  let retryAfter: string | null = null;
+  let result: CaptureReceipt;
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${batch.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ version: TELEMETRY_VERSION, events: batch.events }),
-      redirect: 'error',
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]),
-    });
-    retryAfter = response.headers.get('retry-after');
-    if (response.ok) accepted = acknowledgedIds(await response.json(), batch.events);
-    else await response.body?.cancel();
-  } catch { /* An interrupted send retains the original event IDs and timestamps. */ }
-  finally {
-    state.inFlight = undefined;
-    const failures = accepted ? 0 : Math.min(batch.failures + 1, 20);
-    const catchUp = accepted && batch.events.length === BATCH_LIMIT;
-    const delay = accepted ? catchUp ? CATCH_UP_MS : 0 : retryDelay(failures, retryAfter);
-    withStore(store => store.release(batch.lease, accepted ?? [], Date.now() + delay, failures));
-    if (catchUp) setTimeout(() => void tick(), CATCH_UP_MS + Math.random() * 750).unref();
+    result = await sendToPostHog(config, batch, AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]));
+  } catch {
+    result = { settled: [], dropped: 0, failure: 'transport' };
   }
+  state.inFlight = undefined;
+  const failures = result.failure ? Math.min(batch.failures + 1, 20) : 0;
+  const nowAfter = Date.now();
+  const remaining = result.settled.length < batch.events.length;
+  const paused = ['http_400', 'http_401', 'http_402', 'http_403', 'http_415', 'invalid_receipt'].includes(result.failure ?? '');
+  const externalDelay = result.failure || result.retryAfter ? retryDelay(failures, result.retryAfter, paused) : 0;
+  const retryAt = nowAfter + (remaining ? Math.max(externalDelay, retryDelay(batch.attempts)) : 0);
+  const catchUp = !result.failure && batch.events.length === BATCH_LIMIT;
+  const cooldownAt = nowAfter + (externalDelay || (catchUp ? CATCH_UP_MS : 0));
+  withStore(store => store.release(batch, result.settled, retryAt, cooldownAt, failures));
+  if ((result.failure || result.dropped) && nowAfter >= state.nextDeliveryWarning && !controller.signal.aborted) {
+    state.nextDeliveryWarning = nowAfter + 60_000;
+    console.warn('[Telemetry] PostHog delivery status:', result.failure ?? 'events_rejected', result.dropped);
+  }
+  if (catchUp) setTimeout(() => void tick(), CATCH_UP_MS + Math.random() * 750).unref();
 }
 
 function heartbeat(store: ReturnType<typeof openOutbox>, now: number) {
   if (now < state.heartbeatAt) return;
-  const name = state.heartbeatAt ? 'app.heartbeat' : 'app.started';
-  store.record(makeEvent(store.token, name, {}));
+  store.record(makeEvent(store.token, 'server.boot.heartbeat', {}, undefined, { boot: state.heartbeatAt === 0 }));
   state.heartbeatAt = now + HEARTBEAT_MS;
 }
 
 export function initializeTelemetry() {
-  if (state.timer) return;
+  if (state.timer || process.env.NEXT_PHASE === 'phase-production-build') return;
   state.timer = setInterval(() => void tick(), TICK_MS + Math.random() * 3_000);
   state.timer.unref();
   if (enabled()) withStore(store => heartbeat(store, Date.now()));

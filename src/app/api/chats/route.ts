@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { copyStoredChat, prepareStoredChat, loadChatById, loadChatSnapshot, patchChatSnapshot, saveChatSnapshot } from '../../../lib/chat-store';
 import { removeChatMedia } from '../../../lib/chat-media-store';
 import { rejectCrossOrigin } from '../agent/_shared';
+import { telemetryClientContext } from '../../../lib/telemetry/client-context';
+import { observeLocalInstallation, withTelemetryScope } from '../../../lib/telemetry/runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,9 +24,9 @@ export async function POST(req: NextRequest) {
     if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId))) {
       return NextResponse.json({ error: 'Invalid copy request.' }, { status: 400, headers: noStoreHeaders });
     }
-    const result = body.action === 'copy'
-      ? await copyStoredChat(body.id, body.chat, body.requestId)
-      : await prepareStoredChat(body.id, body.chat);
+    const result = await withTelemetryScope({}, () => body.action === 'copy'
+      ? copyStoredChat(body.id, body.chat, body.requestId)
+      : prepareStoredChat(body.id, body.chat), telemetryClientContext(req));
     return NextResponse.json(result, { headers: noStoreHeaders });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || 'Unable to save this conversation.' }, { status: 500, headers: noStoreHeaders });
@@ -40,7 +42,23 @@ export async function GET(req: NextRequest) {
       const chat = await loadChatById(chatId, true);
       return NextResponse.json({ chat }, { headers: noStoreHeaders });
     }
-    return NextResponse.json(await loadChatSnapshot(), { headers: noStoreHeaders });
+    const snapshot = await loadChatSnapshot();
+    if (snapshot.savedAt > 0 && req.nextUrl.searchParams.get('knownRevision') === String(snapshot.savedAt)) {
+      return new NextResponse(null, { status: 204, headers: noStoreHeaders });
+    }
+    const context = telemetryClientContext(req);
+    if (context.clientType === 'desktop') {
+      const workspaces = new Set<string>();
+      for (const chat of snapshot.chats as Array<{ workspacePath?: unknown }>) {
+        if (typeof chat.workspacePath !== 'string' || !chat.workspacePath.trim()) continue;
+        const root = chat.workspacePath.trim().replace(/[\\/]+$/, '');
+        workspaces.add(process.platform === 'win32' ? root.toLowerCase() : root);
+      }
+      withTelemetryScope({}, () => observeLocalInstallation({
+        threadCount: snapshot.chats.length, projectCount: workspaces.size,
+      }), context);
+    }
+    return NextResponse.json(snapshot, { headers: noStoreHeaders });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || 'Unable to load chats' }, { status: 500, headers: noStoreHeaders });
   }
@@ -65,9 +83,9 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'Partial updates require chatIds and an optional deletedChatIds array' }, { status: 400, headers: noStoreHeaders });
     }
     const mutationId = typeof body.mutationId === 'string' ? body.mutationId.trim().slice(0, 200) : '';
-    const snapshot = body.partial === true && Array.isArray(body.chatIds)
-      ? await patchChatSnapshot(body.chats, body.chatIds, savedAt, body.deletedChatIds, mutationId)
-      : await saveChatSnapshot(body.chats, savedAt, mutationId);
+    const snapshot = await withTelemetryScope({}, () => body.partial === true && Array.isArray(body.chatIds)
+      ? patchChatSnapshot(body.chats, body.chatIds, savedAt, body.deletedChatIds, mutationId)
+      : saveChatSnapshot(body.chats, savedAt, mutationId), telemetryClientContext(req));
     if (snapshot.applied && body.partial === true && Array.isArray(body.deletedChatIds)) {
       // The transcript mutation is already committed. A media cleanup error
       // must not report that successful save as failed and trigger a replay.

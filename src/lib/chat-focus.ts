@@ -4,6 +4,7 @@ import { isConclusiveSettledAnswerTrace, isFeedTurnBoundary, isTerminalWorkTrace
 export interface ChatFocusDisposition {
   focusSettled?: boolean;
   focusUpdatedAt?: number;
+  focusWakeAt?: number | null;
 }
 
 export function mergeChatFocusDisposition(
@@ -12,7 +13,7 @@ export function mergeChatFocusDisposition(
 ): ChatFocusDisposition {
   const winner = Number(incoming.focusUpdatedAt || 0) >= Number(durable.focusUpdatedAt || 0)
     ? incoming : durable;
-  return { focusSettled: winner.focusSettled, focusUpdatedAt: winner.focusUpdatedAt };
+  return { focusSettled: winner.focusSettled, focusUpdatedAt: winner.focusUpdatedAt, focusWakeAt: winner.focusWakeAt };
 }
 
 export const FOCUS_GROUPS = [
@@ -22,11 +23,16 @@ export const FOCUS_GROUPS = [
 ] as const;
 
 export type FocusGroup = typeof FOCUS_GROUPS[number]['id'];
-export type FocusStatus = 'working' | 'input' | 'done' | 'failed' | 'stopped' | 'scheduled' | 'queued' | 'paused';
+export type FocusStatus = 'working' | 'input' | 'done' | 'failed' | 'stopped' | 'scheduled' | 'queued' | 'paused' | 'snoozed' | 'woke' | 'settled';
+
+export function canSettleFocusItem(status?: FocusStatus): boolean {
+  return status !== 'working' && status !== 'input';
+}
 
 interface FocusTraceState {
   activityAt: number;
   status?: 'input' | 'done' | 'failed' | 'stopped';
+  question?: any;
   turnModel?: ModelSelectorEntry;
   previousModel?: ModelSelectorEntry;
 }
@@ -74,7 +80,7 @@ export function readFocusTrace(logs: any[]): FocusTraceState {
   const previousModel = turnModel || boundary < 0 ? undefined : readTraceModel(
     logs.slice(0, boundary).findLast(log => isMainTrace(log) && readTraceModel(log)),
   );
-  const state = { activityAt, status, turnModel, previousModel } satisfies FocusTraceState;
+  const state = { activityAt, status, question: status === 'input' ? question : undefined, turnModel, previousModel } satisfies FocusTraceState;
   traceCache.set(logs, state);
   return state;
 }

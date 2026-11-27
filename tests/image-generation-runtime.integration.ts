@@ -11,6 +11,8 @@ import {
 import { IMAGE_PROVIDER_IDS } from '../src/lib/image/image-generation-config';
 
 const originalFetch = globalThis.fetch;
+const originalAppUpdatesEnabled = process.env.ETERX_APP_UPDATES_ENABLED;
+process.env.ETERX_APP_UPDATES_ENABLED = 'false';
 const onePixelPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
 async function run() {
@@ -130,6 +132,8 @@ async function run() {
     console.log('Image generation runtime integration checks passed.');
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalAppUpdatesEnabled === undefined) delete process.env.ETERX_APP_UPDATES_ENABLED;
+    else process.env.ETERX_APP_UPDATES_ENABLED = originalAppUpdatesEnabled;
     await fs.rm(directory, { recursive: true, force: true });
   }
 }

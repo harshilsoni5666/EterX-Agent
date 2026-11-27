@@ -7,6 +7,10 @@ import { getEterxWorkspaceDir } from '../storage-paths';
 import { stableScopeSegment } from '../context-scope';
 import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel } from '../model-routing';
 import { isModelProvider } from '../model-selector-store';
+import { isNativeProvider, isNativeSessionProvider } from '../../native-provider-contract';
+import { nativeProviderOffersModel } from '../native-provider/accounts';
+import { antigravityOffersModel } from '../antigravity/provider';
+import { runWithSubscriptionAccount } from '../native-provider/turn';
 import { MAX_SUB_AGENTS } from '../sub-agent-settings';
 import { assessDelegatedAgent, type DelegatedAgentEvidence } from '../delegation-evidence';
 import { getSearchRouteBrief } from '../../search/search-runtime';
@@ -17,7 +21,7 @@ import { rebaseContextCompactionWindow } from '../model-context-window';
 import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../swarm-coordinator';
 import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from '../sub-agent-model-guidance';
 import { PREFERRED_SUB_AGENT_NAME_LENGTH, SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
-import { withTelemetryScope } from '../../telemetry/runtime';
+import { publicTelemetryModel, recordTelemetry, updateTelemetryTurn, withTelemetryScope } from '../../telemetry/runtime';
 
 type SubAgentRuntimeState = {
   cancelFlags: Map<string, boolean>;
@@ -129,6 +133,32 @@ export type SubAgentTaskSpec = SwarmContract & {
 };
 type SubAgentWorkerOptions = Pick<SubAgentTaskSpec, 'mode' | 'provider' | 'model' | 'thinkingLevel' | 'resources'>;
 
+function recordWorkerTerminal(context: ProjectContext, details: {
+  id: string; attempt: number; depth: number; status: 'completed' | 'failed' | 'cancelled' | 'closed';
+  provider?: string; model?: string; startedAt?: number; background?: boolean; continuation?: boolean; targetChosen?: boolean;
+}) {
+  const caller = context as ProjectContext & { selectedModelProvider?: string; selectedModelName?: string; permissionMode?: string };
+  const durationMs = details.startedAt === undefined ? undefined : Math.round(performance.now() - details.startedAt);
+  recordTelemetry('mcp.delegated_task.finished', {
+    status: details.status, subagent: true, tool: 'spawn_sub_agent',
+    childKind: details.continuation ? 'continuation' : 'subagent',
+    callerOrigin: details.continuation ? 'user' : 'agent', callerDepth: Math.max(0, details.depth - 1),
+    callerProvider: caller.selectedModelProvider, callerModel: caller.selectedModelName,
+    targetProvider: details.provider, targetModel: details.model, targetInteractionMode: 'agent',
+    targetRuntimeMode: caller.permissionMode, targetChosen: details.targetChosen,
+    crossProvider: caller.selectedModelProvider && details.provider ? caller.selectedModelProvider !== details.provider : undefined,
+    mode: details.background ? 'async' : details.continuation ? 'direct' : undefined,
+    completionWake: details.background ? 'notify' : undefined,
+    delivery: details.background ? 'background' : details.continuation ? 'direct' : 'foreground',
+    bindToCurrentThread: false,
+  }, {
+    key: JSON.stringify([context.projectId, details.id, details.attempt]),
+    dimensions: { role: 'child', mode: 'agent', provider: details.provider,
+      model: publicTelemetryModel(details.provider, details.model), feature: 'delegation' },
+    measurements: durationMs === undefined ? undefined : { durationMs, durationReports: 1 },
+  });
+}
+
 function resolveSubAgentModel(context: ProjectContext, override?: Omit<SubAgentTaskSpec, 'task' | 'name'>): {
   provider: MainAgentProvider; model: string; mode: MainAgentMode;
 } {
@@ -140,6 +170,9 @@ function resolveSubAgentModel(context: ProjectContext, override?: Omit<SubAgentT
     : getMainAgentModelConfig(provider === 'gemini' ? 'fast' : provider, runtime.runtimeSettings);
   const model = String(override?.model || (provider === inheritedProvider ? runtime.selectedModelName : '') || providerConfig.modelName || '').trim();
   if (!model) throw new Error(`No model is selected for the ${provider} worker. Inherit the parent's selected model or supply provider and model together.`);
+  if ((provider === 'antigravity' && !antigravityOffersModel(model)) || (isNativeProvider(provider) && !nativeProviderOffersModel(provider, model))) {
+    throw new Error('The worker model ' + provider + '/' + model + ' is unavailable. Select a model from a connected account.');
+  }
   const requestedMode = override?.mode || runtime.selectedModelMode;
   const mode: MainAgentMode = provider === 'gemini' ? requestedMode === 'think' ? 'think' : 'fast' : provider;
   return { provider, model, mode };
@@ -1211,7 +1244,10 @@ export class SubAgentSpawner {
     customName?: SubAgentName,
     modelOverride?: Omit<SubAgentTaskSpec, 'task' | 'name'>,
     customAgentId?: string,
+    telemetryOptions?: { directContinuation?: boolean; targetChosen?: boolean },
   ): Promise<{ agentId: string, name: SubAgentName, result: string, success: boolean, durationMs: number, traceLog: string[] }> {
+    const directContinuation = telemetryOptions?.directContinuation === true;
+    const targetChosen = telemetryOptions?.targetChosen ?? Boolean(modelOverride?.provider || modelOverride?.mode);
     const modelSelection = resolveSubAgentModel(context, modelOverride);
     modelOverride = { ...modelOverride, ...modelSelection };
     const name = customName || this.resolveAgentName(context.projectId, task);
@@ -1225,6 +1261,13 @@ export class SubAgentSpawner {
       parentAgentName: node?.parentAgentName || (context as any).agentName || 'Main',
       depth: node?.depth || Number(context.agentDepth || 0) + 1,
     };
+    const telemetryStartedAt = performance.now();
+    const attempt = node?.attempt ?? 0;
+    const finishTelemetry = (status: 'completed' | 'failed' | 'cancelled' | 'closed') => recordWorkerTerminal(context, {
+      id: agentId, attempt, depth: lineage.depth, status,
+      provider: modelSelection.provider, model: modelSelection.model, startedAt: telemetryStartedAt,
+      background: Boolean(node && !directContinuation), continuation: directContinuation, targetChosen,
+    });
     const rootOnTrace = (context as any)._rootOnTrace || onTrace;
     const emitTrace = onTrace;
     onTrace = emitTrace ? (event) => {
@@ -1234,15 +1277,18 @@ export class SubAgentSpawner {
     this.executionOwners ||= new Set();
     if (this.executionOwners.has(agentId)) throw new Error('This worker already owns an execution. Wait for it to settle before continuing.');
     this.executionOwners.add(agentId);
+    updateTelemetryTurn({ hasSubagents: true }, directContinuation ? { continuations: 1 } : {});
     let reserved: boolean;
     try {
       reserved = await this.reserveSlotWhenAvailable(context.projectId, name, agentId, context, modelOverride);
     } catch (error) {
       this.executionOwners.delete(agentId);
+      finishTelemetry('failed');
       throw error;
     }
     if (!reserved) {
       this.executionOwners.delete(agentId);
+      finishTelemetry('cancelled');
       return {
         agentId,
         name,
@@ -1254,6 +1300,7 @@ export class SubAgentSpawner {
     }
     const reservation = this.slotReservations.get(agentId)!;
     const abortController = new AbortController();
+    let telemetryStatus: 'completed' | 'failed' | 'cancelled' | 'closed' = 'failed';
     const parentAbortSignal = (context as any).abortSignal as AbortSignal | undefined;
     const abortFromParent = () => {
       if (!abortController.signal.aborted) {
@@ -1262,6 +1309,7 @@ export class SubAgentSpawner {
     };
     try {
       if (isCancelled(context.projectId, name, agentId) || parentAbortSignal?.aborted || swarmCoordinator.isTerminal(agentId)) {
+        telemetryStatus = 'cancelled';
         return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
       }
       // Register agents in inter-agent mailbox
@@ -1387,6 +1435,7 @@ export class SubAgentSpawner {
         } as ProjectContext, parentContext, onTrace,
       };
       this.activeAgents.set(agentId, instance);
+      updateTelemetryTurn({}, { nativeChildTurns: 1 });
       const stopExecution = () => {
         instance.status = isAgentClosed(context.projectId, name, agentId) ? 'closed' : 'cancelled';
         // Individual Close already applied the user's click cutoff. Other
@@ -1448,7 +1497,7 @@ export class SubAgentSpawner {
         const subAgentClient = createIsolatedClient(lease?.apiKey || '', modelSelection.mode, (context as any).runtimeSettings);
         instance.setLeasedKey = apiKey => subAgentClient.setLeasedKey(apiKey);
 
-        const result = await withTelemetryScope({ role: 'child', effort: subAgentContext.selectedThinkingLevel }, () => subAgentClient.executeMessageLoop(
+        const execute = () => subAgentClient.executeMessageLoop(
           subAgentContext,
           deepBrief,
           [],
@@ -1515,7 +1564,15 @@ export class SubAgentSpawner {
               });
             }
           }
-        ));
+        );
+        const result = await withTelemetryScope({
+          role: 'child', provider: modelSelection.provider,
+          model: publicTelemetryModel(modelSelection.provider, modelSelection.model), effort: subAgentContext.selectedThinkingLevel,
+        }, () => isNativeSessionProvider(modelSelection.provider)
+          ? runWithSubscriptionAccount(modelSelection.provider, modelSelection.model, execute) : execute(), {
+          subagent: true, childKind: directContinuation ? 'continuation' : 'subagent', callerDepth: lineage.depth,
+          createdBy: directContinuation ? 'user' : 'agent', creationSource: 'agent',
+        });
 
         const unfinishedChildren = swarmCoordinator.descendants(agentId).filter(child => !swarmCoordinator.isTerminal(child.id));
         if (unfinishedChildren.length && !abortController.signal.aborted) {
@@ -1786,6 +1843,9 @@ export class SubAgentSpawner {
 
         return { agentId, name, result: instance.result!, success: false, durationMs, traceLog };
       } finally {
+        if (instance.status === 'completed' || instance.status === 'cancelled' || instance.status === 'closed') {
+          telemetryStatus = instance.status;
+        }
         parentAbortSignal?.removeEventListener('abort', abortFromParent);
         abortController.signal.removeEventListener('abort', stopExecution);
         const completedControlKey = agentKey(context.projectId, name, agentId);
@@ -1820,6 +1880,7 @@ export class SubAgentSpawner {
         }
       }
     } finally {
+      finishTelemetry(telemetryStatus);
       // Covers startup failures before the provider loop's own cleanup exists.
       // Identity guards keep an old run from releasing a new continuation.
       parentAbortSignal?.removeEventListener('abort', abortFromParent);
@@ -1917,11 +1978,16 @@ export class SubAgentSpawner {
       const plan = agentPlans[index];
       const runKey = `${ context.projectId }:${ plan.agentId }`;
       const attempt = nodes[index].attempt;
+      const targetChosen = Boolean(tasks[index].provider || tasks[index].mode);
 
       const publishFailure = async (reason: string, stopped: boolean) => {
         if (swarmCoordinator.get(plan.agentId)?.attempt !== attempt) return;
         const status = stopped ? 'cancelled' as const : 'failed' as const;
         swarmCoordinator.settle(plan.agentId, status, reason);
+        recordWorkerTerminal(context, {
+          id: plan.agentId, attempt, depth: nodes[index].depth, status, provider: t.provider, model: t.model,
+          background: true, targetChosen,
+        });
         const ownership = { ...resolveFeedOwnership(context, plan.subAgentChatId), ...lineage(index) };
         interAgentMailbox.updateAgentPresence(context.projectId, name, { status, task: t.task, progress: reason, ...ownership });
         if (!pendingResults.has(runKey)) {
@@ -1956,7 +2022,7 @@ export class SubAgentSpawner {
           await publishFailure('Cancelled before execution', true);
           return;
         }
-        const outcome = await this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t, plan.agentId);
+        const outcome = await this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t, plan.agentId, { targetChosen });
         if (!outcome.success && !pendingResults.has(runKey)) {
           await publishFailure(outcome.result, isCancelled(context.projectId) || (context as any).abortSignal?.aborted || swarmCoordinator.get(plan.agentId)?.state === 'cancelled');
         }
@@ -2267,6 +2333,7 @@ export class SubAgentSpawner {
         previous.name,
         modelOverride,
         previous.id,
+        { directContinuation: true, targetChosen: Boolean(requestedProvider || nextMessage.requestedMode) },
       );
     })().catch((error) => {
       continuationStopped = isCancelled(previous.projectId) || isAgentClosed(previous.projectId, previous.name, previous.id);

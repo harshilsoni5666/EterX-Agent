@@ -32,6 +32,8 @@ import { formatUnknownError } from '../../lib/agent/error-format';
 import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
 import { FilePanelOwner } from '../../contexts/FilePanelContext';
 import { TurnChangesCard } from './turn-changes';
+import { WorkbenchChatContext } from './workbench-chat-action';
+import { isWorkbenchTrace } from '../../lib/workbench/activity-trace';
 import { reconcileModelUsageLogs, summarizeModelUsage } from '../../lib/model-usage';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { useActivityScrollHandoff } from './use-activity-scroll-handoff';
@@ -51,6 +53,7 @@ interface ChatFeedProps {
   showScrollBottom: boolean;
   isCompressed?: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
+  onOpenWorkbenchSettings?: (tab: 'connections' | 'computer') => void;
   subAgentAssetIndexes?: Record<string, number>;
   isFeedActivityPaused?: boolean;
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
@@ -1868,7 +1871,8 @@ const ThoughtSequence = ({
   };
 
   const isOpen = open;
-  const hasRealActions = stepCount > 0 && turnLogs.some(isMainStreamActionLog);
+  const hasWorkbenchActions = turnLogs.some(isWorkbenchTrace);
+  const hasRealActions = stepCount > 0 && turnLogs.some(log => !isWorkbenchTrace(log) && isMainStreamActionLog(log));
   const showTimeline = isOpen || !hasRealActions;
   const visibleWorkLogs = showThinkingInContainer ? turnLogs : turnLogs.filter(log => log?.type !== 'thought_stream');
   const hasNarrativeWork = hasVisibleNarrative(visibleWorkLogs);
@@ -1907,8 +1911,8 @@ const ThoughtSequence = ({
         </div>
       )}
 
-      {showTimeline && (
-        <div hidden={!showTimeline} className="overflow-hidden">
+      {(showTimeline || hasWorkbenchActions) && (
+        <div className="overflow-hidden">
           <ThinkingProcess
             logs={logs}
             liveLogs={liveLogs}
@@ -1922,6 +1926,7 @@ const ThoughtSequence = ({
             isAgentBuilder={isAgentBuilder}
             onEditUserMessage={onEditUserMessage}
             renderContextCompaction={renderFeedContextCompaction}
+            workbenchOnly={!showTimeline}
           />
         </div>
       )}
@@ -3670,5 +3675,8 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
 });
 
 export const ChatFeed = React.memo(function ChatFeed(props: ChatFeedProps) {
-  return <FilePanelOwner value={props.workspaceOwner || props.chatId || undefined}><ChatFeedContent {...props} /></FilePanelOwner>;
+  const workbench = useMemo(() => ({ chatId: props.chatId, openSettings: props.onOpenWorkbenchSettings }), [props.chatId, props.onOpenWorkbenchSettings]);
+  return <FilePanelOwner value={props.workspaceOwner || props.chatId || undefined}>
+    <WorkbenchChatContext.Provider value={workbench}><ChatFeedContent {...props} /></WorkbenchChatContext.Provider>
+  </FilePanelOwner>;
 });

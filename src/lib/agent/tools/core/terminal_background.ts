@@ -15,6 +15,8 @@ import { buildTerminalShellInvocation } from './shell_resolver';
 import { getEterxWorkspaceDir } from '../../storage-paths';
 import { managedWorkspaces } from '../../workspace/managed';
 import { resolveTerminalOutputKind, terminalOutputPageChars, type TerminalOutputKind } from '../../source-read-policy';
+import { updateTelemetryTurn } from '../../../telemetry/runtime';
+import { notifyWorkbench, terminalWorkbenchUrls } from '../../../workbench/events';
 
 type TerminalTaskStatus = 'running' | 'completed' | 'failed' | 'killed';
 
@@ -74,6 +76,8 @@ export interface TerminalBackgroundTask {
   droppedOutputChars: number;
   maxOutputChars: number;
   outputKind?: TerminalOutputKind;
+  previewUrls?: string[];
+  previewLines?: Partial<Record<'stdout' | 'stderr', string>>;
   checkInMs: number;
   hardTimeoutMs?: number;
   handedOff: boolean;
@@ -255,6 +259,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   };
 
   terminalTasks.set(id, task);
+  notifyWorkbench(task.ownerChatId);
   persistTaskStatus(task).catch(() => undefined);
 
   let invocation: ReturnType<typeof buildTerminalShellInvocation>;
@@ -303,6 +308,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
 
   task.process = child;
   task.pid = child.pid || undefined;
+  child.once('spawn', () => updateTelemetryTurn({ localCommand: true }));
   // Lease metadata failure must not abandon an already spawned process before
   // its error/output listeners are installed. The parent lease remains held.
   try { releaseWorkspace.setProcess?.(child.pid); } catch { /* Keep the live parent lease. */ }
@@ -615,6 +621,7 @@ function refreshTerminalHistory(): void {
             command: status.command, program: status.program, args: status.args, pid: status.pid, cwd: status.cwd,
             exitCode: status.exitCode ?? null, startedAt: status.startedAt,
             completedAt: status.completedAt, background: status.background === true,
+            outputKind: status.outputKind, previewUrls: status.previewUrls,
           });
         } catch { /* Ignore incomplete or removed records. */ }
       }
@@ -666,6 +673,14 @@ export function getLiveTerminalTaskContext(ownerChatId: string): any[] {
       status: task.status, exitCode: task.exitCode, totalOutputChars: task.totalOutputChars,
       background: task.background === true,
     }));
+}
+
+export function countRunningTerminalTasks(chatId: string) {
+  let count = 0;
+  for (const task of terminalTasks.values()) {
+    if (task.ownerChatId === chatId && task.status === 'running') count++;
+  }
+  return count;
 }
 
 export interface TerminalTaskReadRequest {
@@ -789,6 +804,21 @@ function appendTaskOutput(task: TerminalBackgroundTask, stream: 'stdout' | 'stde
   task.lastActivityAt = Date.now();
   task.totalOutputChars += text.length;
   task.pendingTraceOutput = (task.pendingTraceOutput + text).slice(-MAX_LIVE_TRACE_CHARS);
+  if (task.outputKind !== 'read') {
+    task.previewLines ??= {};
+    const combined = (task.previewLines[stream] || '') + text;
+    const boundary = Math.max(combined.lastIndexOf('\n'), combined.lastIndexOf('\r'));
+    task.previewLines[stream] = combined.slice(boundary + 1).slice(-2048);
+    if (boundary >= 0 && /https?:/i.test(combined)) {
+      const urls = terminalWorkbenchUrls(combined.slice(Math.max(0, boundary - 8192), boundary));
+      const previous = task.previewUrls || [];
+      const discovered = urls.filter(url => !previous.includes(url));
+      if (discovered.length) {
+        task.previewUrls = [...previous, ...discovered].slice(-8);
+        notifyWorkbench(task.ownerChatId);
+      }
+    }
+  }
   // Disk is the exact archive. Neither a read nor an explicit retention hint
   // grants an unbounded heap buffer, trace payload, or provider response.
   const outputLimit = terminalOutputPageChars(task.maxOutputChars);
@@ -1062,6 +1092,8 @@ function compactTask(task: TerminalBackgroundTask): any {
     id: task.id,
     terminalTask: true,
     background: task.background === true,
+    outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
+    previewUrls: task.previewUrls,
     status: task.status,
     description: task.description,
     command: task.command,
@@ -1179,6 +1211,7 @@ function clearTaskTimers(task: TerminalBackgroundTask) {
 
 async function persistTaskStatus(task: TerminalBackgroundTask) {
   terminalHistory.tasks.set(task.id, { ...compactTask(task), ownerChatId: task.ownerChatId });
+  notifyWorkbench(task.ownerChatId);
   task.statusWrite = (task.statusWrite || Promise.resolve())
     .catch(() => undefined)
     .then(async () => {
@@ -1225,6 +1258,7 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     totalOutputChars: task.totalOutputChars,
     maxOutputChars: task.maxOutputChars,
     outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
+    previewUrls: task.previewUrls,
     checkInMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
     handedOff: task.handedOff,

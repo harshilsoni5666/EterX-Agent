@@ -21,13 +21,50 @@ async function deliver() {
   } finally { sending = false; }
 }
 
-/** Native realtime connections run in the renderer. Keep pending acknowledgements across a window restart. */
-export function recordLiveUsage(provider: string, model: string, usage: unknown, id: string = crypto.randomUUID()) {
-  const key = prefix + provider + ':' + id;
-  const body = JSON.stringify({ provider, model, usage: usage || {}, id, at: Date.now() });
+function queueReceipt(key: string, values: Record<string, unknown>) {
+  const body = JSON.stringify(values);
   pending.set(key, body);
-  appStorage.setItem(key, body);
+  try { appStorage.setItem(key, body); } catch { /* Receipt delivery still has the current entry. */ }
   void deliver();
+}
+
+type LiveUsageOutcome = 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+
+/** Native realtime connections run in the renderer. Keep pending acknowledgements across a window restart. */
+export function recordLiveUsage(
+  provider: string, model: string, usage: unknown, id: string = crypto.randomUUID(), outcome: LiveUsageOutcome = 'succeeded',
+) {
+  queueReceipt(prefix + provider + ':' + id, { provider, model, usage: usage || {}, id, at: Date.now(), outcome });
+}
+
+function liveTelemetryEnabled() {
+  try { return JSON.parse(appStorage.getItem('eterx_settings') || '{}').telemetry === true; }
+  catch { return false; }
+}
+
+export function createLiveSessionTelemetry(provider: string) {
+  let current: { id: string; model: string; started: number; resumes: number } | undefined;
+  return {
+    started(model: string, resumed = false) {
+      if (current) {
+        if (resumed) current.resumes++;
+        return;
+      }
+      if (!liveTelemetryEnabled()) return;
+      const id = crypto.randomUUID();
+      current = { id, model, started: performance.now(), resumes: 0 };
+      queueReceipt(prefix + id + ':start', { kind: 'session_started', provider, model, id, at: Date.now(), resumed });
+    },
+    stopped(status: 'closed' | 'failed') {
+      const session = current;
+      current = undefined;
+      if (!session || !liveTelemetryEnabled()) return;
+      queueReceipt(prefix + session.id + ':stop', {
+        kind: 'session_stopped', provider, model: session.model, id: session.id, at: Date.now(), status,
+        durationMs: Math.round(performance.now() - session.started), resumes: session.resumes,
+      });
+    },
+  };
 }
 
 if (typeof window !== 'undefined') {

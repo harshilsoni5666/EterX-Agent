@@ -1,5 +1,7 @@
 import { apiKeyPool } from './api-key-pool';
 import { DEFAULT_API_RETRIES, normalizeApiRetries } from './api-retry';
+import type { SubscriptionProvider } from './model-selector-store';
+import { isNativeSessionProvider, NATIVE_PROVIDERS } from '../native-provider-contract';
 
 export type RuntimeApiKeyProvider =
   | 'gemini'
@@ -42,7 +44,7 @@ export type RuntimeApiKeyProvider =
   | 'github';
 
 export type RuntimeApiKeyPayload = Partial<Record<RuntimeApiKeyProvider, string | string[]>>;
-export type RuntimeModelProvider = Exclude<RuntimeApiKeyProvider, 'tavily' | 'github'> | 'codex';
+export type RuntimeModelProvider = Exclude<RuntimeApiKeyProvider, 'tavily' | 'github'> | SubscriptionProvider;
 export type RuntimeModelOverridePayload = Partial<Record<RuntimeModelProvider, string>>;
 
 export type RuntimeApiKeyProviderStatus = {
@@ -141,6 +143,8 @@ const runtimeApiKeyCursor: Record<RuntimeApiKeyProvider, number> =
 const MODEL_PROVIDERS: RuntimeModelProvider[] = [
   ...PROVIDERS.filter(provider => provider !== 'tavily' && provider !== 'github'),
   'codex',
+  'antigravity',
+  ...NATIVE_PROVIDERS,
 ];
 
 const runtimeModelOverrides: Record<RuntimeModelProvider, string> =
@@ -401,14 +405,14 @@ export function buildScopedRuntimeSettings(): ScopedRuntimeSettings {
   };
 }
 
-export function getScopedRuntimeApiKeyValues(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider | 'codex'): string[] {
-  if (provider === 'codex') return [];
+export function getScopedRuntimeApiKeyValues(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider | SubscriptionProvider): string[] {
+  if (provider === 'codex' || isNativeSessionProvider(provider)) return [];
   const scoped = settings?.apiKeys?.[provider] || [];
   return scoped.length > 0 ? [...scoped] : getRuntimeApiKeyValues(provider);
 }
 
-export function getScopedRuntimeApiKey(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider | 'codex'): string {
-  if (provider === 'codex') return '';
+export function getScopedRuntimeApiKey(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider | SubscriptionProvider): string {
+  if (provider === 'codex' || isNativeSessionProvider(provider)) return '';
   const scoped = settings?.apiKeys?.[provider] || [];
   return scoped[0] || getRuntimeApiKey(provider);
 }

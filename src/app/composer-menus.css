@@ -585,6 +585,19 @@
   --provider-icon-neutral: currentColor;
 }
 
+:root[data-theme="light"] .eterx-openai-api-icon-shell {
+  border-radius: 50%;
+  background: #292929;
+}
+
+.eterx-model-fast-indicator {
+  color: #edb55e;
+}
+
+:root[data-theme="light"] .eterx-model-fast-indicator {
+  color: #875500;
+}
+
 :root .eterx-composer-shell .eterx-agent-popout button:not(:disabled):is(:hover, [aria-pressed="true"]) {
   background: var(--composer-menu-active) !important;
 }

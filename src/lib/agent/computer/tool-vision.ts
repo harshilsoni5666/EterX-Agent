@@ -16,7 +16,7 @@ export function splitComputerToolResult(toolName: string, value: any): {
   output: any;
   image?: { data: string; mimeType: 'image/png' | 'image/jpeg' };
 } {
-  if (!desktopTools.has(toolName) || !value || typeof value !== 'object') return { output: value };
+  if ((!desktopTools.has(toolName) && toolName !== 'workspace_workbench') || !value || typeof value !== 'object') return { output: value };
   const { vision, _visionParts, ...output } = value;
   const data = vision?.inlineData?.data;
   const mimeType = vision?.inlineData?.mimeType;

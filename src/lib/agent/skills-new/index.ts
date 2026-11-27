@@ -30,7 +30,7 @@ function compactSkillRoutingDescription(description: string, fallback: string): 
   return `${normalized.slice(0, 117).replace(/\s+\S*$/, '').trim()}...`;
 }
 
-const buildPathwaysPrompt = (workspace?: string) => [
+const buildPathwaysPrompt = (workspace?: string, declaredTools?: ReadonlySet<string>) => [
   'SKILL PATHWAYS',
   'Skills are optional, specialized operating playbooks—not a startup checklist.',
   'Do not load any skill at the beginning of a task merely because it might be useful. First understand the current request and use the normal workflow for answers, coding, inspection, debugging, and other ordinary work.',
@@ -39,7 +39,12 @@ const buildPathwaysPrompt = (workspace?: string) => [
   'Do not reload a skill during the same task. A later user request is a new routing decision and may legitimately load it again.',
   '',
   'Available skill pathways:',
-  ...SKILL_CATALOG.filter(skill => matchesImportWorkspace(String(SKILL_REGISTRY[skill.id]?.metadata?.workspace || '') || undefined, workspace))
+  ...SKILL_CATALOG.filter(skill => {
+    const metadata = SKILL_REGISTRY[skill.id]?.metadata;
+    const requiredTool = String(metadata?.requires_tool || '');
+    return matchesImportWorkspace(String(metadata?.workspace || '') || undefined, workspace)
+      && (!declaredTools || !requiredTool || declaredTools.has(requiredTool));
+  })
     .map(skill => `- ${skill.id}: ${compactSkillRoutingDescription(skill.description, skill.name)}`),
 ].join('\n');
 
@@ -58,9 +63,9 @@ export function refreshSkillRegistry(force = false): void {
   SKILL_PATHWAYS_PROMPT = buildPathwaysPrompt();
 }
 
-export function getSkillPathwaysPrompt(workspace?: string): string {
+export function getSkillPathwaysPrompt(workspace?: string, declaredTools?: ReadonlySet<string>): string {
   refreshSkillRegistry();
-  return buildPathwaysPrompt(workspace);
+  return buildPathwaysPrompt(workspace, declaredTools);
 }
 
 console.log(`[Skills] Loaded ${loadedSkills.length} isolated local skills`);

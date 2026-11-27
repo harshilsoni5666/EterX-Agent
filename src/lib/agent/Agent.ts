@@ -1,6 +1,7 @@
 import { planModeForContext, planningDeclarations, PLAN_MODE_INSTRUCTION, AUTO_MODE_INSTRUCTION } from './plan-mode';
 import { beginRequestedImplementation, retireOpenPlan } from './tools/core/plan-persistence';
 import { desktopTraceOutcome, splitComputerToolResult } from './computer/tool-vision';
+import { workbenchTraceArgs, workbenchTraceResult } from '../workbench/activity-trace';
 import { randomUUID as desktopRunUUID } from 'crypto';
 import { isRuntimeSwarmMode } from './swarm-mode';
 import { swarmCoordinator, SWARM_LIMITS, SWARM_MODE_INSTRUCTION } from './swarm-coordinator';
@@ -165,7 +166,11 @@ import { mergeStreamingText } from '../streaming-lifecycle';
 import { getAgentConversationScope } from './context-scope';
 import { createProviderChatStream } from './provider-stream-adapter';
 import { meterModelResponse, meterModelStream, recordModelFailure } from '../usage/ledger';
+import { recordProviderDispatch, updateTelemetryTurn } from '../telemetry/runtime';
+import { providerAvailabilitySignal } from '../app-presentation/posthog';
 import { createCodexSubscriptionClient } from './codex-subscription-runtime';
+import { runNativeProviderAgent } from './native-provider/turn';
+import { isNativeSessionProvider } from '../native-provider-contract';
 import { waitForSubscriptionHandoff } from './subscription-handoff';
 import { withFastRequestTags } from './model-fast-mode';
 import { formatUnknownError } from './error-format';
@@ -1423,6 +1428,7 @@ export class GeminiAgentClient {
     onTrace?: (t: any) => void,
   ): void {
       if (messages.length === 0) return;
+      updateTelemetryTurn({}, { continuations: 1 });
       const registry = (globalThis as any).__eterxAgentRegistry;
       const timestamp = Date.now();
       const humanMessages = messages.filter(item => item.metadata?._autonomyProxy !== true);
@@ -2317,6 +2323,7 @@ ${ message.text }
       web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
       workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
       browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'browser', argKey: 'action' },
+      workspace_workbench: { text: 'Using workbench', type: 'exploration', iconCategory: 'computer', argKey: 'action' },
       get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'skill', argKey: 'skill_name' },
       spawn_sub_agent: { text: 'Managing agent work', type: 'exploration', iconCategory: 'agent', argKey: 'mode' },
       task_decomposer: { text: 'Preparing plan', type: 'task_plan', iconCategory: 'plan', argKey: 'complexTask' },
@@ -2491,7 +2498,8 @@ ${ message.text }
       const settledEvent = {
         ...publishedActionEvent,
         ...desktopTraceOutcome(canonicalToolName, output),
-        toolArgs: effectiveArgs,
+        ...(canonicalToolName === 'workspace_workbench' && { result: workbenchTraceResult(output) }),
+        toolArgs: canonicalToolName === 'workspace_workbench' ? workbenchTraceArgs(effectiveArgs) : effectiveArgs,
         status: cancelled ? 'stopped' : failed ? 'failed' : 'completed',
         isLive: false,
         isStreaming: false,
@@ -2564,7 +2572,7 @@ ${ message.text }
       filename: admittedTraceFields.filename || evt.filename,
       files: admittedTraceFields.files,
       fileCount: admittedTraceFields.fileCount,
-      toolArgs: effectiveArgs,
+      toolArgs: canonicalToolName === 'workspace_workbench' ? workbenchTraceArgs(effectiveArgs) : effectiveArgs,
     };
 
     // Plan tools publish their own tracker-backed lifecycle (generating ->
@@ -2622,11 +2630,12 @@ ${ message.text }
 
       // --- Emit tool_result_preview event for all other tools ---
       const EXCLUDED_PREVIEW_TOOLS = new Set([
-        'skill_loader', 'screenshot_capture',
+        'skill_loader', 'screenshot_capture', 'workspace_workbench',
         'browser_control', 'checkpoint', 'computer', 'screen_agent',
         'task_decomposer', 'task_checkpoint'
       ]);
-      if (output !== undefined && output !== null && !EXCLUDED_PREVIEW_TOOLS.has(canonicalToolName)) {
+      const workbenchSkill = canonicalToolName === 'get_skill_guidelines' && effectiveArgs?.skill_name === 'development_workbench';
+      if (output !== undefined && output !== null && !workbenchSkill && !EXCLUDED_PREVIEW_TOOLS.has(canonicalToolName)) {
         if (!['workspace_edit_file', 'workspace_run_command'].includes(canonicalToolName)) {
           const resultEvt = {
             type: 'tool_result_preview',
@@ -5284,12 +5293,14 @@ ${ message.text }
       // buildUniversalPromptParts, after this common base.
       basePrompt = this.generateCacheableSystemPrompt(context);
     }
-    const hasSkillLoader = this.buildFunctionDeclarations(isAgentBuilderRuntimeContext(context), context)
-      .some(tool => tool.name === 'get_skill_guidelines');
+    const declaredTools = new Set(this.buildFunctionDeclarations(isAgentBuilderRuntimeContext(context), context).map(tool => tool.name));
+    const skillPathways = declaredTools.has('get_skill_guidelines')
+      ? '\n\n' + getSkillPathwaysPrompt((context as any).workspacePath || (context as any).workspaceRoot, declaredTools)
+      : '';
     if (isCodingAgentProfile((context as any).agentProfile) && !(context as any).isUserProxy) {
-      return `${basePrompt}${hasSkillLoader ? `\n\n${getSkillPathwaysPrompt((context as any).workspacePath)}` : ''}`;
+      return basePrompt + skillPathways;
     }
-    return `${basePrompt}\n\n${CONTEXT_CONTINUITY_OPERATING_POLICY}${hasSkillLoader ? `\n\n${getSkillPathwaysPrompt((context as any).workspacePath)}` : ''}`;
+    return basePrompt + '\n\n' + CONTEXT_CONTINUITY_OPERATING_POLICY + skillPathways;
   }
 
   private buildUniversalPromptParts(
@@ -5616,6 +5627,10 @@ OUTPUT CONTRACT
       }
     };
 
+    if (isNativeSessionProvider(this.activeProvider)) {
+      return settleMainProviderRun(runNativeProviderAgent(this.activeProvider, context, activeModelName, message, preparedHistory, mediaFiles, onTrace));
+    }
+
     if (this.activeProvider === 'anthropic') {
       return settleMainProviderRun(this.runAnthropicReActLoop(context, message, preparedHistory, onTrace, mediaFiles));
     }
@@ -5866,7 +5881,7 @@ OUTPUT CONTRACT
     // The edit tool is side-effecting, and terminal reads/checks may
     // legitimately repeat after the workspace changes.
     // ask_user: always needs fresh interaction
-    const neverDedupTools = ['workspace_edit_file', 'workspace_run_command', 'ask_user', 'task_decomposer', 'task_checkpoint', 'browser_control', 'spawn_sub_agent', 'scheduled_tasks', 'wait_timer'];
+    const neverDedupTools = ['workspace_edit_file', 'workspace_run_command', 'workspace_workbench', 'ask_user', 'task_decomposer', 'task_checkpoint', 'browser_control', 'spawn_sub_agent', 'scheduled_tasks', 'wait_timer'];
     const dedupToolName = normalizedSig.split(':')[0];
     if (neverDedupTools.includes(dedupToolName)) return false;
 
@@ -7222,12 +7237,14 @@ OUTPUT CONTRACT
               ? (attemptConfig as any).tools.length
               : 0,
           });
+          const providerSignal = await providerAvailabilitySignal('gemini', attemptAbortController.signal);
           connectionStartedAt = performance.now();
+          recordProviderDispatch('gemini', currentModel);
           stream = await Promise.race([
             this.ai.models.generateContentStream({
               model: currentModel,
               contents,
-              config: attemptConfig,
+              config: { ...attemptConfig, abortSignal: providerSignal },
             }),
             _connectionGuard,
           ]);
@@ -7412,7 +7429,7 @@ OUTPUT CONTRACT
       let geminiPromptFeedback: any = null;
 
       const streamIterator = meterModelStream('gemini', currentModel, stream, 'gemini', undefined, {
-        startedAt: streamStartedAt, signal: activeStreamAbortController?.signal,
+        startedAt: streamStartedAt, signal: activeStreamAbortController?.signal, dispatched: true,
       })[Symbol.asyncIterator]();
       try {
         while (true) {
@@ -7829,6 +7846,7 @@ OUTPUT CONTRACT
         channel_agent: { text: 'Using channel agent', type: 'communication', iconCategory: 'connector', argKey: 'action' },
         connector_mcp: { text: 'Using connected service', type: 'communication', iconCategory: 'connector', argKey: 'connector_id' },
         browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'browser', argKey: 'action' },
+        workspace_workbench: { text: 'Using workbench', type: 'exploration', iconCategory: 'computer', argKey: 'action' },
         // Next-Gen tools
         // Agent orchestration is never a shell command. Keeping it on the
         // exploration/action path prevents collect/status payloads from being
@@ -8150,7 +8168,7 @@ OUTPUT CONTRACT
           filename: admittedTraceFields.filename || evt.filename,
           files: admittedTraceFields.files,
           fileCount: admittedTraceFields.fileCount,
-          toolArgs: effectiveArgs,
+          toolArgs: canonicalToolName === 'workspace_workbench' ? workbenchTraceArgs(effectiveArgs) : effectiveArgs,
         };
 
         const toolEligible = !(
@@ -8191,7 +8209,8 @@ OUTPUT CONTRACT
           const settledEvent = {
             ...admittedActionEvent,
             ...desktopTraceOutcome(canonicalToolName, rawOutput),
-            toolArgs: effectiveArgs,
+            ...(canonicalToolName === 'workspace_workbench' && { result: workbenchTraceResult(rawOutput) }),
+            toolArgs: canonicalToolName === 'workspace_workbench' ? workbenchTraceArgs(effectiveArgs) : effectiveArgs,
             status: cancelled ? 'stopped' : failed ? 'failed' : 'completed',
             isLive: false,
             isStreaming: false,
@@ -8335,11 +8354,12 @@ OUTPUT CONTRACT
 
                 // --- Emit tool_result_preview event for all other tools ---
                 const EXCLUDED_PREVIEW_TOOLS = new Set([
-                  'skill_loader', 'screenshot_capture',
+                  'skill_loader', 'screenshot_capture', 'workspace_workbench',
                   'browser_control', 'checkpoint', 'computer', 'screen_agent',
                   'task_decomposer', 'task_checkpoint'
                 ]);
-                if (toolOutput !== undefined && toolOutput !== null && !EXCLUDED_PREVIEW_TOOLS.has(canonicalToolName)) {
+                const workbenchSkill = canonicalToolName === 'get_skill_guidelines' && effectiveArgs?.skill_name === 'development_workbench';
+                if (toolOutput !== undefined && toolOutput !== null && !workbenchSkill && !EXCLUDED_PREVIEW_TOOLS.has(canonicalToolName)) {
                   if (!['workspace_edit_file', 'workspace_run_command'].includes(canonicalToolName)) {
                     const resultEvt = {
                       type: 'tool_result_preview',

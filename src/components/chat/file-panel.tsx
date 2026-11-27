@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from 'react';
 import dynamic from 'next/dynamic';
 import { createPortal } from 'react-dom';
 import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
@@ -17,10 +17,11 @@ import { getPrimaryModifierLabel } from '../../lib/platform';
 import { decodeLocalFileHref, openLocalFilePath } from './local-file-link';
 import { isAppVisible } from '../../lib/app-visibility';
 import { createMonacoCodeTheme } from '../../lib/code-theme';
+import { DEFAULT_APPEARANCE, DIFF_PALETTE_OPTIONS, normalizeDiffPalette, type DiffPalette } from '../../lib/appearance-preferences';
 import { diffLineCounts, diffLineNumber, numberDiffLines } from '../../lib/diff-line-numbers';
 
-const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
-const DiffEditor = dynamic(
+const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
+const MonacoDiffEditor = dynamic(
   () => import('@monaco-editor/react').then(mod => mod.DiffEditor),
   { ssr: false },
 );
@@ -279,10 +280,40 @@ function readResolvedUiTheme(): ResolvedUiTheme {
   return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
 }
 
+const monacoThemeName = (theme: ResolvedUiTheme, palette: DiffPalette) => `eterx-${theme}-${palette}`;
+const registeredMonacoThemes = new WeakSet<object>();
+
 const configureEterxMonacoTheme = (monaco: any) => {
-  monaco.editor.defineTheme('eterx-light', createMonacoCodeTheme('light'));
-  monaco.editor.defineTheme('eterx-dark', createMonacoCodeTheme('dark'));
+  if (registeredMonacoThemes.has(monaco)) return;
+  for (const theme of ['light', 'dark'] as const) {
+    for (const { value } of DIFF_PALETTE_OPTIONS) {
+      monaco.editor.defineTheme(monacoThemeName(theme, value), createMonacoCodeTheme(theme, value));
+    }
+  }
+  registeredMonacoThemes.add(monaco);
 };
+
+const subscribeMonacoTheme = (onChange: () => void) => {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributeFilter: ['data-theme', 'data-diff-palette'] });
+  return () => observer.disconnect();
+};
+
+const readMonacoTheme = () => monacoThemeName(
+  readResolvedUiTheme(),
+  normalizeDiffPalette(document.documentElement.dataset.diffPalette),
+);
+const initialMonacoTheme = () => monacoThemeName('light', DEFAULT_APPEARANCE.diffPalette);
+
+function Editor(props: Omit<React.ComponentProps<typeof MonacoEditor>, 'theme' | 'beforeMount'>) {
+  const theme = useSyncExternalStore(subscribeMonacoTheme, readMonacoTheme, initialMonacoTheme);
+  return <MonacoEditor {...props} theme={theme} beforeMount={configureEterxMonacoTheme} />;
+}
+
+function DiffEditor(props: Omit<React.ComponentProps<typeof MonacoDiffEditor>, 'theme' | 'beforeMount'>) {
+  const theme = useSyncExternalStore(subscribeMonacoTheme, readMonacoTheme, initialMonacoTheme);
+  return <MonacoDiffEditor {...props} theme={theme} beforeMount={configureEterxMonacoTheme} />;
+}
 
 type TabMode = 'code' | 'diff' | 'preview';
 
@@ -418,8 +449,6 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
         <Editor
           height="100%"
           language={editorLang}
-          theme={isLightTheme ? 'eterx-light' : 'eterx-dark'}
-          beforeMount={configureEterxMonacoTheme}
           value={localContent}
           onChange={(value) => setLocalContent(value || '')}
           options={{
@@ -469,8 +498,6 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
         <DiffEditor
           height="100%"
           language={editorLang}
-          theme={isLightTheme ? 'eterx-light' : 'eterx-dark'}
-          beforeMount={configureEterxMonacoTheme}
           original={original}
           modified={modified}
           onMount={editor => {
@@ -504,8 +531,8 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
         <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: fileColor }} />
         <span className="text-[12.5px] font-semibold text-[#E8E6E3] truncate">{filename}</span>
         <span className="text-[9px] font-mono text-[#555350] bg-white/[0.04] border border-white/[0.06] px-1.5 py-[2px] rounded-sm shrink-0 uppercase tracking-wide">{lang}</span>
-        {added > 0 && <span className="eterx-file-change-added text-[10px] font-bold font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-[1.5px] rounded-sm shrink-0">+{added}</span>}
-        {removed > 0 && <span className="eterx-file-change-removed text-[10px] font-bold font-mono text-red-400 bg-red-500/10 px-1.5 py-[1.5px] rounded-sm shrink-0">−{removed}</span>}
+        {added > 0 && <span className="eterx-file-change-added text-[10px] font-bold font-mono bg-[var(--diff-added-bg)] px-1.5 py-[1.5px] rounded-sm shrink-0">+{added}</span>}
+        {removed > 0 && <span className="eterx-file-change-removed text-[10px] font-bold font-mono bg-[var(--diff-removed-bg)] px-1.5 py-[1.5px] rounded-sm shrink-0">−{removed}</span>}
         {tab === 'code' && localContent && <span className="text-[10px] font-mono text-[#555350] shrink-0">{lineCount}L</span>}
       </div>
 
@@ -1660,8 +1687,6 @@ export const IdePanel = () => {
                       const map: Record<string,string> = { ts:'typescript',tsx:'typescript',js:'javascript',jsx:'javascript',html:'html',css:'css',scss:'scss',json:'json',md:'markdown',py:'python',go:'go',rs:'rust',sh:'shell' };
                       return map[ext] || 'plaintext';
                     })()}
-                    theme={isLightTheme ? 'eterx-light' : 'eterx-dark'}
-                    beforeMount={configureEterxMonacoTheme}
                     options={{
                       readOnly: true,
                       minimap: { enabled: false },

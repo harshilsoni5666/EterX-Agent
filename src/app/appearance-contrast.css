@@ -1,0 +1,67 @@
+:root[data-theme][data-ui-contrast]:not([data-ui-contrast='100']) {
+  --contrast-end: #fff;
+  --contrast-text-base: #ececec;
+  --contrast-muted-base: #a0a0a0;
+  --contrast-border-base: #ffffff14;
+  --contrast-sidebar-base: #d0d0d0;
+  --contrast-sidebar-muted-base: #999b9d;
+  --contrast-chat-base: #e6e6e6;
+  --contrast-chat-muted-base: #a0a0a0;
+  --contrast-code-muted-base: #a0a0a0;
+  --contrast-code-line-base: #343434;
+  --contrast-line-weight: calc(var(--ui-contrast-boost) * 0.32);
+
+  --foreground: color-mix(in srgb, var(--contrast-text-base), var(--contrast-end) var(--ui-contrast-boost));
+  --muted-foreground: color-mix(in srgb, var(--contrast-muted-base), var(--contrast-end) var(--ui-contrast-boost));
+  --border: color-mix(in srgb, var(--contrast-border-base), var(--contrast-end) var(--contrast-line-weight));
+  --sidebar-text: color-mix(in srgb, var(--contrast-sidebar-base), var(--contrast-end) var(--ui-contrast-boost));
+  --sidebar-muted-text: color-mix(in srgb, var(--contrast-sidebar-muted-base), var(--contrast-end) var(--ui-contrast-boost));
+  --sidebar-icon: var(--sidebar-muted-text);
+  --sidebar-surface-border: var(--border);
+  --eterx-topbar-text: var(--muted-foreground);
+  --eterx-md-text: color-mix(in srgb, var(--contrast-chat-base), var(--contrast-end) var(--ui-contrast-boost));
+  --eterx-md-muted: color-mix(in srgb, var(--contrast-chat-muted-base), var(--contrast-end) var(--ui-contrast-boost));
+  --chat-activity-ink: var(--eterx-md-muted);
+  --chat-detail-ink: var(--eterx-md-muted);
+  --chat-placeholder-ink: var(--eterx-md-muted);
+  --chat-hairline: var(--border);
+  --chat-card-border: var(--border);
+  --composer-menu-ink: var(--foreground);
+  --composer-menu-muted: var(--muted-foreground);
+  --composer-menu-line: var(--border);
+  --code-muted: color-mix(in srgb, var(--contrast-code-muted-base), var(--contrast-end) var(--ui-contrast-boost));
+  --code-line-number: var(--code-muted);
+  --code-border: color-mix(in srgb, var(--contrast-code-line-base), var(--contrast-end) var(--contrast-line-weight));
+}
+
+:root[data-theme='light'][data-ui-contrast]:not([data-ui-contrast='100']) {
+  --contrast-end: #000;
+  --contrast-text-base: #252525;
+  --contrast-muted-base: #666;
+  --contrast-border-base: #e0e0e0;
+  --contrast-sidebar-base: #505050;
+  --contrast-sidebar-muted-base: #737373;
+  --contrast-chat-base: #363636;
+  --contrast-chat-muted-base: #666;
+  --contrast-code-muted-base: #666;
+  --contrast-code-line-base: #dedede;
+
+  --light-ink: var(--foreground);
+  --light-body: var(--eterx-md-text);
+  --light-secondary: var(--muted-foreground);
+  --light-muted: var(--muted-foreground);
+  --light-line: var(--border);
+  --light-line-hover: color-mix(in srgb, #d4d4d4, #000 var(--contrast-line-weight));
+}
+
+:root[data-theme][data-ui-contrast]:not([data-ui-contrast='100']) .eterx-settings-dialog .eterx-setting-label {
+  color: var(--foreground) !important;
+}
+
+:root[data-theme][data-ui-contrast]:not([data-ui-contrast='100']) .eterx-settings-dialog .eterx-setting-description {
+  color: var(--muted-foreground) !important;
+}
+
+:root[data-theme][data-ui-contrast]:not([data-ui-contrast='100']) .eterx-settings-dialog :is(.eterx-settings-stack, .eterx-settings-stack-row, .eterx-setting-row:not([data-danger])) {
+  border-color: var(--border) !important;
+}

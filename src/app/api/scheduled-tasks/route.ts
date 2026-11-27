@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { loadScheduledTaskSnapshot, saveScheduledTaskSnapshot } from '../../../lib/scheduled-task-store';
-import { normalizeScheduledTask } from '../../../lib/scheduled-tasks';
+import { loadScheduledTaskSnapshot, mutateScheduledTasks, saveScheduledTaskSnapshot } from '../../../lib/scheduled-task-store';
+import { normalizeScheduledTask, rescheduleTask } from '../../../lib/scheduled-tasks';
 import { rejectCrossOrigin } from '../agent/_shared';
 
 export const dynamic = 'force-dynamic';
@@ -15,6 +15,42 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(await loadScheduledTaskSnapshot(), { headers });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || 'Unable to load scheduled tasks.' }, { status: 500, headers });
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
+  const body = await req.json().catch(() => null);
+  if (typeof body?.id !== 'string' || !body.id || !['reschedule', 'settle', 'restore'].includes(body.action)) {
+    return NextResponse.json({ error: 'Choose a valid scheduled task and action.' }, { status: 400, headers });
+  }
+  const now = Date.now();
+  const at = body.at === 'now' ? now : body.at;
+  if (body.action === 'reschedule' && (!Number.isFinite(at) || at < now || at > 8640000000000000)) {
+    return NextResponse.json({ error: 'Choose a future date and time.' }, { status: 400, headers });
+  }
+
+  let status = 500;
+  try {
+    const snapshot = await mutateScheduledTasks(tasks => {
+      const index = tasks.findIndex(task => task.id === body.id);
+      if (index < 0) {
+        status = 404;
+        throw new Error('This scheduled task no longer exists.');
+      }
+      const task = tasks[index];
+      if (task.status === 'running') {
+        status = 409;
+        throw new Error('This task is already running.');
+      }
+      tasks[index] = body.action === 'reschedule'
+        ? rescheduleTask(task, at, now)
+        : { ...task, focusSettledAt: body.action === 'settle' ? now : null };
+    });
+    return NextResponse.json(snapshot, { headers });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Unable to update the scheduled task.' }, { status, headers });
   }
 }
 

@@ -17,6 +17,11 @@ export function chatWorkspaceKey(path: string | null | undefined): string {
   return value ? workspacePathKey(value) : '';
 }
 
+export function chatWorkspaceName(path: string): string {
+  const label = path.trim();
+  return label.split(/[\\/]/).filter(Boolean).at(-1) || label;
+}
+
 export function chatMatchesScope(chat: ScopedChat, scope: ChatScope): boolean {
   if (scope.kind === 'folder') return chat.importFolder === scope.name;
   if (scope.kind === 'project') return chatWorkspaceKey(chat.workspacePath) === chatWorkspaceKey(scope.path);

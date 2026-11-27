@@ -60,6 +60,8 @@ import { mergeStreamingText } from '../streaming-lifecycle';
 import { createProviderChatStream } from '../agent/provider-stream-adapter';
 import { meterModelResponse, meterModelStream } from '../usage/ledger';
 import { createCodexSubscriptionClient } from '../agent/codex-subscription-runtime';
+import { runSubscriptionTurn } from '../agent/native-provider/turn';
+import { isNativeSessionProvider } from '../native-provider-contract';
 import { withFastRequestTags } from '../agent/model-fast-mode';
 import { compactContextAtBoundary } from '../agent/resilience/context-compaction';
 import { readModelUsage } from '../model-usage';
@@ -524,7 +526,7 @@ const appendGeminiMediaParts = (parts: any[], attachments: PreparedAttachment[])
 };
 
 const getProviderKey = (provider: MainAgentProvider, runtimeSettings?: ScopedRuntimeSettings | null) => {
-  if (provider === 'codex') return '';
+  if (provider === 'codex' || isNativeSessionProvider(provider)) return '';
   const keys = getScopedRuntimeApiKeyValues(runtimeSettings, provider as RuntimeApiKeyProvider);
   const key = keys[0] || '';
   if (key) return key;
@@ -536,7 +538,7 @@ const getProviderKey = (provider: MainAgentProvider, runtimeSettings?: ScopedRun
 };
 
 const getProviderKeyRound = (provider: MainAgentProvider, runtimeSettings?: ScopedRuntimeSettings | null, conversationScope?: string): string[] => {
-  if (provider === 'codex') return [];
+  if (provider === 'codex' || isNativeSessionProvider(provider)) return [];
   const configured = getScopedRuntimeApiKeyValues(runtimeSettings, provider as RuntimeApiKeyProvider);
   if (configured.length > 0) {
     const start = conversationScope ? providerCacheKeyIndex(provider, conversationScope, configured) : 0;
@@ -553,7 +555,7 @@ const runWithProviderKeyRounds = async <T>(
   onRetry?: (attempt: number, totalAttempts: number, error: unknown) => void,
   conversationScope?: string,
 ): Promise<T> => {
-  if (provider === 'codex') return operation('');
+  if (provider === 'codex' || isNativeSessionProvider(provider)) return operation('');
   const keys = getProviderKeyRound(provider, runtimeSettings, conversationScope);
   return withApiKeyRounds(keys, runtimeSettings, operation, signal, onRetry);
 };
@@ -807,6 +809,10 @@ export async function runDirectChat(request: DirectChatRequest): Promise<{
         provider,
         request.runtimeSettings,
         async key => {
+          if (isNativeSessionProvider(provider)) {
+            return (await runSubscriptionTurn(provider, { chatId: request.chatId, model, prompt: currentText, history,
+              attachments: request.mediaAttachments, instruction: systemInstruction, thinking: thinking?.level })).text;
+          }
           const attachments = await prepareAttachments(request.mediaAttachments || [], provider, key, model, request.modelWireCapabilities);
           return provider === 'gemini'
             ? runGeminiDirect(model, key, history, currentText, attachments, thinking, systemInstruction)
@@ -979,6 +985,7 @@ const createDirectUsageTrace = (
     source: 'provider',
     provider,
     model,
+    ...(isNativeSessionProvider(provider) ? { usageScope: 'turn' } : {}),
     ...normalized,
     cacheMode: resolveProviderPromptCacheMode(provider, process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1'),
     phase: 'chat_direct',
@@ -1232,7 +1239,8 @@ export async function streamDirectChat(
   let systemInstruction = baseSystemInstruction;
   const firstKey = getProviderKeyRound(provider, request.runtimeSettings, request.chatId || request.runId)[0] || getProviderKey(provider, request.runtimeSettings);
   const key = firstKey;
-  const attachments = await prepareAttachments(request.mediaAttachments || [], provider, key, model, request.modelWireCapabilities);
+  const attachments = isNativeSessionProvider(provider) ? []
+    : await prepareAttachments(request.mediaAttachments || [], provider, key, model, request.modelWireCapabilities);
   const prompt = String(request.prompt || '').trim();
   let currentText = buildDirectRequestText(
     prompt || 'Please review the attached file or media and help me with it.',
@@ -1523,6 +1531,12 @@ export async function streamDirectChat(
           provider,
           request.runtimeSettings,
           async attemptKey => {
+            if (isNativeSessionProvider(provider)) {
+              return runSubscriptionTurn(provider, { chatId: request.chatId, model, prompt: currentText, history,
+                attachments: request.mediaAttachments, instruction: systemInstruction, thinking: thinking?.level, signal,
+                onText: onDelta, onThought: onReasoningDelta,
+                onContextUsage: sample => emit({ ...sample, contextRequestId: activeContextRequestId }) });
+            }
             const attemptAttachments = attemptKey === firstKey
               ? attachments
               : await prepareAttachments(request.mediaAttachments || [], provider, attemptKey, model, request.modelWireCapabilities);
@@ -1609,7 +1623,7 @@ export async function streamDirectChat(
   });
   const usageTrace = createDirectUsageTrace(provider, model, providerResult.usage, request, thinking, providerResult.cacheDiagnostics);
   if (usageTrace) emit(usageTrace);
-  await compactedContext.saveResponse?.(finalText, usageTrace ? readModelUsage(usageTrace).promptTokens : undefined);
+  await compactedContext.saveResponse?.(finalText, usageTrace && !isNativeSessionProvider(provider) ? readModelUsage(usageTrace).promptTokens : undefined);
   if (continuity.fabric) {
     continuity.fabric.recordAssistantResponse(finalText, 'completed', request.runId || '');
     await continuity.fabric.flush().catch(() => undefined);

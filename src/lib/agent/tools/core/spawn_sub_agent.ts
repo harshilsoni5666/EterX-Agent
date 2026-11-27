@@ -4,7 +4,14 @@ import { globalSubAgentSpawner, agentMessageBus, SubAgentName, clearPendingResul
 import { interAgentMailbox } from '../../roles/inter_agent_comm';
 import { buildSubAgentStrategy, type SpecialistRole } from '../../roles/sub_agent_strategy';
 import { enforceToolCapability } from '../security/tool_policy';
-import { MODEL_PROVIDER_ORDER } from '../../model-selector-store';
+import { isAccountModelProvider, isConcreteModelId, isModelProvider, modelEntryKey, MODEL_PROVIDER_ORDER } from '../../model-selector-store';
+import { NATIVE_PROVIDERS } from '../../../native-provider-contract';
+import { nativeProviderModelList } from '../../native-provider/accounts';
+import { antigravityModelList } from '../../antigravity/provider';
+import { readStoredModelEntries } from '../../stored-model-metadata';
+import { getScopedRuntimeApiKeyValues } from '../../runtime-api-keys';
+import { isLocalModelProvider } from '../../provider-runtime';
+import { readCodexSubscriptionModelIds } from '../../codex-subscription-runtime';
 import type { MainAgentMode, MainAgentProvider } from '../../model-routing';
 import { MAX_SUB_AGENTS } from '../../sub-agent-settings';
 import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../../swarm-coordinator';
@@ -17,8 +24,8 @@ import {
 } from '../../delegation-evidence';
 
 const SPECIALIST_ROLES = ['security_auditor', 'performance_analyst', 'architect', 'qa_tester', 'researcher'] as const;
-const MODEL_PROVIDER_ENUM = MODEL_PROVIDER_ORDER as [MainAgentProvider, ...MainAgentProvider[]];
-const MODEL_MODE_ENUM = ['think', 'fast', ...MODEL_PROVIDER_ORDER.filter(provider => provider !== 'gemini')] as [MainAgentMode, ...MainAgentMode[]];
+const MODEL_PROVIDER_ENUM = [...MODEL_PROVIDER_ORDER, 'codex', 'antigravity', ...NATIVE_PROVIDERS] as const satisfies readonly MainAgentProvider[];
+const MODEL_MODE_ENUM = ['think', 'fast', ...MODEL_PROVIDER_ENUM.filter(provider => provider !== 'gemini')] as const satisfies readonly MainAgentMode[];
 const SUB_AGENT_TASK_SCHEMA = z.object({
   task: z.string().min(1).max(200_000).describe('Detailed task description for this sub-agent'),
   name: z.string().optional().describe(`Brief task-specific agent name. Use two or three words within about ${PREFERRED_SUB_AGENT_NAME_LENGTH} characters, e.g. API Review. Keep a user-specified name when provided. Omit for automatic naming.`),
@@ -144,8 +151,8 @@ WHEN TO USE DEBATE: high-stakes choices where assumptions need challenge and reb
 WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or research tasks.`,
   category: 'core',
   inputSchema: z.object({
-    mode: z.enum(['advise', 'spawn', 'graph', 'join', 'status', 'collect', 'clear', 'consensus', 'debate', 'specialist', 'pause', 'resume', 'close'])
-      .describe('advise = choose the right orchestration pattern without spawning, spawn = fire-and-forget launch, status = check progress, collect = get results, clear = cleanup, consensus = 3-agent panel, debate = multi-round adversarial panel, specialist = one expert role, pause/resume/close = control an agent'),
+    mode: z.enum(['models', 'advise', 'spawn', 'graph', 'join', 'status', 'collect', 'clear', 'consensus', 'debate', 'specialist', 'pause', 'resume', 'close'])
+      .describe('models = list configured provider and model pairs for workers, advise = choose a pattern, spawn = launch workers, status/collect = inspect progress/results, join = wait for required results, clear = cleanup, consensus/debate/specialist = delegate to a panel or specialist, pause/resume/close = control a worker'),
     tasks: z.array(SUB_AGENT_TASK_SCHEMA).max(SWARM_LIMITS.maxBatch).optional().describe('REQUIRED nonempty array for spawn, consensus, debate, and specialist, even for one worker. Every entry requires task; put name and worker options inside the entry. Swarm spawn also requires rationale and acceptance. Panels/specialist accept exactly one topic; ordinary spawn accepts a bounded frontier.'),
     offset: z.number().int().min(0).optional().describe('Pagination offset for graph, status, collect, or join'),
     limit: z.number().int().min(1).max(100).optional().describe('Maximum entries per page; default 50 for graph and 20 for reports/status'),
@@ -168,6 +175,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     mode: z.string(),
     agents: z.array(z.any()),
     message: z.string(),
+    models: z.array(z.object({ provider: z.string(), model: z.string() })).optional(),
     success: z.boolean().optional(),
     executed: z.boolean().optional(),
     error: z.string().optional(),
@@ -233,6 +241,21 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     const decision = enforceToolCapability('spawn_sub_agent', input, context);
     if (!decision.allowed) {
       return rejectAgentAction(input.mode || 'blocked', decision.reason || 'Sub-agent spawning is not allowed');
+    }
+    if (input.mode === 'models') {
+      const configured = readStoredModelEntries().filter(entry => !isAccountModelProvider(entry.provider) &&
+        (isLocalModelProvider(entry.provider) || getScopedRuntimeApiKeyValues(context?.runtimeSettings, entry.provider).length > 0))
+        .map(entry => ({ provider: entry.provider, model: entry.modelId }));
+      const current = isModelProvider(context?.selectedModelProvider) && isConcreteModelId(context?.selectedModelName)
+        ? [{ provider: context.selectedModelProvider as MainAgentProvider, model: String(context.selectedModelName) }] : [];
+      const codex = (await readCodexSubscriptionModelIds(context?.abortSignal)).map(model => ({ provider: 'codex' as const, model }));
+      const entries = [...current, ...codex, ...nativeProviderModelList(), ...antigravityModelList(), ...configured];
+      const models = [...new Map(entries.map(entry => [modelEntryKey(entry.provider, entry.model), entry])).values()];
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? 50;
+      return { mode: 'models', agents: [], models: models.slice(offset, offset + limit), total: models.length,
+        nextOffset: offset + limit < models.length ? offset + limit : null,
+        message: 'Pass both provider and model when assigning a worker a specific model.' };
     }
 
     if (input.agentId && ['pause', 'resume', 'close'].includes(input.mode)) {

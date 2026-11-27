@@ -21,6 +21,8 @@ import {
   type MainAgentThinkingLevel,
 } from './model-routing';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
+import { runWithSubscriptionAccount } from './native-provider/turn';
+import { isNativeSessionProvider } from '../native-provider-contract';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
 import { MAX_SUB_AGENTS } from './sub-agent-settings';
 import { hasExplicitSubAgentRequest } from './roles/sub_agent_strategy';
@@ -394,13 +396,17 @@ export class AgentOrchestrator {
     leasedApiKey?: string,
     runtimeSettings?: ScopedRuntimeSettings | null
   ): Promise<AgentResponse> {
-    const workspace = await initializeChatWorkspace(projectId, userId, pinnedContext);
-    const release = managedWorkspaces.acquireWorkspaceLease(workspace.workspacePath);
-    try {
-      return await this.executePipelineInWorkspace(userId, projectId, userRequest, history, onTrace, mode,
-        { ...pinnedContext, workspacePath: workspace.workspacePath, runLocation: workspace.runLocation },
-        mediaFiles, imageBackupParts, userName, leasedApiKey, runtimeSettings);
-    } finally { release(); }
+    const run = async () => {
+      const workspace = await initializeChatWorkspace(projectId, userId, pinnedContext);
+      const release = managedWorkspaces.acquireWorkspaceLease(workspace.workspacePath);
+      try {
+        return await this.executePipelineInWorkspace(userId, projectId, userRequest, history, onTrace, mode,
+          { ...pinnedContext, workspacePath: workspace.workspacePath, runLocation: workspace.runLocation },
+          mediaFiles, imageBackupParts, userName, leasedApiKey, runtimeSettings);
+      } finally { release(); }
+    };
+    const provider = pinnedContext?.selectedModelProvider || mode;
+    return isNativeSessionProvider(provider) ? runWithSubscriptionAccount(provider, pinnedContext?.selectedModelName, run) : run();
   }
 
   private async executePipelineInWorkspace(

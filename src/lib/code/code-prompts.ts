@@ -39,6 +39,7 @@ export function getToolEnhancements(): Record<string, string> {
   return {
     workspace_edit_file: WORKSPACE_EDIT_DESCRIPTION,
     workspace_run_command: 'Run shell commands or direct program + args. Host paths arrive in runtime context; wait/check/list/kill manage existing task IDs.',
+    workspace_workbench: 'Publish local services and share an interactive browser preview or development device with the chat.',
     browser_control: 'Inspect visible UI behavior when relevant and permitted.',
     web_search: 'Discover current external information when required by the task.',
   };

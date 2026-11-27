@@ -36,6 +36,7 @@ const TOOL_DISPLAY_LABELS: Record<string, string> = {
   task_checkpoint: 'Updating plan',
   workspace_edit_file: 'Editing file',
   workspace_run_command: 'Running project command',
+  workspace_workbench: 'Using development workbench',
   spawn_sub_agent: 'Managing agent work',
   agent_builder_get_profile: 'Reviewed agent profile',
   agent_builder_list_capabilities: 'Explored agent capabilities',

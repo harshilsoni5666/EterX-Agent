@@ -72,8 +72,9 @@ export const safeCopyTextToClipboard = async (text: string): Promise<boolean> =>
   // Tier 3: Hidden Textarea ExecCommand
   let textArea: HTMLTextAreaElement | null = null;
   const currentFocus = document.activeElement as HTMLElement | null;
+  const selectionRoot = currentFocus?.closest('dialog[open], [role="dialog"]') ?? document.body;
   try {
-    if (!document.body || typeof document.execCommand !== 'function') return false;
+    if (!selectionRoot || typeof document.execCommand !== 'function') return false;
     textArea = document.createElement('textarea');
     textArea.value = value;
     textArea.style.position = 'fixed';
@@ -81,7 +82,7 @@ export const safeCopyTextToClipboard = async (text: string): Promise<boolean> =>
     textArea.style.top = '-999999px';
     textArea.style.opacity = '0';
     textArea.setAttribute('readonly', '');
-    document.body.appendChild(textArea);
+    selectionRoot.appendChild(textArea);
     textArea.focus();
     textArea.select();
     textArea.setSelectionRange(0, value.length);
@@ -96,13 +97,13 @@ export const safeCopyTextToClipboard = async (text: string): Promise<boolean> =>
   // Tier 4: Selection Range Fallback
   let span: HTMLSpanElement | null = null;
   try {
-    if (!document.body || typeof document.execCommand !== 'function') return false;
+    if (!selectionRoot || typeof document.execCommand !== 'function') return false;
     span = document.createElement('span');
     span.textContent = value;
     span.style.position = 'fixed';
     span.style.left = '-999999px';
     span.style.opacity = '0';
-    document.body.appendChild(span);
+    selectionRoot.appendChild(span);
 
     const selection = window.getSelection();
     const range = document.createRange();

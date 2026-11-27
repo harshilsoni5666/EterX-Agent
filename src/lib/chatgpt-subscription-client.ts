@@ -20,11 +20,13 @@ export type ChatGptAccount = {
   label: string;
   email: string | null;
   status: ConnectionStatus | 'pending';
+  usage?: ChatGptObservedUsage | null;
 };
 
 export type ChatGptObservedUsage = {
   status: 'completed' | 'plan-limit' | 'rate-limited' | 'unavailable' | 'ineligible';
   observedAt: number;
+  retryAt?: number;
 };
 export type ChatGptSwitchMode = 'idle' | 'stop' | 'resume';
 

@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useLiveFeedFlow } from './use-live-feed-flow';
 import { ActivityViewport } from './activity-viewport';
 import { ActivityDisclosure } from './activity-disclosure';
+import { WorkbenchChatAction } from './workbench-chat-action';
+import { isWorkbenchTrace } from '../../lib/workbench/activity-trace';
 import { ToolResultScroll } from './tool-result-scroll';
 import { HighlightedDiffCode, isPlaceholderDiffGap, useCodeSyntax, useDiffSyntax } from './diff-syntax';
 import { getActionSummary } from './action-summary';
@@ -22,7 +24,7 @@ import {
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
-import { markdownComponents, MarkdownStreamContext, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins, WebsiteLink } from './markdown-renderer';
+import { ChatMarkdownTable, markdownComponents, MarkdownStreamContext, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins, replyRemarkPlugins, WebsiteLink } from './markdown-renderer';
 import { InlineLocalFileLinksContext, LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, localAwareUrlTransform } from './local-file-link';
 import { ReplyImage } from './image-gallery';
 import { AGENT_ICONS, resolveAgentIcon, resolveToolTraceIcon, TerminalIcon as ToolTerminalIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace, FileAddIcon, FileEditIcon, FileDeleteIcon, SkillIcon, MonitorPlayIcon, MouseIcon, MousePointerClickIcon, W } from './agent-icons';
@@ -326,24 +328,24 @@ const thoughtMarkdownComponents = {
   },
 };
 
-const MarkdownSlice = React.memo(({ text, streaming, components }: {
-  text: string; streaming: boolean; components: typeof markdownComponents;
+const MarkdownSlice = React.memo(({ text, streaming, components, reply }: {
+  text: string; streaming: boolean; components: typeof markdownComponents; reply: boolean;
 }) => {
   // Prose already has one bounded frame scheduler. Deferring it again skipped
   // intermediate reveals and exposed the whole block when the stream settled.
   return useMemo(() => (
     <MarkdownStreamContext.Provider value={streaming}>
-      <ReactMarkdown urlTransform={localAwareUrlTransform} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
+      <ReactMarkdown urlTransform={localAwareUrlTransform} remarkPlugins={reply ? replyRemarkPlugins : remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
         {text}
       </ReactMarkdown>
     </MarkdownStreamContext.Provider>
-  ), [text, streaming, components]);
+  ), [text, streaming, components, reply]);
 });
 // Plain prose paragraphs have no cross-block parse state. Keep completed
 // paragraphs memoized while typing the tail. Lists, fences, math, tables,
 // HTML and reference links stay in one parser so their semantics are intact.
-const LiveMarkdown = React.memo(({ text, streaming, components }: {
-  text: string; streaming: boolean; components: typeof markdownComponents;
+const LiveMarkdown = React.memo(({ text, streaming, components, reply = false }: {
+  text: string; streaming: boolean; components: typeof markdownComponents; reply?: boolean;
 }) => {
   const paragraphs = useMemo(() => {
     if (!text.includes('\n\n') || /[`$|<~]|\\(?:\(|\[)|^\s{0,3}(?:>|[-+*]\s|\d+[.)]\s|\[[^\]]+\]:)|^ {4}\S|^\t/m.test(text)) return null;
@@ -355,12 +357,13 @@ const LiveMarkdown = React.memo(({ text, streaming, components }: {
       return block;
     }).filter(part => part.text.trim());
   }, [text]);
-  if (!paragraphs) return <MarkdownSlice text={text} streaming={streaming} components={components} />;
+  if (!paragraphs) return <MarkdownSlice text={text} streaming={streaming} components={components} reply={reply} />;
   return <>{paragraphs.map((part, index) => <MarkdownSlice
     key={part.offset}
     text={part.text}
     streaming={streaming && index === paragraphs.length - 1}
     components={components}
+    reply={reply}
   />)}</>;
 });
 LiveMarkdown.displayName = 'LiveMarkdown';
@@ -517,6 +520,7 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
   const markdownText = paced.text;
   const professionalMarkdownComponents = useMemo(() => ({
     ...markdownComponents,
+    table: ChatMarkdownTable,
     p: ({ node, ...props }: any) => <p className="eterx-answer-paragraph mb-2 last:mb-0 break-words leading-[1.62] tracking-normal" {...props} />,
     ul: ({ node, className = '', ...props }: any) => <ul className={`eterx-answer-list my-2.5 list-disc space-y-1.5 pl-5 ${className}`} {...props} />,
     ol: ({ node, className = '', ...props }: any) => <ol className={`eterx-answer-list my-2.5 list-decimal space-y-1.5 pl-5 ${className}`} {...props} />,
@@ -525,7 +529,7 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
     em: ({ node, ...props }: any) => <em className="eterx-answer-em italic" {...props} />,
   }), []);
   const renderProfessionalMarkdown = (value: string) => (
-    <LiveMarkdown text={value} streaming={requestedLive || paced.revealing} components={professionalMarkdownComponents} />
+    <LiveMarkdown text={value} streaming={requestedLive || paced.revealing} components={professionalMarkdownComponents} reply />
   );
 
   if (variant === 'thought') {
@@ -1488,21 +1492,18 @@ const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, s
                 );
               }
               return (
-                <div key={i} className={`eterx-inline-diff-row flex items-stretch ${ isAdd ? 'eterx-inline-diff-row-added bg-[#18301D]/35' : isDel ? 'eterx-inline-diff-row-removed bg-[#321B1A]/35' : 'eterx-inline-diff-row-context hover:bg-white/[0.022]'
+                <div key={i} className={`eterx-inline-diff-row flex items-stretch ${ isAdd ? 'eterx-inline-diff-row-added' : isDel ? 'eterx-inline-diff-row-removed' : 'eterx-inline-diff-row-context hover:bg-white/[0.022]'
                   }`}>
                   {/* Left colored bar */}
-                  <div className={`eterx-inline-diff-bar w-[3px] shrink-0 ${ isAdd ? 'bg-emerald-500' : isDel ? 'bg-red-500' : 'bg-transparent'
-                    }`} />
+                  <div className="eterx-inline-diff-bar w-[3px] shrink-0" />
                   {/* Line number */}
                   <div title={diffLineNumberTitle(l)} className="eterx-inline-diff-line-number w-[42px] shrink-0 select-none border-r border-white/[0.055] py-[3px] pr-3 text-right text-[10.5px] text-[#6F6962]">{diffLineNumber(l)}</div>
                   {/* +/- glyph */}
-                  <div className={`eterx-inline-diff-glyph w-[20px] shrink-0 text-center py-[3px] font-bold ${ isAdd ? 'text-emerald-400' : isDel ? 'text-red-400' : 'text-transparent'
-                    }`}>{isAdd ? '+' : isDel ? '-' : ' '}</div>
+                  <div className="eterx-inline-diff-glyph w-[20px] shrink-0 text-center py-[3px] font-bold">{isAdd ? '+' : isDel ? '-' : ' '}</div>
                   {/* Content — no overflow, parent scrolls */}
-                  <div
-                    className={`eterx-inline-diff-content px-3 py-[3px] whitespace-pre ${ isAdd ? 'text-[#B9E7C0]' : isDel ? 'text-[#E6AAA4]' : 'text-[#BDB5AA]'
-                      }`}
-                  ><HighlightedDiffCode line={l} tokens={syntax?.get(l)} /></div>
+                  <div className="eterx-inline-diff-content px-3 py-[3px] whitespace-pre">
+                    <HighlightedDiffCode line={l} tokens={syntax?.get(l)} />
+                  </div>
                 </div>
               );
             })}
@@ -4695,9 +4696,10 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, showStartupIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes, renderContextCompaction }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes, renderContextCompaction?: (log: any) => React.ReactNode }) => {
+export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, showStartupIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes, renderContextCompaction, workbenchOnly = false }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes, renderContextCompaction?: (log: any) => React.ReactNode, workbenchOnly?: boolean }) => {
   const containerRef = useLiveFeedFlow(isThinking && isLast);
   const isFlowLog = (l: any) => {
+    if (workbenchOnly && !isWorkbenchTrace(l)) return false;
     if (l?.type === 'progress' && String(l?.text || '').startsWith('This chat history differs from its saved working context.')) return false;
     const agentName = String(l?.agentName || l?.subAgent || '').trim().toLowerCase();
     const explicitlyMain = agentName === 'main';
@@ -4725,7 +4727,7 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
     const flowLogs = ensureStableFeedPresentationIds(logs).filter(isFlowLog);
     const liveFlowLogs = ensureStableFeedPresentationIds(liveLogs).filter(isFlowLog);
     return reconcileSubAgentLifecycleRows(reconcileLiveActionLogs(flowLogs, liveFlowLogs));
-  }, [logs, liveLogs, isSubAgentTab]);
+  }, [logs, liveLogs, isSubAgentTab, workbenchOnly]);
   const segs: any[] = [];
   let aBuf: any[] = [];
   let aBufFirstIdx = -1;
@@ -4799,8 +4801,14 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
     aBufKind = nextKind;
     aBuf.push(log);
   };
+  const workbenchActions = timelineLogs.filter(log => isWorkbenchTrace(log) && ACTION_EVENT_TYPES.has(String(log.type)));
   timelineLogs.forEach((log, idx) => {
-    if (log.type === 'thought_stream') {
+    if (isWorkbenchTrace(log)) {
+      if (log.type === 'tool_result_preview' && workbenchActions.some(action => previewBelongsToAction(log, action, timelineLogs))) return;
+      flush(idx - 1);
+      segs.push({ kind: 'workbench', log, idx });
+    }
+    else if (log.type === 'thought_stream') {
       if (shouldRenderThoughtSegment(log, timelineLogs, idx)) {
         // Standard sequences buffer reasoning with their actions. Control
         // sequences join the thought segments below in chronological order.
@@ -4932,6 +4940,12 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
         const phaseIsLastVisible = i === displaySegs.length - 1;
         const phaseIsActive = isThinking && isLast && phaseIsLastVisible;
 
+        if (seg.kind === 'workbench') {
+          const preview = getActionPreviewCandidates(seg.log, timelineLogs).findLast(item =>
+            item.type === 'tool_result_preview' && previewBelongsToAction(item, seg.log, timelineLogs));
+          return <WorkbenchChatAction key={'workbench-' + getTimelineRowIdentity(seg.log, seg.idx)}
+            log={seg.log} preview={preview} turnActive={isThinking && isLast} />;
+        }
         if (seg.kind === 'thought') {
           const thoughtIdentity = getStreamRowIdentity(seg.log, seg.idx);
           // Both the owning turn and the latest provider segment must be

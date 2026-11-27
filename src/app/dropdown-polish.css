@@ -208,6 +208,29 @@
   backdrop-filter: blur(22px) saturate(145%) !important;
 }
 
+/* Give the thinking-level flyout a distinct cool accent from the model list. */
+:root[data-theme="dark"] .eterx-model-thinking-popout.eterx-model-picker-thinking {
+  --eterx-menu-hover: rgba(140, 166, 243, .17);
+  background: color-mix(in srgb, var(--eterx-menu-surface) 84%, #5d74ad 16%) !important;
+  border-color: color-mix(in srgb, var(--eterx-menu-line) 45%, #8da8f0 55%) !important;
+}
+
+:root[data-theme="light"] .eterx-model-thinking-popout.eterx-model-picker-thinking {
+  --eterx-menu-hover: rgba(89, 115, 190, .1);
+  background: color-mix(in srgb, var(--eterx-menu-surface) 94%, #7f98d5 6%) !important;
+  border-color: color-mix(in srgb, var(--eterx-menu-line) 48%, #647dbc 52%) !important;
+}
+
+:root[data-theme="dark"] .eterx-model-thinking-popout.eterx-model-picker-thinking button[aria-checked="true"] {
+  background: rgba(140, 166, 243, .22) !important;
+  color: #e1eaff !important;
+}
+
+:root[data-theme="light"] .eterx-model-thinking-popout.eterx-model-picker-thinking button[aria-checked="true"] {
+  background: rgba(89, 115, 190, .15) !important;
+  color: #263b6d !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-help-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button, .eterx-sidebar-project-menu-item, .eterx-settings-select-menu button, .eterx-proxy-popout-item, .eterx-github-menu button, .eterx-github-submenu button) {
     transition: none !important;

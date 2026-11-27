@@ -1,5 +1,6 @@
 import path from 'path';
 import { providerModelSupportsVision } from './provider-runtime';
+import { isNativeProvider } from '../native-provider-contract';
 
 export type RuntimeAttachment = {
   path: string;
@@ -113,6 +114,15 @@ export function providerAcceptsNativeAttachment(
     if (kind !== 'image' && kind !== 'pdf') return false;
     if (capabilities.includes('image-input:false')) return false;
     return capabilities.includes('image-input:true') || providerAcceptsDirectImage(provider, modelName);
+  }
+  if (provider === 'antigravity') {
+    if (kind === 'image') return capabilities.includes('image-input:true') && /^image\/(?:png|jpeg|webp|bmp)$/.test(normalizeAttachmentMime(name, mimeType));
+    if (kind === 'audio') return capabilities.includes('audio-input:true');
+    return (kind === 'pdf' || kind === 'document') && capabilities.includes('embedded-context:true');
+  }
+  if (isNativeProvider(provider)) {
+    if (kind === 'image') return capabilities.includes('image-input:true') && /^image\/(?:png|jpeg|gif|webp)$/.test(normalizeAttachmentMime(name, mimeType));
+    return kind === 'pdf' && capabilities.includes('embedded-context:true');
   }
   if (kind === 'image' && advertised(/(?:^|[_.:-])(?:image|vision)(?:$|[_.:-])/)) return true;
   if (provider === 'gemini') return true;

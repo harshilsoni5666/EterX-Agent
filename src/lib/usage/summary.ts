@@ -48,8 +48,16 @@ export interface UsageDay extends UsageTotals {
   sub: UsageTotals;
   unknown: UsageTotals;
 }
+export interface RecentUsage {
+  startAt: number;
+  endAt: number;
+  hours: string[];
+  buckets: UsageBucket[];
+}
+
 export interface UsageReport {
   buckets: UsageBucket[];
+  recent: RecentUsage;
   asOf: string;
   updatedAt: number;
   timeZone: string;
@@ -63,6 +71,12 @@ export function emptyTotals(): UsageTotals {
 const totalKeys = Object.keys(emptyTotals()) as Array<keyof UsageTotals>;
 function addTotals(target: UsageTotals, value: UsageTotals) {
   for (const key of totalKeys) target[key] += value[key];
+}
+
+export function combineUsageTotals(rows: readonly UsageTotals[]): UsageTotals {
+  const totals = emptyTotals();
+  for (const row of rows) addTotals(totals, row);
+  return totals;
 }
 export const dayKey = (date: Date) => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'),
   String(date.getDate()).padStart(2, '0')].join('-');

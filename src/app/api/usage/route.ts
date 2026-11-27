@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
     void refreshRates();
     const saved = await loadChatSnapshot().catch(() => null);
     const report: UsageReport = {
-      buckets: usageBuckets(start, end, timeZone, saved?.chats ?? []),
+      ...usageBuckets(start, end, timeZone, saved?.chats ?? []),
       asOf: currentRates().asOf,
       updatedAt: end,
       timeZone,

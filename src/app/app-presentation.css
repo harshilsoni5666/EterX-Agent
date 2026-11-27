@@ -1,0 +1,100 @@
+.eterx-model-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.eterx-model-badge {
+  display: block;
+  max-inline-size: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--foreground) 15%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--foreground) 5%, transparent);
+  color: color-mix(in srgb, var(--foreground) 74%, var(--background));
+  font-size: 9.5px;
+  font-weight: 620;
+  line-height: 14px;
+  letter-spacing: .01em;
+}
+.eterx-model-name-with-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+}
+.eterx-model-name-with-badges > :first-child { min-width: 0; }
+.eterx-model-picker-model:disabled, .eterx-proxy-model-menu button:disabled {
+  opacity: .58;
+  cursor: default;
+}
+
+.eterx-announcement {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  inline-size: min(var(--announcement-width, 620px), calc(100vw - 32px));
+  max-inline-size: none;
+  block-size: fit-content;
+  max-block-size: min(82dvh, 860px);
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--foreground) 15%, transparent);
+  border-radius: 16px;
+  color: var(--foreground);
+  background: var(--card, var(--background));
+  box-shadow: 0 28px 90px #0006, 0 4px 18px #0003;
+  --announcement-heading: var(--foreground);
+  --announcement-text: color-mix(in srgb, var(--foreground) 83%, var(--background));
+  --announcement-line: color-mix(in srgb, var(--foreground) 15%, transparent);
+}
+.eterx-announcement::backdrop { background: rgba(8, 9, 10, .36); }
+.eterx-announcement[open] { animation: eterx-announcement-in 140ms ease-out; }
+.eterx-announcement-frame { display: flex; flex-direction: column; max-height: min(82dvh, 860px); }
+.eterx-announcement-header { display: flex; align-items: flex-start; gap: 16px; padding: 22px 22px 12px 26px; }
+.eterx-announcement-header h1 {
+  flex: 1;
+  min-width: 0;
+  margin: 1px 0 0;
+  color: var(--foreground);
+  font-size: clamp(19px, 2.5vw, 24px);
+  font-weight: 650;
+  line-height: 1.29;
+  letter-spacing: -.03em;
+  overflow-wrap: anywhere;
+}
+.eterx-announcement-close {
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  margin: -3px 0 0;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted-foreground);
+  background: transparent;
+  cursor: pointer;
+}
+.eterx-announcement-close:hover { color: var(--foreground); background: color-mix(in srgb, var(--foreground) 8%, transparent); }
+.eterx-announcement-close:focus-visible, .eterx-announcement-scroll:focus-visible {
+  outline: 2px solid var(--muted-foreground);
+  outline-offset: -2px;
+}
+.eterx-announcement-scroll { min-height: 0; max-height: 100%; padding: 2px 26px 23px; overflow: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.eterx-announcement-scroll::-webkit-scrollbar { display: none; }
+@keyframes eterx-announcement-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (max-width: 540px) {
+  .eterx-announcement-header { padding: 18px 16px 12px 19px; }
+  .eterx-announcement-scroll { padding: 0 19px 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eterx-announcement[open] { animation: none; }
+}

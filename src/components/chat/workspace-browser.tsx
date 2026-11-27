@@ -1,17 +1,24 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, ArrowUpRight, ScanLine, Check, Globe, Loader2, RotateCw, Search, X } from 'lucide-react';
+import type { CSSProperties } from 'react';
+import { ArrowLeft, ArrowRight, ArrowUpRight, ScanLine, Check, Globe, Loader2, Monitor, RotateCw, Search, Smartphone, Tablet, X } from 'lucide-react';
 import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { Tooltip } from '../ui/tooltip';
 import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { BROWSER_HISTORY_KEY, clearBrowserHistory, loadBrowserHistory, readBrowserHistory, type BrowserHistoryItem } from '../../lib/browser-history';
 import { FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { localWorkbenchUrl } from '../../lib/workbench/contracts';
 
 type BrowserState = { url: string; title: string; favicon?: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; error: string };
 export type BrowserCapture = { filePath: string; filename: string; dataUrl: string; url: string };
 const initial: BrowserState = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, error: '' };
+const previewProfiles = [
+  { id: 'desktop', label: 'Desktop', icon: Monitor, width: 0, height: 0 },
+  { id: 'phone', label: 'Phone', icon: Smartphone, width: 390, height: 844 },
+  { id: 'tablet', label: 'Tablet', icon: Tablet, width: 820, height: 1180 },
+] as const;
 function address(value: string) {
   const input = value.trim();
   if (/^https?:\/\//i.test(input)) return input;
@@ -47,6 +54,9 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   const [capturing, setCapturing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [captureError, setCaptureError] = useState('');
+  const profile = previewProfiles.find(item => item.id === tab.previewDevice) || previewProfiles[0];
+  const width = tab.previewLandscape ? profile.height : profile.width;
+  const height = tab.previewLandscape ? profile.width : profile.height;
   const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
     let disposed = false;
@@ -72,13 +82,20 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
       }
     };
     const unsubscribe = api.onWorkspaceBrowserEvent(receive);
-    api.workspaceBrowserCreate(tab.id, document.documentElement.dataset.theme).then(async (current: BrowserState) => {
+    api.workspaceBrowserCreate(tab.id, document.documentElement.dataset.theme, tab.developmentPreview === true).then(async (current: BrowserState) => {
       if (disposed) return;
       receive({ ...current, id: tab.id }); setReady(true);
       if (tab.url && (!current.url || current.url === 'about:blank')) await api.workspaceBrowserCommand(tab.id, 'navigate', address(tab.url));
     }).catch((error: Error) => { if (!disposed) setState({ ...initial, error: String(error.message || error) }); });
     return () => { disposed = true; unsubscribe(); api.workspaceBrowserBounds(tab.id, null); clearTimeout(copiedTimer.current); };
-  }, [tab.id, owner, attempt]);
+  }, [tab.id, owner, attempt, tab.developmentPreview]);
+  useEffect(() => {
+    if (!ready || !tab.developmentPreview || !api) return;
+    let active = true;
+    void api.workspaceBrowserCommand(tab.id, 'emulate', width ? { width, height } : null)
+      .catch((error: Error) => { if (active) setCaptureError(error.message); });
+    return () => { active = false; };
+  }, [ready, tab.id, tab.developmentPreview, width, height, api]);
   useEffect(() => {
     if (!ready || !tab.browserNavigation) return;
     const request = tab.browserNavigation;
@@ -93,14 +110,14 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
     });
   }, [ready, tab.id, tab.browserNavigation, api, owner]);
   useEffect(() => {
-    if (!ready || !suggestions || !value.trim() || value === state.url) { setKeywords([]); return; }
+    if (!ready || !suggestions || !value.trim() || value === state.url || tab.developmentPreview) { setKeywords([]); return; }
     let cancelled = false;
     const timer = setTimeout(() => {
       void api.workspaceBrowserSuggest?.(tab.id, value).then((items: string[]) => { if (!cancelled) setKeywords(items || []); }).catch(() => {});
     }, 180);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [value, suggestions, ready, tab.id]);
-  const hasSuggestions = suggestions && (keywords.length > 0 || history.some(item => !value || value === state.url || (item.title + ' ' + item.url).toLowerCase().includes(value.toLowerCase())));
+  }, [value, suggestions, ready, tab.id, tab.developmentPreview]);
+  const hasSuggestions = !tab.developmentPreview && suggestions && (keywords.length > 0 || history.some(item => !value || value === state.url || (item.title + ' ' + item.url).toLowerCase().includes(value.toLowerCase())));
   viewportFlags.current = { url: state.url, error: state.error, overlay: occluded || hasSuggestions };
   useLayoutEffect(() => {
     if (!workspaceVisible) {
@@ -167,11 +184,11 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   const navigate = (entry = value) => {
     if (!entry.trim() || !ready) return;
     setSuggestions(false); input.current?.blur();
-    try { const url = address(entry); setValue(url); void command('navigate', url); } catch (error) { setState(previous => ({ ...previous, error: String(error) })); }
+    try { const url = tab.developmentPreview ? localWorkbenchUrl(entry).href : address(entry); setValue(url); void command('navigate', url); } catch (error) { setState(previous => ({ ...previous, error: String(error) })); }
   };
   const historyMatches = history.filter(item => !value || value === state.url || `${item.title} ${item.url}`.toLowerCase().includes(value.toLowerCase())).slice(0, 5);
   const suggestionLabels = new Set<string>();
-  const entries = [...historyMatches.map(item => ({ text: item.url, label: item.title || item.url, favicon: item.favicon, history: true })), ...keywords.map(keyword => ({ text: keyword, label: keyword, favicon: undefined, history: false }))].filter(entry => {
+  const entries = (tab.developmentPreview ? [] : [...historyMatches.map(item => ({ text: item.url, label: item.title || item.url, favicon: item.favicon, history: true })), ...keywords.map(keyword => ({ text: keyword, label: keyword, favicon: undefined, history: false }))]).filter(entry => {
     const key = entry.label.toLowerCase().replace(/\s*[-–—]\s*google search$/i, '').trim();
     if (suggestionLabels.has(key)) return false;
     suggestionLabels.add(key); return true;
@@ -198,9 +215,18 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
       {state.loading && <div className="eterx-workspace-loading-line" />}
     </form>
     {captureError && <div className="eterx-workspace-inline-error" role="alert">{captureError}<button aria-label="Dismiss error" onClick={() => setCaptureError('')}><X size={13} /></button></div>}
-    <div ref={viewport} className="eterx-workspace-browser-viewport">
-      {pageFrame && state.url && !state.error && <img key={pageFrame.revision} className="eterx-workspace-browser-frame" src={pageFrame.source} alt="" onLoad={() => frameReady.current?.(pageFrame.revision)} onError={() => frameReady.current?.(pageFrame.revision)} />}
-      {state.error ? <div className="eterx-workspace-empty" role="alert"><Globe size={30} /><h3>Unable to open this page</h3><p>{state.error}</p><button onClick={() => ready ? navigate() : setAttempt(value => value + 1)}>Try again</button></div> : !state.url && <div className="eterx-workspace-empty"><Globe size={36} strokeWidth={1.5} /><h3>{ready ? 'Search the web' : 'Starting browser…'}</h3><p>Enter a search or website address above.</p></div>}
+    {tab.developmentPreview && <div className="eterx-wb-preview-toolbar">
+      <div className="eterx-wb-switch" aria-label="Preview viewport">
+        {previewProfiles.map(({ id, label, icon: Icon }) => <button type="button" key={id} aria-pressed={profile.id === id} onClick={() => updateWorkspaceTab(owner, tab.id, { previewDevice: id })}><Icon size={15} />{label}</button>)}
+      </div>
+      {width > 0 && <><span className="eterx-wb-viewport-size">{width} × {height}</span><button type="button" className="eterx-wb-icon" aria-label="Rotate preview" title="Rotate preview" onClick={() => updateWorkspaceTab(owner, tab.id, { previewLandscape: !tab.previewLandscape })}><RotateCw size={15} /></button></>}
+      <button type="button" className="eterx-wb-icon" aria-label="Open preview developer tools" title="Developer tools" disabled={!ready} onClick={() => void command('inspect')}><ScanLine size={15} /></button>
+    </div>}
+    <div className="eterx-wb-browser-canvas" data-device-mode={Boolean(tab.developmentPreview && width)} style={width ? { '--wb-viewport-width': width + 'px', '--wb-viewport-aspect': width / height } as CSSProperties : undefined}>
+      <div ref={viewport} className="eterx-workspace-browser-viewport">
+        {pageFrame && state.url && !state.error && <img key={pageFrame.revision} className="eterx-workspace-browser-frame" src={pageFrame.source} alt="" onLoad={() => frameReady.current?.(pageFrame.revision)} onError={() => frameReady.current?.(pageFrame.revision)} />}
+        {state.error ? <div className="eterx-workspace-empty" role="alert"><Globe size={30} /><h3>Unable to open this page</h3><p>{state.error}</p><button onClick={() => ready ? navigate() : setAttempt(value => value + 1)}>Try again</button></div> : !state.url && <div className="eterx-workspace-empty"><Globe size={36} strokeWidth={1.5} /><h3>{ready ? tab.developmentPreview ? 'Open a local service' : 'Search the web' : 'Starting browser…'}</h3><p>{tab.developmentPreview ? 'Enter a loopback address above.' : 'Enter a search or website address above.'}</p></div>}
+      </div>
     </div>
   </div>;
 }

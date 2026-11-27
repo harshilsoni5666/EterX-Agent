@@ -28,6 +28,7 @@ import { contextMemoryTool } from './core/context_memory';
 // wired to the UI's expandable real-diff experience.
 import { workspaceEditFileTool } from './workspace/consolidated_edit';
 import { workspaceRunCommandTool } from './workspace/execution';
+import { workspaceWorkbenchTool } from './workspace/workbench';
 
 // Connected communication surfaces.
 import { gatewayBridgeTool } from './communication/gateway_bridge';
@@ -90,6 +91,7 @@ const BUILTIN_TOOLS = [
 
   workspaceEditFileTool,
   workspaceRunCommandTool,
+  workspaceWorkbenchTool,
 
   channelAgentTool,
   gatewayBridgeTool,

@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { driverCommand } from './cua-driver';
 import { CuaToolError, cuaDiagnostic, decodeCuaToolResult, type CuaResponse } from './cua-response';
+import { measureMcpInvocation } from '../../telemetry/runtime';
 
 type Schema = { properties?: Record<string, unknown>; required?: string[] };
 type Reply = { resolve: (value: any) => void; reject: (reason: Error) => void };
@@ -135,9 +136,11 @@ export class CuaConnection {
   async call(tool: string, args: Record<string, unknown>, options: Options, onDispatch?: () => void): Promise<CuaResponse> {
     if (!this.tools.has(tool)) throw new CuaToolError(`This installation of Cua Driver does not expose ${tool}.`, true);
     try {
-      const result = await this.request('tools/call', { name: tool, arguments: { ...args, session: this.session } }, options, onDispatch);
-      if (!Array.isArray(result?.content)) throw new Error(`Cua Driver returned an unreadable ${tool} response.`);
-      return decodeCuaToolResult(result);
+      return await measureMcpInvocation('computer_use', async () => {
+        const result = await this.request('tools/call', { name: tool, arguments: { ...args, session: this.session } }, options, onDispatch);
+        if (!Array.isArray(result?.content)) throw new Error(`Cua Driver returned an unreadable ${tool} response.`);
+        return decodeCuaToolResult(result);
+      });
     } catch (error) {
       if (error instanceof Error) {
         const detail = cuaDiagnostic(error.message, args);

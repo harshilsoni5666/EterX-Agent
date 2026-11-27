@@ -30,6 +30,7 @@ const CAPABILITY_BY_TOOL: Record<string, string> = {
   video_generator: 'network.public',
 
   workspace_run_command: 'command.workspace',
+  workspace_workbench: 'tool.utility',
   spawn_sub_agent: 'agent.spawn',
 
   browser_control: 'browser.control',

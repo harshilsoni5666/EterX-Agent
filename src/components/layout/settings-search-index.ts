@@ -41,7 +41,10 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
   appearance: [
     { title: 'Theme', keywords: 'dark mode light mode system theme color scheme display night white black' },
     { title: 'UI density', keywords: 'spacing text size font size compact comfortable default scaling zoom layout' },
-    { title: 'UI font size', keywords: 'text size lettering bigger smaller pixels scaling typography' },
+    { title: 'Workspace folder', section: 'Project/Folder', target: 'workspace-folder', keywords: 'project folder directory path choose new chats recent' },
+    { title: 'Focus sidebar icon', section: 'Project/Folder', target: 'focus-sidebar-icon', fallbackTarget: 'workspace-folder', keywords: 'workspace folder logo avatar monogram custom image upload generate refresh' },
+    { title: 'Contrast', section: 'Readability', keywords: 'accessibility readability contrast text borders visibility' },
+    { title: 'Diff colors', section: 'Readability', keywords: 'diff color scheme palette code review changes additions deletions accessibility' },
   ],
   import: [
     { title: 'Keep imports in sync', section: 'Automatic sync', keywords: 'auto refresh local sources one way background updates', target: 'import-auto-sync' },
@@ -94,24 +97,22 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
     { title: 'Safe boundary', section: 'Runtime behavior', keywords: 'compaction model iteration safe tool call file edit' },
     { title: 'Automatic resume', section: 'Runtime behavior', keywords: 'continue active run capsule auto compaction after summarizing' },
   ],
-  models: [
-    { title: 'Model connection', keywords: 'connect model provider local cloud' },
-    { title: 'Provider', section: 'Model connection', keywords: 'main agent model provider cloud local vendor' },
-    { title: 'Model', section: 'Model connection', keywords: 'main agent default active model select picker catalog' },
-    { title: 'API base URL', section: 'Model connection', keywords: 'custom endpoint server gateway override openai compatible host docker local ollama' },
-    { title: 'Exact model ID', keywords: 'custom manual model slug exact openrouter model exact groq model snapshot add', target: 'exact-model' },
-    { title: 'Chat model list', keywords: 'models picker selector manage selected saved models remove' },
-    { title: 'Live model discovery', keywords: 'refresh catalog fetch available models provider availability' },
-  ],
   subscription: [
-    { title: 'ChatGPT accounts', section: 'Codex', keywords: 'sign in openai subscription plan add connect switch active workspace sign out', target: 'chatgpt-subscription' },
-    { title: 'ChatGPT usage status', section: 'Codex', keywords: 'subscription rate limits quota last request', target: 'chatgpt-usage', fallbackTarget: 'chatgpt-subscription' },
+    { title: 'Codex accounts', section: 'Codex', keywords: 'sign in openai chatgpt subscription plan add connect switch active workspace sign out', target: 'chatgpt-subscription' },
+    { title: 'Codex usage status', section: 'Codex', keywords: 'chatgpt subscription rate limits quota last request', target: 'chatgpt-usage', fallbackTarget: 'chatgpt-subscription' },
     { title: 'Available models', section: 'Codex', keywords: 'chatgpt catalog refresh models', target: 'chatgpt-models', fallbackTarget: 'chatgpt-subscription' },
+    { title: 'Google account', section: 'Antigravity', keywords: 'sign in connect install runtime subscription Google ACP', target: 'antigravity-connection' },
+    { title: 'Available models', section: 'Antigravity', keywords: 'Google catalog refresh models Antigravity', target: 'antigravity-models', fallbackTarget: 'antigravity-connection' },
+    { title: 'Cursor accounts', section: 'Cursor', keywords: 'sign in browser connect Cursor API key models', target: 'cursor-connection' },
+    { title: 'Grok Build accounts', section: 'Grok Build', keywords: 'sign in device code xAI local runtime CLI models', target: 'grok-build-connection' },
+    { title: 'Claude Code accounts', section: 'Claude Code', keywords: 'sign in Anthropic local CLI runtime models', target: 'claude-code-connection' },
+    { title: 'Subscription limit alerts', section: 'Subscription', keywords: 'notify quota rate limit reached retry reset multiple accounts', target: 'subscription-limit-alerts' },
   ],
   api: [
     { title: 'Provider', section: 'API connections', keywords: 'select model provider vendor key pool credentials' },
-    { title: 'API keys', section: 'API connections', keywords: 'apikey key pool credentials secret authentication provider model access token add rotate' },
-    { title: 'Model', section: 'API connections', keywords: 'add connected provider model manage models chat selector', fallbackTarget: 'API keys' },
+    { title: 'API keys', section: 'API connections', keywords: 'apikey key pool credentials secret authentication provider model access token add rotate chat picker catalog discovery' },
+    { title: 'API base URL', section: 'API connections', keywords: 'custom endpoint server gateway override openai compatible host docker local ollama' },
+    { title: 'Exact model ID', section: 'API connections', keywords: 'custom manual model slug local endpoint snapshot add', target: 'exact-model', fallbackTarget: 'API base URL' },
     { title: 'API retries', section: 'Service APIs', keywords: 'retry attempts provider key failover maximum max retry count' },
     { title: 'Code platform', section: 'Service APIs', keywords: 'github token personal access pat git repository api key credentials' },
   ],
@@ -144,6 +145,11 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
     { title: 'Experimental features', keywords: 'beta early access developer new features feature flags' },
     { title: 'Clear agent memory', section: 'Data', keywords: 'reset delete erase wipe local settings preferences api keys clean' },
     { title: 'Export all settings', section: 'Data', keywords: 'backup download configuration data json local preferences' },
+  ],
+  connections: [
+    { title: 'Local devices', keywords: 'workbench device manager this computer SDK android emulator platform tools Xcode simulator readiness', target: 'local-device-runtimes' },
+    { title: 'Remote machines', keywords: 'ssh connection remote host add enable disable mac macos linux android development simulator workbench connect', target: 'remote-device-connections' },
+    { title: 'Device setup', keywords: 'install download iphone ipad apple watch tv visionos android studio xcode sdk idb SSH keys remote login requirements', target: 'device-setup' },
   ],
   browser: [
     { title: 'Use built-in model search first', section: 'Web search', keywords: 'native web grounding browse prefer model builtin search priority' },
@@ -185,8 +191,8 @@ const SETTINGS: Record<SettingsSearchTab, readonly Setting[]> = {
 
 export type SettingsSearchTab =
   | 'general' | 'profile' | 'appearance' | 'import' | 'configuration' | 'agents'
-  | 'personalization' | 'mcp' | 'tokens' | 'context' | 'models' | 'subscription' | 'api' | 'live-convo'
-  | 'git' | 'environments' | 'browser' | 'computer' | 'updates';
+  | 'personalization' | 'mcp' | 'tokens' | 'context' | 'subscription' | 'api' | 'live-convo'
+  | 'git' | 'environments' | 'connections' | 'browser' | 'computer' | 'updates';
 
 export type SettingsSearchResult = Omit<Setting, 'keywords' | 'target'> & {
   tab: SettingsSearchTab;

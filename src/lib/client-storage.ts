@@ -5,6 +5,7 @@ type StorageValues = Record<string, string>;
 const PREFERENCES_ENDPOINT = '/api/preferences';
 const PREFERENCES_CHANNEL = 'eterx-preferences';
 export const FOLDER_STORAGE_READY_EVENT = 'eterx-folder-storage-ready';
+const FOLDER_STORAGE_UPDATED_EVENT = 'eterx-folder-storage-updated';
 const SENSITIVE_KEYS = new Set([
   'eterx_api_keys',
   'eterx_model_api_keys',
@@ -171,12 +172,25 @@ const dispatchStorageUpdate = (key: string, removed = false) => {
     const notifications = Array.from(pendingStorageNotifications);
     pendingStorageNotifications.clear();
     for (const [changedKey, wasRemoved] of notifications) {
-      window.dispatchEvent(new CustomEvent('eterx-folder-storage-updated', {
+      window.dispatchEvent(new CustomEvent(FOLDER_STORAGE_UPDATED_EVENT, {
         detail: { key: changedKey, removed: wasRemoved },
       }));
     }
   });
 };
+
+export function subscribeAppStorageKeys(keys: readonly string[], onChange: () => void) {
+  const onUpdate = (event: Event) => {
+    const key = (event as CustomEvent<{ key: string }>).detail?.key;
+    if (key && keys.includes(key)) onChange();
+  };
+  window.addEventListener(FOLDER_STORAGE_UPDATED_EVENT, onUpdate);
+  window.addEventListener(FOLDER_STORAGE_READY_EVENT, onChange);
+  return () => {
+    window.removeEventListener(FOLDER_STORAGE_UPDATED_EVENT, onUpdate);
+    window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onChange);
+  };
+}
 
 const notifyPreferencesCommitted = () => {
   if (!isBrowser || typeof BroadcastChannel === 'undefined') return;

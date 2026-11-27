@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useSyncExternalStore } from 'react';
+import type { ChatCommitReceipt } from './git/chat-commits';
 
 export interface LiveChatSnapshot {
   id: string;
@@ -9,6 +10,7 @@ export interface LiveChatSnapshot {
   traceLogs: any[];
   workspacePath?: string | null;
   modelSelection?: string;
+  workspaceCommits?: ChatCommitReceipt[];
   isFavorite?: boolean;
 }
 

@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { isAccountModelProvider } from '../../lib/agent/model-selector-store';
 
 type SettingsTab =
   | 'general'
@@ -13,12 +14,12 @@ type SettingsTab =
   | 'shortcuts'
   | 'mcp'
   | 'hooks'
-  | 'models'
   | 'subscription'
   | 'api'
   | 'live-convo'
   | 'git'
   | 'environments'
+  | 'connections'
   | 'worktrees'
   | 'browser'
   | 'computer'
@@ -28,8 +29,8 @@ type SettingsTab =
 const TAB_ALIASES: Record<string, SettingsTab> = {
   account: 'profile',
   agent: 'configuration',
-  connections: 'models',
   advanced: 'environments',
+  models: 'api',
   live: 'live-convo',
   liveconvo: 'live-convo',
 };
@@ -43,12 +44,12 @@ const VALID_TABS = new Set<SettingsTab>([
   'shortcuts',
   'mcp',
   'hooks',
-  'models',
   'subscription',
   'api',
   'live-convo',
   'git',
   'environments',
+  'connections',
   'worktrees',
   'browser',
   'computer',
@@ -78,6 +79,7 @@ const SettingsPanel = dynamic(
 export default function SettingsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const subscriptionProvider = searchParams.get('provider');
   const initialTab = useMemo<SettingsTab>(() => {
     const requested = String(searchParams.get('tab') || 'general').toLowerCase();
     const tab = (TAB_ALIASES[requested] || requested) as SettingsTab;
@@ -88,6 +90,7 @@ export default function SettingsPage() {
     <SettingsPanel
       isOpen
       initialTab={initialTab}
+      initialSubscriptionProvider={isAccountModelProvider(subscriptionProvider) ? subscriptionProvider : 'codex'}
       standalone
       onClose={() => {
         if (window.opener) {

@@ -5,7 +5,7 @@ import { Loader2, Maximize2, Minimize2, Minus, Plus, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ProxyAgentControls, type ProxyAgentControlState } from './proxy-agent-controls';
 import { ProxyChatActions } from './proxy-chat-actions';
-import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
+import { markdownComponents, normalizeMarkdownForRendering, rehypePlugins, replyRemarkPlugins } from './markdown-renderer';
 import { localAwareUrlTransform } from './local-file-link';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import type { ProxyManagerSnapshot } from '../../lib/proxy-chat-client';
@@ -179,7 +179,7 @@ export function WorkspaceProxyControls({ chatId, controls, load, send, refreshRu
       <div ref={feed} className="eterx-proxy-message-feed flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden p-4 eterx-scrollbar" onScroll={event => { const node = event.currentTarget; autoScroll.current = node.scrollHeight - node.scrollTop - node.clientHeight < 64; }}>
         {loading && !messages.length ? <span role="status" className="text-[12px] text-white/50">Loading Proxy messages…</span> : !messages.length && <div className="m-auto px-3 py-6 text-center"><p className="text-[14px] font-semibold text-white/75">{controls.paused ? 'Proxy is paused' : 'Coordinate the work'}</p><p className="mt-2 text-[12px] leading-relaxed text-white/45">{controls.paused ? 'Autonomous remains on. Resume Proxy to continue coordinating from the current progress.' : 'Add a goal, guide the active run, schedule what comes next, or ask for a status update.'}</p></div>}
         {messages.map(message => <div key={message.id} className={`eterx-proxy-message-bubble min-w-0 max-w-[92%] text-[12.5px] leading-relaxed [overflow-wrap:anywhere] ${message.role === 'user' ? 'self-end rounded-xl border border-white/[0.08] bg-[#242424] px-3 py-2 text-white/90 whitespace-pre-wrap' : 'self-start text-white/80'}`}>
-          {message.role === 'user' ? message.text : <div className="proxy-manager-markdown min-w-0 max-w-full"><ReactMarkdown urlTransform={localAwareUrlTransform} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>{normalizeMarkdownForRendering(message.text)}</ReactMarkdown></div>}
+          {message.role === 'user' ? message.text : <div className="proxy-manager-markdown min-w-0 max-w-full"><ReactMarkdown urlTransform={localAwareUrlTransform} remarkPlugins={replyRemarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>{normalizeMarkdownForRendering(message.text)}</ReactMarkdown></div>}
         </div>)}
         {(sending || processing) && <div role="status" className="flex min-w-0 items-start gap-2 text-[11px] text-white/50"><Loader2 size={13} className="mt-0.5 shrink-0 animate-spin" /><span className="min-w-0 [overflow-wrap:anywhere]">{progress || 'Proxy is responding…'}</span></div>}
       </div>

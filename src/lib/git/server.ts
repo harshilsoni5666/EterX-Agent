@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { readCommitSummary } from './chat-commits';
 import type { GitBranch, GitCommit, GitDiff, GitFile, GitFileStats, GitMutation, GitMutationResult, GitSnapshot, GitStash, GitStatus } from './types';
 
 export class GitError extends Error {
@@ -307,8 +308,9 @@ export async function mutateRepository(input: GitMutation): Promise<GitMutationR
       if (!current.files.some(file => file.index !== ' ' && !file.untracked) && current.operation !== 'MERGE_HEAD') throw new GitError('Stage at least one change before committing.');
       const message = typeof input.message === 'string' ? input.message.trim() : '';
       if (!message || message.length > 20_000 || message.includes('\0')) throw new GitError('Enter a commit message of up to 20,000 characters.');
-      await git(root, ['commit', '-m', message], true);
-      return { message: 'Staged changes committed.' };
+      const output = await git(root, ['commit', '-m', message], true);
+      const commit = readCommitSummary(output, Date.now());
+      return { message: 'Staged changes committed.', commit };
     }
     if (['fetch', 'pull', 'push'].includes(input.action)) {
       const remote = input.remote || current.remotes[0];

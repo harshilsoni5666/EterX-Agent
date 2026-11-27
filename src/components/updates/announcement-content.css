@@ -1,0 +1,69 @@
+.app-announcement-content {
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  color: var(--announcement-text, inherit);
+}
+.app-announcement-content > :first-child { margin-top: 0; }
+.app-announcement-content > :last-child { margin-bottom: 0; }
+.app-announcement-content :where(p, ul, ol, blockquote, figure, pre, table) { margin: 0 0 14px; }
+.app-announcement-content :where(h1, h2, h3, h4) {
+  margin: 20px 0 7px;
+  color: var(--announcement-heading, inherit);
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+.app-announcement-content :where(h1, h2) { font-size: 19px; letter-spacing: -.02em; }
+.app-announcement-content :where(ul, ol) { padding-inline-start: 1.55em; }
+.app-announcement-content ul { list-style: disc; }
+.app-announcement-content ol { list-style: decimal; }
+.app-announcement-content li + li { margin-top: 4px; }
+.app-announcement-content li :where(p, ul, ol) { margin-bottom: 4px; }
+.app-announcement-content :where(a, .announcement-preview-link) {
+  color: var(--announcement-heading, inherit);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.app-announcement-content :where(blockquote, pre, code) {
+  background: var(--announcement-inset, rgba(127, 127, 127, .09));
+  border-radius: 6px;
+}
+.app-announcement-content blockquote { padding: 8px 13px; border-inline-start: 2px solid var(--announcement-line, #8886); }
+.app-announcement-content blockquote > :last-child { margin-bottom: 0; }
+.app-announcement-content code { padding: .12em .36em; font: .9em var(--font-mono, ui-monospace, monospace); }
+.app-announcement-content pre { padding: 10px 12px; white-space: pre-wrap; }
+.app-announcement-content pre code { padding: 0; background: transparent; }
+.app-announcement-content hr { margin: 16px 0; border: 0; border-top: 1px solid var(--announcement-line, #8886); }
+.app-announcement-content img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 58dvh;
+  margin: 10px 0;
+  border-radius: 8px;
+  object-fit: contain;
+}
+.app-announcement-content figcaption { font-size: .85em; }
+.app-announcement-content table { width: 100%; border-collapse: collapse; font-size: .91em; }
+.app-announcement-content :where(td, th) {
+  padding: 6px 9px;
+  border: 1px solid var(--announcement-line, #8886);
+  text-align: start;
+}
+.app-announcement-content th { font-weight: 650; }
+.app-announcement-section {
+  padding: 14px 16px;
+  border: 1px solid var(--announcement-line, #8886);
+  border-radius: 10px;
+}
+.app-announcement-content + .app-announcement-section,
+.app-announcement-section + .app-announcement-section { margin-top: 12px; }
+.app-announcement-section > h2 {
+  margin: 0 0 7px;
+  color: var(--announcement-heading, inherit);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+}

@@ -1,8 +1,54 @@
 import { appStorage } from './client-storage';
-import { SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from './scheduled-tasks';
+import { SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord, type ScheduledFocusUpdate } from './scheduled-tasks';
 
 let writeChain: Promise<boolean> = Promise.resolve(true);
 let writeSequence = 0;
+const SYNC_PENDING_KEY = 'eterx_scheduled_tasks_sync_pending';
+let updatingFocus = false;
+
+export const scheduledTaskFocusWriteInFlight = () => updatingFocus;
+
+export function pendingScheduledTaskWriteAt(): number {
+  return Number(appStorage.getItem(SYNC_PENDING_KEY)?.split('-')[0]) || 0;
+}
+
+export function updateScheduledTaskFocus(id: string, update: ScheduledFocusUpdate): Promise<void> {
+  const write = async () => {
+    updatingFocus = true;
+    const syncToken = Date.now() + '-' + (++writeSequence);
+    appStorage.setItem(SYNC_PENDING_KEY, syncToken);
+    try {
+      const response = await fetch('/api/scheduled-tasks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, ...update }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const snapshot = await response.json().catch(() => null);
+      if (!response.ok || !Array.isArray(snapshot?.tasks)) {
+        throw new Error(snapshot?.error || 'Unable to save the scheduled task.');
+      }
+      if (appStorage.getItem(SYNC_PENDING_KEY) === syncToken) {
+        appStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(snapshot.tasks));
+        const task = snapshot.tasks.find((item: ScheduledTaskRecord) => item.id === id);
+        if (update.action === 'reschedule' && update.at === 'now' && task?.status === 'queued') {
+          window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task } }));
+        }
+        window.dispatchEvent(new CustomEvent(SCHEDULED_TASKS_UPDATED_EVENT));
+      }
+    } finally {
+      updatingFocus = false;
+      if (appStorage.getItem(SYNC_PENDING_KEY) === syncToken) appStorage.removeItem(SYNC_PENDING_KEY);
+    }
+  };
+  const prior = writeChain;
+  const queued = prior.then(saved => {
+    if (!saved) throw new Error('Earlier task changes are still unsaved. Try again after they sync.');
+    return write();
+  });
+  writeChain = queued.then(() => true, () => prior);
+  return queued;
+}
 
 /**
  * Keep the renderer cache and the AppData scheduled-task store in one

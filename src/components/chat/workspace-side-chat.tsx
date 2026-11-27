@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowRight, ArrowUpLeft, Folder, Loader2, Search } from 'luc
 import { MessagesCircle } from './workspace-icons';
 import { PremiumEdit } from '../ui/premium-icons';
 import { ChatFeed } from './chat-feed';
+import { ChatHistoryNotice, type ChatHistoryStatus } from './chat-history-notice';
 import { ChatInput, type ChatInputProps } from '../layout/chat-input';
 import type { MainAgentMode, MainAgentThinkingLevel } from '../../lib/agent/model-routing';
 import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
@@ -40,6 +41,7 @@ type SideChatControls = Pick<ChatInputProps,
 >;
 export type SideChatActions = {
   hydrate: (id: string) => Promise<void>;
+  getHistoryStatus: (id: string) => ChatHistoryStatus;
   draft: (id: string) => SideChatDraft;
   saveDraft: (id: string, draft: SideChatDraft, persist?: boolean) => void;
   controls: (id: string, settings: SideChatSettings) => SideChatControls;
@@ -129,8 +131,13 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     latest.current = { ...draft, settings: nextSettings };
     setSettingsState(nextSettings);
   }, [id, workspaceRevision]);
-  const [loading, setLoading] = useState(Boolean(chat));
   const [error, setError] = useState('');
+  const hasChat = Boolean(chat);
+  const ownedLogs = useMemo(() => (chat?.traceLogs || emptyLogs).filter(log =>
+    traceBelongsToUsageChat(log, id)
+  ), [chat?.traceLogs, id]);
+  const historyStatus = hasChat && !running && ownedLogs.length === 0 ? actions.getHistoryStatus(id) : 'ready';
+  const historyLoading = historyStatus === 'loading';
   const dictation = useLocalDictation({ getText: () => textRef.current, onText: setText, onError: setError });
   const [sending, setSending] = useState(false);
   const [showBottom, setShowBottom] = useState(false);
@@ -158,10 +165,6 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
   }, [id]);
   useEffect(() => {
     alive.current = true;
-    if (chat) {
-      void actionsRef.current.hydrate(id).then(restoreDraft).catch(error => { if (alive.current) setError(String(error.message || error)); }).finally(() => { if (alive.current) setLoading(false); });
-      actionsRef.current.read(id);
-    }
     return () => {
       alive.current = false;
       if (draftTimer.current !== null) {
@@ -170,11 +173,19 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
         actionsRef.current.saveDraft(id, latest.current);
       }
     };
+  }, [id]);
+  const reloadHistory = useCallback(() => {
+    void actionsRef.current.hydrate(id).then(restoreDraft);
   }, [id, restoreDraft]);
+  useEffect(() => {
+    if (!hasChat) return;
+    reloadHistory();
+    actionsRef.current.read(id);
+  }, [id, hasChat, reloadHistory]);
   useEffect(() => { if (running) { submitLock.current = false; setSending(false); } }, [running]);
   const submit = () => {
     const current = { ...latest.current, text: textRef.current };
-    if (loading || submitLock.current || (!current.text.trim() && !current.attachments.length)) return;
+    if (historyLoading || submitLock.current || (!current.text.trim() && !current.attachments.length)) return;
     dictation.stop();
     const sequence = ++submitSequence.current;
     submitLock.current = true; setSending(true); setError(''); setText(''); setAttachments([]);
@@ -193,9 +204,6 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     events.forEach(event => window.addEventListener(event, refresh));
     return () => events.forEach(event => window.removeEventListener(event, refresh));
   }, [restoreDraft]);
-  const ownedLogs = useMemo(() => (chat?.traceLogs || emptyLogs).filter(log =>
-    traceBelongsToUsageChat(log, id)
-  ), [chat?.traceLogs, id]);
   const controls = actions.controls(id, settings);
   const proxyControls = actions.proxyControls(id, settings);
   const [proxyConnectionError, setProxyConnectionError] = useState('');
@@ -216,7 +224,9 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
         }
         if (!cancelled) setProxyConnectionError('');
       } catch (failure) {
-        if (!cancelled) setProxyConnectionError(failure instanceof Error ? failure.message : 'Could not connect to Proxy.');
+        if (!cancelled && proxyControls.enabled) {
+          setProxyConnectionError(failure instanceof Error ? failure.message : 'Could not connect to Proxy.');
+        }
       } finally { connecting = false; }
     };
     const refresh = () => { void connect(); };
@@ -270,9 +280,9 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
   return <FilePanelReveal value={() => actions.openMain(id)}><div className="eterx-conversation-layout eterx-workspace-side-layout">
     {proxyControls.enabled && <WorkspaceProxyControls key={id} chatId={id} controls={proxyControls} load={() => actionsRef.current.loadProxy(id)} send={(request, onProgress) => actionsRef.current.sendProxy(id, request, onProgress)} refreshRun={() => actionsRef.current.refreshProxyRun(id)} />}
     <div ref={pane} className="eterx-workspace-side-conversation eterx-conversation-pane">
-    {loading && <div className="eterx-workspace-chat-loading"><Loader2 size={15} className="animate-spin" /> Loading conversation…</div>}
-    {proxyConnectionError && <div className="eterx-workspace-inline-error" role="alert">{proxyConnectionError}<button onClick={() => setProxyConnectionRevision(revision => revision + 1)}>Retry Proxy connection</button></div>}
-    {error && <div className="eterx-workspace-inline-error" role="alert">{error}{loading === false && chat && !chat.traceLogs.length && <button onClick={() => { setError(''); setLoading(true); void actions.hydrate(id).then(restoreDraft).catch(error => setError(String(error))).finally(() => setLoading(false)); }}>Retry</button>}</div>}
+    <ChatHistoryNotice status={historyStatus} conversation onRetry={reloadHistory} className="shrink-0 px-3.5 py-2 text-[var(--ws-muted)]" />
+    {proxyControls.enabled && proxyConnectionError && <div className="eterx-workspace-inline-error" role="alert">{proxyConnectionError}<button onClick={() => setProxyConnectionRevision(revision => revision + 1)}>Retry Proxy connection</button></div>}
+    {error && <div className="eterx-workspace-inline-error" role="alert">{error}</div>}
     <ChatFeed workspaceOwner={workspaceOwner} scrollContainerId={`side-chat-${tabId}`} traceLogs={ownedLogs} chatId={id} isThinking={running || sending} messagesEndRef={end} setSidebarOpen={ignore} sidebarOpen={false} handleScroll={event => { const node = event.currentTarget; setShowBottom(node.scrollHeight - node.scrollTop - node.clientHeight > 100); }} showScrollBottom={false} isCompressed workspacePath={settings.workspacePath} onEditUserMessage={setText} onAnswerAskUser={answerQuestion} media={chatMedia} liveState={controls.liveState} />
     <ChatInput
       {...controls}
@@ -292,7 +302,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
       contextUsage={contextUsage}
       chatUsage={chatUsage}
       taskTracker={taskTracker}
-      onImplementPlan={loading || sending || running ? undefined : reference => actions.send(id, 'Please implement the plan.', [], latest.current.settings, latest.current.pinnedItems, reference)}
+      onImplementPlan={historyLoading || sending || running ? undefined : reference => actions.send(id, 'Please implement the plan.', [], latest.current.settings, latest.current.pinnedItems, reference)}
       chatTitle={chat?.title || 'New side chat'}
       onLiveStart={startLive}
       handleSend={submit}
@@ -336,13 +346,25 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
   </div></div></FilePanelReveal>;
 });
 
-export function WorkspaceSideChat({ owner, tab, chats, liveChatLedger, mainChatId, runningChats, actions }: { owner: string; tab: WorkspaceTab; chats: SideChatSession[]; liveChatLedger?: LiveChatLedger; mainChatId: string | null; runningChats: Set<string>; actions: SideChatActions }) {
+export function WorkspaceSideChat({ owner, tab, chats, liveChatLedger, mainChatId, runningChats, historyStatus, retryHistory, actions }: {
+  owner: string;
+  tab: WorkspaceTab;
+  chats: SideChatSession[];
+  liveChatLedger?: LiveChatLedger;
+  mainChatId: string | null;
+  runningChats: Set<string>;
+  historyStatus: ChatHistoryStatus;
+  retryHistory: () => void;
+  actions: SideChatActions;
+}) {
   const [search, setSearch] = useState('');
   const history = tab.chatHistory || (tab.chatId ? ['', tab.chatId] : ['']);
   const position = tab.chatPosition ?? history.length - 1;
   const liveChat = useLiveChat(liveChatLedger, tab.chatId || '');
   const current = liveChatLedger ? liveChat : chats.find(chat => chat.id === tab.chatId);
   const selected = tab.chatId && tab.chatId !== mainChatId ? tab.chatId : null;
+  const query = search.trim().toLowerCase();
+  const matchingChats = selected ? [] : chats.filter(chat => chat.id !== mainChatId && chat.title.toLowerCase().includes(query));
   const select = (id: string) => {
     const nextHistory = [...history.slice(0, position + 1), id];
     updateWorkspaceTab(owner, tab.id, { chatId: id || undefined, title: id ? chats.find(item => item.id === id)?.title || 'New side chat' : 'Side chat', chatHistory: nextHistory, chatPosition: nextHistory.length - 1 });
@@ -363,7 +385,20 @@ export function WorkspaceSideChat({ owner, tab, chats, liveChatLedger, mainChatI
     </div>
     {selected ? <PlanPanelOwner.Provider value={owner}><Conversation key={selected} id={selected} tabId={tab.id} workspaceOwner={selected} chat={current} running={runningChats.has(selected)} actions={actions} /></PlanPanelOwner.Provider> : <div className="eterx-workspace-chat-picker">
       <div className="eterx-workspace-search"><Search size={16} /><input aria-label="Search conversations" placeholder="Find a conversation…" value={search} onChange={event => setSearch(event.target.value)} /></div>
-      <div className="eterx-workspace-chat-list eterx-scrollbar">{chats.filter(chat => chat.id !== mainChatId && chat.title.toLowerCase().includes(search.toLowerCase())).map(chat => <button key={chat.id} onClick={() => select(chat.id)} className="eterx-workspace-chat-row"><MessagesCircle size={17} /><span><strong>{chat.title}</strong></span>{chat.workspacePath && <span className="eterx-workspace-chat-folder" title={chat.workspacePath}><Folder size={12} /><span>{chat.workspacePath.split(/[\\/]/).filter(Boolean).pop()}</span></span>}{runningChats.has(chat.id) ? <Loader2 size={15} className="animate-spin" /> : <span className="eterx-workspace-chat-time">{new Date(chat.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>}</button>)}{!chats.some(chat => chat.id !== mainChatId && chat.title.toLowerCase().includes(search.toLowerCase())) && <div className="eterx-workspace-empty"><p>No conversations found.</p><button onClick={() => select(crypto.randomUUID())}>Start a side chat</button></div>}</div>
+      <div className="eterx-workspace-chat-list eterx-scrollbar">
+        {matchingChats.map(chat => (
+          <button key={chat.id} onClick={() => select(chat.id)} className="eterx-workspace-chat-row">
+            <MessagesCircle size={17} /><span><strong>{chat.title}</strong></span>
+            {chat.workspacePath && <span className="eterx-workspace-chat-folder" title={chat.workspacePath}><Folder size={12} /><span>{chat.workspacePath.split(/[\\/]/).filter(Boolean).pop()}</span></span>}
+            {runningChats.has(chat.id) ? <Loader2 size={15} className="motion-safe:animate-spin" /> : <span className="eterx-workspace-chat-time">{new Date(chat.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>}
+          </button>
+        ))}
+        {matchingChats.length === 0 && (historyStatus !== 'ready' ? (
+          <ChatHistoryNotice status={historyStatus} onRetry={retryHistory} className="justify-center px-3 py-6 text-[var(--ws-muted)]" />
+        ) : (
+          <div className="eterx-workspace-empty"><p>No conversations found.</p><button onClick={() => select(crypto.randomUUID())}>Start a side chat</button></div>
+        ))}
+      </div>
     </div>}
   </div>;
 }

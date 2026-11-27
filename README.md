@@ -10,17 +10,17 @@
 </p>
 
 <p align="center">
-  <a href="https://youtu.be/fR42EhxrjII?si=Gw0fPMfN4gYRlfSb">
-    <img src="./docs/screenshots/eterx-youtube-thumbnail.png" width="100%" alt="Watch the EterX demo on YouTube">
+  <a href="https://youtu.be/hg3WTv2qFnE?si=Dg7uS76cZ5l-Ethj">
+    <img src="./docs/screenshots/eterx-youtube-thumbnail.png" width="100%" style="border-radius: 24px;" alt="Business Analysis demo showing Alphabet vs Meta with autonomous agents">
   </a>
 </p>
 
 EterX brings conversations, tools, files, terminals, browsers, and collaborating agents into one desktop application. Choose a model and an agent, describe the outcome you want, and follow the work as it happens. You can steer an active task, inspect each delegated agent in its own tab, review file changes, or enable a proxy agent to supervise longer workflows.
 
-The application runs on **Windows, macOS, and Linux**. Chats, settings, and memory are stored locally; model inference runs through the cloud provider or local model server you connect.
+You can also bring your ChatGPT, Claude, Cursor, Antigravity, and Grok work into EterX.
 
 <p align="center">
-  <a href="https://youtu.be/fR42EhxrjII?si=Gw0fPMfN4gYRlfSb">Watch demo</a> ·
+  <a href="https://youtu.be/hg3WTv2qFnE?si=Dg7uS76cZ5l-Ethj">Watch demo</a> ·
   <a href="#install-eterx">Install</a> ·
   <a href="#first-run">First run</a> ·
   <a href="#choose-your-agent">Agents</a> ·
@@ -50,9 +50,9 @@ Choose a light, dark, or system theme in **Settings → Appearance**.
 
 ## Install EterX
 
-Use the command for your operating system. The bootstrap detects your processor, downloads the matching published release, checks its SHA-256 manifest, and installs the compiled desktop application. **Desktop users do not need Node.js, npm, or the source repository.**
+Use the command for your operating system. It downloads the matching release, verifies its SHA-256 checksum, and installs the desktop app. You don't need Node.js or a source checkout.
 
-Downloads use bounded retries and a persistent partial-download cache. If a connection stalls or the terminal closes, rerun the same command to resume the matching release.
+If a download stalls, rerun the command to resume from its partial-download cache.
 
 ### Windows
 
@@ -62,9 +62,11 @@ Open **PowerShell**, paste this command, and press Enter:
 irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex
 ```
 
-Run it directly in PowerShell without wrapping it in another `powershell.exe` invocation. Keep only one installer running at a time.
+Run the command directly in PowerShell, and keep only one installer running at a time.
 
-The per-user NSIS installer lets you choose the application folder and Desktop/Start Menu shortcuts. The default per-user installation does not require administrator access. Launch EterX from the shortcut when installation finishes.
+- Choose the install folder and Desktop or Start Menu shortcuts.
+- The default per-user install does not need administrator access.
+- Launch EterX from its shortcut when installation finishes.
 
 ### macOS
 
@@ -74,11 +76,9 @@ Open **Terminal**, paste this command, and press Return:
 curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect-timeout 60 --max-time 300 https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
 ```
 
-The same command supports **Apple Silicon and Intel**. The default location is `~/Applications/EterX.app`.
-
-The installer replaces the application using an atomic bundle swap. If macOS quarantines an unsigned build, it explains the approval step and supports Apple's **Open Anyway** flow. If replacement or runtime startup fails, the existing installation is restored.
-
-Installation diagnostics are written to `~/Library/Logs/EterX/install.log`; desktop runtime diagnostics are written to `~/Library/Application Support/EterX/eterx-desktop.log`.
+- Supports **Apple Silicon and Intel**; installs to `~/Applications/EterX.app` by default.
+- If macOS blocks an unsigned build, follow the **Open Anyway** prompt. If installation or startup fails, the previous app is restored.
+- Logs: `~/Library/Logs/EterX/install.log` and `~/Library/Application Support/EterX/eterx-desktop.log`.
 
 ### Linux
 
@@ -88,16 +88,14 @@ Open a terminal and run:
 curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect-timeout 60 --max-time 300 https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
 ```
 
-The installer selects the **x64 or ARM64 AppImage**, installs it under the per-user XDG data directory, and creates an application-menu entry and `~/.local/bin/eterx` launcher. It uses FUSE when available and falls back to AppImage extract-and-run mode when needed.
-
-> [!NOTE]
-> These commands require a published native release. Package formats, release checks, signing, and recovery are documented in [Release operations](./docs/releasing.md). Unsigned builds may show operating-system publisher warnings; a failed SHA-256 verification must be resolved before installation.
+- Installs the **x64 or ARM64 AppImage** for your user and adds an application-menu entry plus the `~/.local/bin/eterx` launcher.
+- Uses FUSE when available; otherwise it runs in AppImage extract-and-run mode.
 
 ### Updates
 
-EterX checks shortly after the desktop window opens, every 30 minutes while visible, and on return if the previous check was more than 5 minutes ago. Failed checks retry with increasing delays; scans pause while hidden, minimized, asleep, downloading, or awaiting installation. The normal **Updates** link becomes a blue **Update** button when a verified release is available. Clicking it opens **Settings → Updates** and starts downloading. In-app notices show availability and readiness; choose **Restart to update** when ready to install. Settings also supports manual checks and retries.
-
-Windows uses the NSIS updater; Linux updates the matching AppImage. Signed macOS builds use the native updater, while unsigned builds use a verified bundle replacement with rollback. Application updates preserve the separate user-data directory described in [Local data and privacy](#local-data-and-privacy).
+- **Check:** EterX checks at launch, every 30 minutes while visible, and when you return after a longer break.
+- **Install:** In **Settings → Updates**, choose **Update** to download a verified release, then **Restart to update**. Manual checks and retries are available there.
+- **Platform:** Windows uses NSIS, Linux updates the AppImage, and macOS uses its native updater or a verified replacement with rollback. Updates preserve your separate user-data directory.
 
 ## First run
 

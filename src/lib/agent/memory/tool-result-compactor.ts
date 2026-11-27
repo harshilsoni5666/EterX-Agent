@@ -87,7 +87,7 @@ export class ToolResultCompactor {
           ? terminalOutputPageChars(args.maxOutputChars) : MAX_COMPACT_SIZE);
       }
     }
-    if (toolName === 'computer' || toolName === 'screen_agent') {
+    if (toolName === 'computer' || toolName === 'screen_agent' || (toolName === 'workspace_workbench' && result.vision)) {
       const desktop = splitComputerToolResult(toolName, result);
       const output = this.compactComputerResult(desktop.output, MAX_COMPACT_SIZE);
       // Images bypass text compaction, then the provider adapter extracts them

@@ -49,5 +49,6 @@ Use the same concept in the file name and `name`. Do not duplicate another skill
 - `template-creator`: reusable artifact-template creation
 - `skill-creator`: skill design, review, repair, and consolidation
 - `connector-setup-and-mcp-operations`: authorized connector and tool setup
+- `development-workbench`: live preview, simulator, and SSH device workflows
 
 The browser/search and product-documentation modules are deliberately not part of this isolated set.

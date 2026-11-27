@@ -24,7 +24,7 @@ const browserScrollbarCSS = `
 
 // Remote pages have their own sandboxed renderer and no EterX preload/IPC.
 exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
-  const { WebContentsView, session, Menu, nativeTheme, clipboard, net } = require('electron');
+  const { BrowserWindow, WebContentsView, session, Menu, nativeTheme, clipboard, net, desktopCapturer, systemPreferences } = require('electron');
   const browsers = new Map();
   const suggestionRequests = new Map();
   let browserSession;
@@ -34,11 +34,31 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
     if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Workspace access is unavailable.');
     return window;
   };
+  ipcMain.handle('workbench-window-sources', async event => {
+    authorize(event);
+    if (process.platform === 'darwin' && ['denied', 'restricted'].includes(systemPreferences.getMediaAccessStatus('screen'))) {
+      throw new Error('Allow EterX in macOS System Settings under Privacy & Security → Screen Recording, then reopen the workbench.');
+    }
+    const ownWindows = new Set(BrowserWindow.getAllWindows().map(window => window.getMediaSourceId?.()?.split(':').slice(0, 2).join(':')));
+    const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false });
+    return sources.filter(source => source.id.startsWith('window:') && !ownWindows.has(source.id.split(':').slice(0, 2).join(':')))
+      .slice(0, 100).map(source => ({ id: source.id, name: source.name }));
+  });
   const safeURL = input => {
     const value = String(input || '').trim();
     if (value === 'about:blank') return value;
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Enter an HTTP or HTTPS address.');
+    return url.href;
+  };
+  const loopback = new Set(['localhost', '127.0.0.1', '[::1]']);
+  const previewUrl = (input, window) => {
+    const url = new URL(safeURL(input));
+    const application = new URL(window.webContents.getURL());
+    const port = value => value.port || (value.protocol === 'https:' ? '443' : '80');
+    if (!loopback.has(url.hostname) || url.username || url.password || port(url) === port(application)) {
+      throw new Error('Choose a development service on a separate local port.');
+    }
     return url.href;
   };
   const hide = entry => {
@@ -69,11 +89,13 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
     if (!window || window.isDestroyed() || entry.view.webContents.isDestroyed()) return;
     window.webContents.send('workspace-browser-event', snapshot(entry));
   };
-  function prepare(window) {
-    if (!browserSession) {
-      browserSession = session.fromPartition('persist:eterx-workspace-browser');
-      browserSession.setPermissionCheckHandler(() => false);
-      browserSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  function prepare(window, development, id) {
+    let browsing = development ? undefined : browserSession;
+    if (!browsing) {
+      browsing = session.fromPartition(development ? 'eterx-development-' + id : 'persist:eterx-workspace-browser');
+      browsing.setPermissionCheckHandler(() => false);
+      browsing.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+      if (!development) browserSession = browsing;
       // Chromium/Electron owns the native Save dialog for downloads.
     }
     if (observedWindow !== window) {
@@ -81,16 +103,32 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
       window.webContents.once('destroyed', cleanup);
       window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) cleanup(); });
     }
+    return browsing;
   }
-  ipcMain.handle('workspace-browser-create', (event, id, theme = 'dark') => {
+  function applyEmulation(entry) {
+    const wc = entry.view.webContents;
+    const metrics = entry.emulation;
+    const bounds = entry.previewBounds;
+    if (!metrics) {
+      if (entry.emulationKey) { wc.disableDeviceEmulation(); entry.emulationKey = ''; }
+      return;
+    }
+    if (!bounds) return;
+    const scale = Math.min(1, bounds.width / metrics.width, bounds.height / metrics.height);
+    const key = [metrics.width, metrics.height, scale].join(':');
+    if (entry.emulationKey === key) return;
+    wc.enableDeviceEmulation({ screenPosition: 'mobile', screenSize: metrics, viewSize: metrics, deviceScaleFactor: 1, scale });
+    entry.emulationKey = key;
+  }
+  ipcMain.handle('workspace-browser-create', (event, id, theme = 'dark', developmentPreview = false) => {
     const window = authorize(event);
     if (typeof id !== 'string' || id.length > 160) throw new Error('Invalid browser tab.');
     if (browsers.has(id)) return snapshot(browsers.get(id));
     if (browsers.size >= 12) throw new Error('Close a browser tab before opening another (12 tabs maximum).');
-    prepare(window);
+    const browsing = prepare(window, developmentPreview === true, id);
     nativeTheme.themeSource = theme === 'light' ? 'light' : 'dark';
-    const view = new WebContentsView({ webPreferences: { session: browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: true, navigateOnDragDrop: false } });
-    const entry = { id, view, attached: false, error: '' };
+    const view = new WebContentsView({ webPreferences: { session: browsing, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: true, navigateOnDragDrop: false } });
+    const entry = { id, view, attached: false, error: '', developmentPreview: developmentPreview === true };
     view.setBackgroundColor(theme === 'light' ? '#ffffff' : '#111111');
     browsers.set(id, entry);
     const wc = view.webContents;
@@ -146,14 +184,102 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
     if (!entry || entry.view.webContents.isDestroyed()) throw new Error('This browser tab is closed.');
     const wc = entry.view.webContents;
     const history = navigation(wc);
-    if (command === 'navigate') { entry.error = ''; void wc.loadURL(safeURL(value)).catch(() => {}); }
+    if (command === 'navigate') {
+      const url = safeURL(value);
+      entry.error = '';
+      entry.requestedUrl = url;
+      void wc.loadURL(url).catch(() => {});
+    }
     else if (command === 'back' && history.canGoBack()) history.goBack();
     else if (command === 'forward' && history.canGoForward()) history.goForward();
     else if (command === 'reload') { entry.error = ''; wc.reload(); }
     else if (command === 'stop') wc.stop();
     else if (command === 'inspect') wc.openDevTools({ mode: 'detach' });
     else if (command === 'focus') wc.focus();
+    else if (command === 'emulate' && entry.developmentPreview) {
+      if (value !== null && (!value || ![value.width, value.height].every(size => Number.isInteger(size) && size >= 280 && size <= 1400))) throw new Error('Unsupported preview viewport.');
+      entry.emulation = value;
+      applyEmulation(entry);
+    }
     return snapshot(entry);
+  });
+  const previewKeys = {
+    Tab: 'Tab', Enter: 'Enter', Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete',
+    ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+    Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Space: 'Space',
+  };
+  ipcMain.handle('workbench-preview-action', async (event, id, action) => {
+    const window = authorize(event);
+    const entry = browsers.get(id);
+    if (!entry || entry.view.webContents.isDestroyed()) return { success: false, error: 'The preview is starting.' };
+    if (!entry.developmentPreview || !action || typeof action !== 'object') return { success: false, error: 'Select a development preview first.' };
+    const wc = entry.view.webContents;
+    try {
+      if (action.kind === 'navigate') {
+        const url = previewUrl(action.url, window);
+        entry.error = '';
+        entry.requestedUrl = url;
+        void wc.loadURL(url).catch(() => {});
+        return { success: true, url, loading: true, actionStatus: 'sent' };
+      }
+      const current = wc.getURL();
+      const committed = current && current !== 'about:blank';
+      const destination = committed ? current : entry.requestedUrl;
+      if (!destination) return { success: false, error: 'The preview is starting.' };
+      const url = previewUrl(destination, window);
+      if (entry.error && !['status', 'reload'].includes(action.kind)) throw new Error(String(entry.error));
+      const state = { url: url.slice(0, 4096), title: wc.getTitle().slice(0, 500), loading: wc.isLoading() };
+      if (action.kind === 'status') {
+        return entry.error ? { success: false, ...state, error: String(entry.error).slice(0, 1200) } : { success: true, ...state };
+      }
+      if (action.kind === 'reload') {
+        entry.error = '';
+        if (committed) wc.reload();
+        else void wc.loadURL(url).catch(() => {});
+        return { success: true, ...state, loading: true, actionStatus: 'sent' };
+      }
+      if (!entry.attached || !committed) return { success: false, error: 'The preview is starting.' };
+      if (action.kind === 'snapshot') {
+        const frame = await wc.capturePage();
+        if (frame.isEmpty()) throw new Error('The preview has not drawn a frame yet.');
+        if (wc.getURL() !== current || !entry.attached) throw new Error('The visible preview changed while capturing. Observe the selected tab again.');
+        const { width, height } = frame.getSize();
+        const image = Math.max(width, height) <= 1150 ? frame : frame.resize(width >= height ? { width: 1150 } : { height: 1150 });
+        return { success: true, ...state, vision: { inlineData: { data: image.toJPEG(74).toString('base64'), mimeType: 'image/jpeg' } } };
+      }
+      if (!window.isFocused()) throw new Error('Focus the EterX window before sending input to its live preview.');
+      if (action.kind === 'type') {
+        if (typeof action.text !== 'string' || !action.text || action.text.length > 600 || action.text.includes('\0')) throw new Error('Invalid preview text.');
+        wc.focus();
+        await wc.insertText(action.text);
+      } else if (action.kind === 'key') {
+        if (!Object.hasOwn(previewKeys, action.key)) throw new Error('Unsupported preview key.');
+        const keyCode = previewKeys[action.key];
+        wc.focus();
+        wc.sendInputEvent({ type: 'keyDown', keyCode });
+        wc.sendInputEvent({ type: 'keyUp', keyCode });
+      } else if (action.kind === 'click' || action.kind === 'scroll') {
+        if (![action.x, action.y].every(value => Number.isFinite(value) && value >= 0 && value <= 1)) throw new Error('Use preview coordinates from 0 to 1.');
+        const bounds = entry.previewBounds;
+        if (!bounds) throw new Error('The visible preview is unavailable.');
+        const x = Math.round(action.x * (bounds.width - 1));
+        const y = Math.round(action.y * (bounds.height - 1));
+        if (action.kind === 'scroll') {
+          if (!Number.isInteger(action.deltaY) || Math.abs(action.deltaY) > 1600) throw new Error('Invalid scroll distance.');
+          wc.sendInputEvent({ type: 'mouseWheel', x, y, deltaY: -action.deltaY, canScroll: true });
+        } else {
+          wc.focus();
+          wc.sendInputEvent({ type: 'mouseMove', x, y });
+          wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+          wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+        }
+      } else {
+        throw new Error('Unsupported preview action.');
+      }
+      return { success: true, ...state, actionStatus: 'sent' };
+    } catch (error) {
+      return { success: false, error: String(error?.message || error).slice(0, 1200) };
+    }
   });
   ipcMain.on('workspace-browser-bounds', (event, id, rect) => {
     let window;
@@ -173,6 +299,7 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
     if (bounds.width < 1 || bounds.height < 1) { hide(entry); return; }
     for (const other of browsers.values()) if (other !== entry) hide(other);
     entry.view.setBounds(bounds);
+    if (entry.developmentPreview) { entry.previewBounds = bounds; applyEmulation(entry); }
     if (!entry.attached) { window.contentView.addChildView(entry.view); entry.attached = true; }
   });
   ipcMain.handle('workspace-browser-close', (event, id) => { authorize(event); close(id); });
@@ -182,8 +309,8 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
     // Native menus are composited above WebContentsView; the live page can
     // remain attached and continue drawing while the menu is open.
     return new Promise(resolve => {
-      const items = [['chat', 'Side chat'], ['subagents', 'Sub-Agents'], ['files', 'Files'], ['review', 'Review'], ['terminal', 'Terminal'], ['browser', 'Browser']];
-      if (anchor.gitEnabled === true) items.splice(4, 0, ['git', 'Git']);
+      const items = [['workbench', 'Workbench'], ['chat', 'Side chat'], ['subagents', 'Sub-Agents'], ['files', 'Files'], ['review', 'Review'], ['terminal', 'Terminal'], ['browser', 'Browser']];
+      if (anchor.gitEnabled === true) items.splice(5, 0, ['git', 'Git']);
       if (anchor.planAvailable === true) items.push(['plan', 'Plan']);
       const popup = Menu.buildFromTemplate(items.map(([kind, label]) => ({ label, click: () => resolve(kind) })));
       const zoom = window.webContents.getZoomFactor();

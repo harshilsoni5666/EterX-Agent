@@ -6,6 +6,8 @@ import { isOpenAIReasoningModel, getModelThinkingOptions, getGeminiThinkingConfi
 import { readStoredModelMetadata } from '../../../../lib/agent/stored-model-metadata';
 import { createProviderChatStream } from '../../../../lib/agent/provider-stream-adapter';
 import { createCodexSubscriptionClient } from '../../../../lib/agent/codex-subscription-runtime';
+import { runSubscriptionTurn } from '../../../../lib/agent/native-provider/turn';
+import { isNativeSessionProvider } from '../../../../lib/native-provider-contract';
 import { applyCompatibleThinkingParameters, assertSuccessfulCompatibleFinish, createCompatibleTaggedReasoningSplitter, splitCompatibleDeltaContent } from '../../../../lib/agent/provider-capabilities';
 import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
 import { meterModelResponse } from '../../../../lib/usage/ledger';
@@ -155,6 +157,14 @@ async function generateTitleWithProvider(
   runtimeSettings: ScopedRuntimeSettings,
   requestSignal: AbortSignal,
 ): Promise<GeneratedTitle> {
+  if (isNativeSessionProvider(provider)) {
+    const { text, usage } = await runSubscriptionTurn(provider, { model: modelName, prompt, instruction: TITLE_SYSTEM_PROMPT, auxiliary: true,
+      signal: AbortSignal.any([requestSignal, AbortSignal.timeout(TITLE_REQUEST_TIMEOUT_MS)]) });
+    const title = cleanGeneratedTitle(text);
+    if (!title) throw new Error('Model returned an invalid chat title');
+    return { title, provider, model: modelName, usageId: usage?.eterxUsageId,
+      ...(usage ? { usage: normalizeProviderCacheUsage(provider, usage) } : {}) };
+  }
   if (provider === 'codex') {
     return generateTitleWithProviderOnce(provider, modelName, prompt, '',
       AbortSignal.any([requestSignal, AbortSignal.timeout(TITLE_REQUEST_TIMEOUT_MS)]));

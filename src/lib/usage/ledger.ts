@@ -6,12 +6,13 @@ import { getEterxDataDir } from '../agent/storage-paths';
 import { mergeProviderUsageSnapshots } from '../agent/provider-prompt-cache';
 import { contextMeasurementTime } from '../context-usage-snapshot';
 import { mergeModelUsageReceipt, modelUsageReceiptKey } from '../model-usage';
-import { providerErrorCategory, recordProviderRequest } from '../telemetry/runtime';
+import { providerErrorCategory, recordProviderDispatch, recordProviderRequest } from '../telemetry/runtime';
 import type { Dimensions, Measurements } from '../telemetry/protocol';
+import { providerAvailabilitySignal } from '../app-presentation/posthog';
 import { priceReceipt, receiptMetrics, usageSource, type ReceiptMetrics, type UsageRateLine } from './accounting';
 import { currentRates, refreshRates } from './pricing-store';
 import { findRates, type TokenRates } from './rate-catalog';
-import { addRateLines, emptyTotals, type UsageBucket } from './summary';
+import { addRateLines, emptyTotals, type RecentUsage, type UsageBucket } from './summary';
 
 const state = globalThis as typeof globalThis & { __eterxUsageLedger?: ReturnType<typeof openLedger> };
 function openLedger() {
@@ -47,8 +48,9 @@ function providerMeasurements(metrics: ReceiptMetrics): Measurements {
     inputTokens: metrics.inputMeasured ? metrics.input : undefined,
     outputTokens: metrics.outputMeasured ? metrics.output : undefined,
     totalTokens: metrics.measured ? metrics.total : undefined,
-    cachedTokens: metrics.cacheMeasured ? metrics.cached : undefined,
-    cacheWriteTokens: metrics.written, reasoningTokens: metrics.reasoning,
+    cachedTokens: metrics.cacheMeasured ? metrics.reportedCacheInput : undefined,
+    cacheWriteTokens: metrics.reportedCacheWrite, reasoningTokens: metrics.reasoningMeasured ? metrics.reasoning : undefined,
+    otherInputTokens: metrics.otherInput, otherOutputTokens: metrics.otherOutput,
     audioInputTokens: metrics.inputAudio, audioOutputTokens: metrics.outputAudio,
     imageInputTokens: metrics.inputImage, imageOutputTokens: metrics.outputImage,
     generatedImages: metrics.images,
@@ -59,6 +61,7 @@ function providerMeasurements(metrics: ReceiptMetrics): Measurements {
 
 type ResponseOptions = {
   id?: string; responseModel?: string; media?: boolean; at?: number; durationMs?: number;
+  serviceTier?: unknown;
   outcome?: 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
   error?: Dimensions['error'];
   feature?: NonNullable<Dimensions['feature']>;
@@ -70,7 +73,8 @@ export function recordModelResponse(provider: string, model: string, usage: any,
   try {
     const receipt = receiptMetrics(provider, { provider, model, usage: usage || {} }, options.media);
     recordProviderRequest({
-      id: 'usage:' + id, provider, model: options.responseModel || model, at: options.at, outcome: options.outcome ?? 'succeeded',
+      id: 'usage:' + id, provider, model, observedModel: options.responseModel, serviceTier: options.serviceTier,
+      at: options.at, outcome: options.outcome ?? 'succeeded',
       feature: options.feature, error: options.error, measurements: { ...providerMeasurements(receipt), durationMs: options.durationMs },
     });
     void refreshRates();
@@ -82,12 +86,16 @@ export function recordModelResponse(provider: string, model: string, usage: any,
   return id;
 }
 
-export function saveLiveReceipt(provider: string, model: string, id: string, at: number, usage: any) {
+export function saveLiveReceipt(
+  provider: string, model: string, id: string, at: number, usage: any, outcome: NonNullable<ResponseOptions['outcome']> = 'succeeded',
+) {
   void refreshRates();
   const key = 'live:' + provider + ':' + id;
   const receipt = receiptMetrics(provider, { provider, model, usage }, true);
-  insertNative(key, at, provider, model, receipt);
-  recordProviderRequest({ id: key, provider, model, at, feature: 'live', outcome: 'succeeded', measurements: providerMeasurements(receipt) });
+  if (outcome === 'succeeded' || receipt.measured || receipt.audioSeconds !== undefined) {
+    insertNative(key, at, provider, model, receipt);
+  }
+  return recordProviderRequest({ id: key, provider, model, at, feature: 'live', outcome, measurements: providerMeasurements(receipt) });
 }
 
 export function recordMediaResponse(provider: string, model: string, payload: any, kind: 'image' | 'video', jobId?: string) {
@@ -103,7 +111,7 @@ export function recordMediaResponse(provider: string, model: string, payload: an
 }
 
 type StreamFormat = 'compatible' | 'gemini' | 'anthropic';
-type RequestTiming = { signal?: AbortSignal; startedAt?: number };
+type RequestTiming = { signal?: AbortSignal; startedAt?: number; dispatched?: boolean; serviceTier?: unknown };
 
 function modelFailure(error: unknown, signal?: AbortSignal): { outcome: 'cancelled' | 'failed'; error?: Dimensions['error'] } {
   const cancelled = signal?.aborted && signal.reason?.name !== 'TimeoutError';
@@ -116,6 +124,7 @@ export function recordModelFailure(provider: string, model: string, error: unkno
   const failure = modelFailure(error, timing.signal);
   recordProviderRequest({
     id: randomUUID(), provider, model, outcome: failure.outcome, error: failure.error,
+    serviceTier: timing.serviceTier,
     measurements: { durationMs: timing.startedAt === undefined ? undefined : performance.now() - timing.startedAt },
   });
 }
@@ -124,16 +133,20 @@ export async function meterModelResponse<T>(
   provider: string, model: string, request: () => Promise<T>,
   receipt: (response: T) => { usage: unknown; responseModel?: string }, signal?: AbortSignal,
 ) {
+  const availability = await providerAvailabilitySignal(provider, signal);
   const startedAt = performance.now();
   let response: T;
   try {
+    availability?.throwIfAborted();
+    recordProviderDispatch(provider, model);
     response = await request();
   } catch (error) {
     recordModelFailure(provider, model, error, { startedAt, signal });
     throw error;
   }
   const { usage, responseModel } = receipt(response);
-  const usageId = recordModelResponse(provider, model, usage, { responseModel, durationMs: performance.now() - startedAt });
+  const serviceTier = (response as { service_tier?: unknown } | null)?.service_tier;
+  const usageId = recordModelResponse(provider, model, usage, { responseModel, serviceTier, durationMs: performance.now() - startedAt });
   return { response, usageId };
 }
 
@@ -143,15 +156,20 @@ export async function* meterModelStream(provider: string, model: string,
   format: StreamFormat = 'compatible', id = randomUUID() as string, timing: RequestTiming = {}): AsyncGenerator<any> {
   let usage: any;
   let responseModel = '';
+  let serviceTier = timing.serviceTier;
   let outcome: NonNullable<ResponseOptions['outcome']> = 'cancelled';
   let errorCategory: Dimensions['error'];
+  const availability = await providerAvailabilitySignal(provider, timing.signal);
   const startedAt = timing.startedAt ?? performance.now();
   try {
+    if (!timing.dispatched) recordProviderDispatch(provider, model, serviceTier);
     for await (const event of typeof stream === 'function' ? await stream() : stream) {
+      availability?.throwIfAborted();
       const raw = format === 'gemini' ? event?.usageMetadata
         : format === 'anthropic' ? event?.message?.usage || event?.usage : event?.usage || event?.x_groq?.usage;
       const reportedModel = event?.modelVersion || event?.model || event?.message?.model;
       if (typeof reportedModel === 'string' && reportedModel.trim()) responseModel = reportedModel.trim();
+      if (typeof event?.service_tier === 'string') serviceTier = event.service_tier;
       if (!raw) { yield event; continue; }
       usage = mergeProviderUsageSnapshots(usage, raw);
       const tagged = { ...raw, eterxUsageId: id };
@@ -168,9 +186,9 @@ export async function* meterModelStream(provider: string, model: string,
   } finally {
     const durationMs = performance.now() - startedAt;
     if (usage || outcome === 'succeeded') {
-      recordModelResponse(provider, model, usage, { id, responseModel, durationMs, outcome, error: errorCategory });
+      recordModelResponse(provider, model, usage, { id, responseModel, serviceTier, durationMs, outcome, error: errorCategory });
     } else {
-      recordProviderRequest({ id: 'usage:' + id, provider, model: responseModel || model, outcome, error: errorCategory,
+      recordProviderRequest({ id: 'usage:' + id, provider, model, observedModel: responseModel, serviceTier, outcome, error: errorCategory,
         measurements: { durationMs } });
     }
   }
@@ -194,30 +212,39 @@ function savedUsageReceipts(chats: unknown[], start: number, end: number, record
   return receipts.values();
 }
 
-export function usageBuckets(start: number, end: number, timeZone: string, savedChats: unknown[]): UsageBucket[] {
+const HOUR_MS = 3_600_000;
+type UsageGroups = Map<string, { bucket: UsageBucket; rates: Map<string, UsageRateLine> }>;
+
+function materializeGroups(groups: UsageGroups): UsageBucket[] {
+  return Array.from(groups.values(), ({ bucket, rates }) => ({ ...bucket, rates: Array.from(rates.values()) }));
+}
+
+export function usageBuckets(start: number, end: number, timeZone: string, savedChats: unknown[]): { buckets: UsageBucket[]; recent: RecentUsage } {
   const store = ledger();
   const prices = currentRates().providers;
   const formatter = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', calendar: 'iso8601' });
-  const groups = new Map<string, { bucket: UsageBucket; rates: Map<string, UsageRateLine> }>();
+  const recentStart = Math.max(start, end - 24 * HOUR_MS);
+  // Align buckets to the calendar's hour, including time zones offset by half hours.
+  const localMinute = Number(new Intl.DateTimeFormat('en-US', { timeZone, minute: 'numeric', numberingSystem: 'latn' }).format(end));
+  const hourOffset = ((Math.floor(end / 60_000) - localMinute) % 60) * 60_000;
+  const firstHour = Math.floor((recentStart - hourOffset) / HOUR_MS) * HOUR_MS + hourOffset;
+  const hours = Array.from({ length: Math.floor((end - firstHour) / HOUR_MS) + 1 },
+    (_, index) => new Date(firstHour + index * HOUR_MS).toISOString());
+  const dailyGroups: UsageGroups = new Map();
+  const hourlyGroups: UsageGroups = new Map();
   const recorded = new Set<string>();
   const ratesToSave: Array<[string, string]> = [];
   let lastMinute = -1, day = '';
 
-  function addReceipt(at: number, provider: string, model: string, m: ReceiptMetrics, rate: TokenRates | null) {
-    const minute = Math.floor(at / 60_000);
-    if (minute !== lastMinute) {
-      const parts = formatter.formatToParts(at);
-      day = ['year', 'month', 'day'].map(unit => parts.find(part => part.type === unit)?.value).join('-');
-      lastMinute = minute;
-    }
-    const key = JSON.stringify([day, provider, model]);
+  function addToGroup(groups: UsageGroups, interval: string, provider: string, model: string,
+    m: ReceiptMetrics, value: ReturnType<typeof priceReceipt>) {
+    const key = JSON.stringify([interval, provider, model]);
     let group = groups.get(key);
     if (!group) {
-      group = { bucket: { day, provider, model, source: usageSource(provider), ...emptyTotals(), rates: [] }, rates: new Map() };
+      group = { bucket: { day: interval, provider, model, source: usageSource(provider), ...emptyTotals(), rates: [] }, rates: new Map() };
       groups.set(key, group);
     }
     const { bucket } = group;
-    const value = priceReceipt(provider, m, rate, true);
     bucket.calls++;
     bucket.measured += Number(m.measured);
     bucket.inputReports += Number(m.inputMeasured);
@@ -239,6 +266,21 @@ export function usageBuckets(start: number, end: number, timeZone: string, saved
       if (value.lines) addRateLines(group.rates, value.lines);
     }
     if (value.basis === 'unpriced') bucket[value.reason]++;
+  }
+
+  function addReceipt(at: number, provider: string, model: string, metrics: ReceiptMetrics, rate: TokenRates | null) {
+    const minute = Math.floor(at / 60_000);
+    if (minute !== lastMinute) {
+      const parts = formatter.formatToParts(at);
+      day = ['year', 'month', 'day'].map(unit => parts.find(part => part.type === unit)?.value).join('-');
+      lastMinute = minute;
+    }
+    const value = priceReceipt(provider, metrics, rate, true);
+    addToGroup(dailyGroups, day, provider, model, metrics, value);
+    if (at >= recentStart) {
+      const index = Math.floor((at - firstHour) / HOUR_MS);
+      addToGroup(hourlyGroups, hours[index], provider, model, metrics, value);
+    }
     return value.basis;
   }
 
@@ -266,5 +308,8 @@ export function usageBuckets(start: number, end: number, timeZone: string, saved
     const metrics = receiptMetrics(provider, receipt);
     addReceipt(receipt.measurementAt, provider, model, metrics, findRates(prices, provider, model, metrics.input));
   }
-  return Array.from(groups.values(), ({ bucket, rates }) => ({ ...bucket, rates: Array.from(rates.values()) }));
+  return {
+    buckets: materializeGroups(dailyGroups),
+    recent: { startAt: recentStart, endAt: end, hours, buckets: materializeGroups(hourlyGroups) },
+  };
 }

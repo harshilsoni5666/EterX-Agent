@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
+import { telemetryClientContext } from '../../../../lib/telemetry/client-context';
+import { withTelemetryScope } from '../../../../lib/telemetry/runtime';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
 import { normalizeMainAgentMode, normalizeModelThinkingCapabilities, normalizeThinkingLevelForModel } from '../../../../lib/agent/model-routing';
 import {
@@ -11,6 +13,7 @@ import {
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
+import { assertProviderAvailable, ProviderUnavailableError } from '../../../../lib/app-presentation/posthog';
 import {
   attachAgentApiSessionCookie,
   cleanContextText,
@@ -99,6 +102,13 @@ export async function POST(req: NextRequest) {
     const requestedModelProvider = selectedModel && typeof selectedModel === 'object'
       ? String((selectedModel as any).provider || '').trim()
       : '';
+    if (isModelProvider(requestedModelProvider)) {
+      try { await assertProviderAvailable(requestedModelProvider); }
+      catch (error) {
+        if (error instanceof ProviderUnavailableError) return attachAgentApiSessionCookie(jsonError(error.message, 503), session);
+        throw error;
+      }
+    }
     const requestedModelName = selectedModel && typeof selectedModel === 'object'
       ? String((selectedModel as any).modelId || (selectedModel as any).modelName || '').trim()
       : '';
@@ -143,7 +153,7 @@ export async function POST(req: NextRequest) {
 
     await agentRegistry.waitForStoppedRunToSettle(chatId, 5000);
 
-    const result = agentRegistry.startAgent(
+    const result = withTelemetryScope({}, () => agentRegistry.startAgent(
       chatId,
       effectivePrompt,
       normalizeHistory(history),
@@ -156,7 +166,7 @@ export async function POST(req: NextRequest) {
       runtimeSettings,
       runId,
       desktopAdmissionEpoch,
-    );
+    ), telemetryClientContext(req));
 
     if (result.status === 'no_keys') {
       return attachAgentApiSessionCookie(jsonError(result.message, 503, result), session);

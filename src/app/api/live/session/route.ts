@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createLiveCatalogRequest } from '../../../../lib/live/catalog-request';
+import { ProviderUnavailableError, providerAvailabilitySignal } from '../../../../lib/app-presentation/posthog';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import {
   DEFAULT_DEEPGRAM_THINK_MODEL,
@@ -34,7 +35,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const provider = normalizeLiveProvider(body?.provider);
     if (provider.transport === 'model-voice') return NextResponse.json({ ok: false, error: 'Configured models use the agent connection and do not need a realtime token.' }, { status: 400 });
-    const client = createLiveCatalogRequest(provider.value, undefined, req.signal, body?.model);
+    const signal = await providerAvailabilitySignal(provider.provider, req.signal) ?? req.signal;
+    const client = createLiveCatalogRequest(provider.value, undefined, signal, body?.model);
     if (!client.hasKey) {
       return NextResponse.json({ ok: false, error: `No ${provider.label} API key is configured.` }, { status: 503 });
     }
@@ -147,6 +149,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: false, error: `No realtime authorization adapter is available for ${provider.label}.` }, { status: 400 });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : String(error || 'Live authorization failed.') }, { status: 502 });
+    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : String(error || 'Live authorization failed.') },
+      { status: error instanceof ProviderUnavailableError ? 503 : 502 });
   }
 }

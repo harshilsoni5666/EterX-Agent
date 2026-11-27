@@ -12,6 +12,7 @@ import './light-theme.polish.css';
 import './composer-responsive.css';
 import './conversation-layout.css';
 import './side-workspace.css';
+import './workspace-workbench.css';
 import './git-workspace.css';
 import './turn-changes.css';
 import './dropdown-polish.css';
@@ -23,11 +24,16 @@ import './markdown-content.css';
 import './activity-feed.css';
 import '../../electron/splash.css';
 import './scrollbars.css';
+import './appearance-contrast.css';
+import '../components/updates/announcement-content.css';
+import './app-presentation.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
-import { ChatGptSubscriptionBridge } from '../components/layout/chatgpt-subscription-bridge';
+import { SubscriptionBridge } from '../components/layout/chatgpt-subscription-bridge';
 import { ClipboardPasteBridge } from '../components/ui/clipboard-paste-bridge';
 import { NativeTooltipSuppressor } from '../components/ui/native-tooltip-suppressor';
-import { readInitialThemePreference, resolveInitialTheme } from '../lib/initial-theme';
+import { AppPresentationProvider } from '../components/updates/app-presentation-provider';
+import { readInitialThemeSettings, resolveInitialTheme } from '../lib/initial-theme';
+import { appearanceVariables } from '../lib/appearance-preferences';
 import { DEFAULT_THEME } from '../lib/theme-config';
 
 export const dynamic = 'force-dynamic';
@@ -82,19 +88,27 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const initialPreference = readInitialThemePreference();
-  const initialTheme = resolveInitialTheme(initialPreference);
+  const appearance = readInitialThemeSettings();
+  const initialTheme = resolveInitialTheme(appearance.theme);
   return (
-    <html lang="en" className={`${initialTheme} ${GeistMono.variable}`} style={localFontVariables} data-theme={initialTheme} suppressHydrationWarning>
+    <html
+      lang="en"
+      className={`${initialTheme} ${GeistMono.variable}`}
+      style={{ ...localFontVariables, ...appearanceVariables(appearance) }}
+      data-theme={initialTheme}
+      data-ui-contrast={appearance.uiContrast}
+      data-diff-palette={appearance.diffPalette}
+      suppressHydrationWarning
+    >
       <head>
-        <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: createThemeInitScript(initialPreference) }} />
+        <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: createThemeInitScript(appearance.theme) }} />
       </head>
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <ThemeBridge />
-        <ChatGptSubscriptionBridge />
+        <SubscriptionBridge />
         <ClipboardPasteBridge />
         <NativeTooltipSuppressor />
-        {children}
+        <AppPresentationProvider>{children}</AppPresentationProvider>
       </body>
     </html>
   );

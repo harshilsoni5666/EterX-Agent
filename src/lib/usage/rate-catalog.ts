@@ -150,7 +150,7 @@ export function extractRateTable(models: any, router: any, lite: any): RateTable
 }
 
 export function findRates(table: RateTable, provider: string, model: string, prompt: number): TokenRates | null {
-  const route = provider === 'codex' ? 'openai' : provider;
+  const route = provider === 'codex' ? 'openai' : provider === 'claude-code' ? 'anthropic' : provider === 'grok-build' ? 'grok' : provider;
   const id = route === 'gemini' ? model.replace(/^models\//, '') : model;
   const models = table[route];
   if (!models) return null;

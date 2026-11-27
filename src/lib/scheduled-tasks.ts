@@ -35,10 +35,28 @@ export interface ScheduledTaskRecord {
   scheduledTimestamp: number;
   status: ScheduledTaskStatus;
   executedAt?: number;
+  focusSettledAt?: number | null;
   chatId?: string;
   runCount?: number;
   history?: ScheduledTaskRun[];
   lastError?: string;
+}
+
+export type ScheduledFocusUpdate = { action: 'reschedule'; at: number | 'now' } | { action: 'settle' | 'restore' };
+
+export function rescheduleTask(task: ScheduledTaskRecord, at: number, now: number): ScheduledTaskRecord {
+  const date = new Date(at);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return {
+    ...task,
+    scheduledTimestamp: at,
+    updatedAt: now,
+    status: at <= now ? 'queued' : 'scheduled',
+    dateOption: 'custom',
+    customDate: [date.getFullYear(), pad(date.getMonth() + 1), pad(date.getDate())].join('-'),
+    triggerTime: pad(date.getHours()) + ':' + pad(date.getMinutes()),
+    focusSettledAt: null,
+  };
 }
 
 export function scheduledTaskSection(status: ScheduledTaskStatus) {
@@ -164,6 +182,7 @@ export function normalizeScheduledTask(task: Partial<ScheduledTaskRecord>): Sche
       ? task.status as ScheduledTaskStatus
       : 'scheduled',
     executedAt: task.executedAt,
+    focusSettledAt: typeof task.focusSettledAt === 'number' && Number.isFinite(task.focusSettledAt) ? task.focusSettledAt : null,
     chatId: task.chatId,
     runCount: Number(task.runCount || task.history?.length || 0),
     history: Array.isArray(task.history) ? task.history.slice(-100) : [],

@@ -1,7 +1,6 @@
-import { timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
-import { initializeCodexBridge } from '../../../../lib/agent/codex-subscription-runtime';
+import { isTrustedDesktopSubscriptionRequest } from '../../../../lib/agent/codex-subscription-runtime';
 import { getActiveDirectChatRuns } from '../../../../lib/agent/manual-compaction';
 import { globalSubAgentSpawner } from '../../../../lib/agent/roles/sub_agent';
 import {
@@ -16,15 +15,6 @@ export const runtime = 'nodejs';
 const runningMainAgents = () => agentRegistry.getAllStatus().filter(run => run.status === 'running');
 const runningWorkers = () => globalSubAgentSpawner.getAgentStatus()
   .filter(run => ['spawning', 'running', 'waiting', 'paused'].includes(run.status));
-
-function isTrustedDesktop(request: NextRequest): boolean {
-  const key = initializeCodexBridge()?.key;
-  const supplied = request.headers.get('x-eterx-subscription-control');
-  if (!key || !supplied) return false;
-  const expected = Buffer.from(key);
-  const received = Buffer.from(supplied);
-  return received.length === expected.length && timingSafeEqual(received, expected);
-}
 
 async function stopRunningAgents(): Promise<boolean> {
   const chats = runningMainAgents();
@@ -50,7 +40,7 @@ async function stopRunningAgents(): Promise<boolean> {
 }
 
 export async function POST(request: NextRequest) {
-  if (!isTrustedDesktop(request)) return jsonError('Desktop authorization is required.', 403);
+  if (!isTrustedDesktopSubscriptionRequest(request)) return jsonError('Desktop authorization is required.', 403);
   const { action, id, mode } = await readJsonObject(request);
   if (typeof id !== 'string' || !/^[a-f\d-]{36}$/i.test(id)) return jsonError('Invalid account change.');
 

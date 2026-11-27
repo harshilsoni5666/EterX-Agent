@@ -11,6 +11,8 @@ import { visibleUserRequest } from './chat-user-payload';
 import { normalizeImportedTraces } from './imports/presentation';
 import { mergeChatWorkspaceSelection } from './imports/workspace';
 import { mergeChatFocusDisposition } from './chat-focus';
+import { mergeChatCommitReceipts } from './git/chat-commits';
+import { recordTelemetry } from './telemetry/runtime';
 import {
   mergeFeedTraceHistories,
   isConclusiveSettledAnswerTrace,
@@ -503,7 +505,7 @@ async function hydrateRecoveredDialogue(snapshot: PersistedChatSnapshot): Promis
 function normalizeSnapshot(value: any): PersistedChatSnapshot {
   const chats = Array.isArray(value)
     ? value
-    : value?.chats || value?.chatHistory || value?.sessions;
+    : [value?.chats, value?.chatHistory, value?.sessions].find(Array.isArray);
   if (!Array.isArray(chats)) return emptySnapshot();
   return {
     version: CHAT_STORE_VERSION,
@@ -566,11 +568,22 @@ async function readLegacySnapshot(): Promise<PersistedChatSnapshot | null> {
 
 function readFromDisk(): Promise<PersistedChatSnapshot> {
   if (!pendingSnapshotRead) {
-    pendingSnapshotRead = readSnapshotFromDisk().finally(() => {
+    pendingSnapshotRead = readSnapshotWithRetry().finally(() => {
       pendingSnapshotRead = null;
     });
   }
   return pendingSnapshotRead;
+}
+
+async function readSnapshotWithRetry(): Promise<PersistedChatSnapshot> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await readSnapshotFromDisk();
+    } catch (error: any) {
+      if (attempt >= 2 || !['EPERM', 'EACCES', 'EBUSY', 'EAGAIN'].includes(error?.code)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 80 * (attempt + 1)));
+    }
+  }
 }
 
 async function readSnapshotFromDisk(): Promise<PersistedChatSnapshot> {
@@ -705,9 +718,16 @@ function mergeChatForAction(durable: any, incoming: unknown) {
     ...mergeChatWorkspaceSelection(durable, candidate),
     ...mergeChatTitleMetadata(durable, candidate),
     ...mergeChatFocusDisposition(durable, candidate),
+    workspaceCommits: mergeChatCommitReceipts(durable.workspaceCommits, candidate.workspaceCommits),
     updatedAt: Math.max(Number(durable.updatedAt || 0), Number(candidate.updatedAt || 0)),
     traceLogs: mergeFeedTraceHistories(durable.traceLogs || [], candidate.traceLogs || []),
   };
+}
+
+function recordNewThread(chat: { id: string; workspacePath?: unknown }, source: 'chat_store' | 'copy') {
+  recordTelemetry('client.thread.started', {
+    createdBy: 'user', creationSource: source, workspace: chat.workspacePath ? 'folder' : undefined,
+  }, { key: chat.id });
 }
 
 /** Commit just the selected chat under the store lock. Other chats/imports
@@ -756,6 +776,7 @@ export async function copyStoredChat(sourceId: string, incoming?: unknown, reque
       };
       cachedSnapshotFileSignature = await writeAtomic(next);
       cachedSnapshot = next;
+      recordNewThread(chat, 'copy');
       return { chat, source, savedAt: next.savedAt };
     } catch (error) {
       await removeChatMedia([id]);
@@ -784,6 +805,7 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
         ...mergeChatWorkspaceSelection(durable, chat),
         ...mergeChatTitleMetadata(durable, chat),
         ...mergeChatFocusDisposition(durable, chat),
+        workspaceCommits: mergeChatCommitReceipts(durable.workspaceCommits, chat.workspaceCommits),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
           chat.traceLogs || [],
@@ -804,6 +826,9 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
     const signature = await writeAtomic(next);
     cachedSnapshot = next;
     cachedSnapshotFileSignature = signature;
+    for (const chat of next.chats as Array<{ id: string; workspacePath?: unknown }>) {
+      if (!currentById.has(chat.id)) recordNewThread(chat, 'chat_store');
+    }
     return { ...next, applied: true };
   });
   const stored = await chatWrites.queue as ChatSnapshotWriteResult;
@@ -829,6 +854,7 @@ export async function patchChatSnapshot(
     if (mutationId && current.lastMutationId === mutationId) return { ...current, applied: true };
     if (savedAt < current.savedAt) return { ...current, applied: false };
     const byId = new Map((current.chats as any[]).map(chat => [chat.id, chat]));
+    const created = changed.filter(chat => !byId.has(chat.id) && !deletedIds.has(chat.id));
     for (const chat of changed) {
       const durable = byId.get(chat.id);
       byId.set(chat.id, durable ? {
@@ -838,6 +864,7 @@ export async function patchChatSnapshot(
         ...mergeChatWorkspaceSelection(durable, chat),
         ...mergeChatTitleMetadata(durable, chat),
         ...mergeChatFocusDisposition(durable, chat),
+        workspaceCommits: mergeChatCommitReceipts(durable.workspaceCommits, chat.workspaceCommits),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
           chat.traceLogs || [],
@@ -860,6 +887,7 @@ export async function patchChatSnapshot(
     const signature = await writeAtomic(next);
     cachedSnapshot = next;
     cachedSnapshotFileSignature = signature;
+    for (const chat of created) recordNewThread(chat, 'chat_store');
     return { ...next, applied: true };
   });
   const stored = await chatWrites.queue as ChatSnapshotWriteResult;

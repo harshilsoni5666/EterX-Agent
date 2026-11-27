@@ -7,7 +7,8 @@ import { Check, ChevronRight, Search, Zap } from 'lucide-react';
 import { groupModelsByProvider } from '../../lib/agent/model-presentation';
 import type { MainAgentProvider, MainAgentThinkingLevel, ModelThinkingOption } from '../../lib/agent/model-routing';
 import { AdaptiveMenu } from '../ui/adaptive-menu';
-import { ProviderIconAsset } from '../ui/provider-icon';
+import { ModelProviderIconAsset } from '../ui/provider-icon';
+import { ModelBadges, usePausedProviders } from '../updates/model-badges';
 
 type PickerModel = {
   optionKey: string;
@@ -20,6 +21,8 @@ type ChatModelPickerProps<Model extends PickerModel> = {
   anchorRef: RefObject<HTMLDivElement | null>;
   openBelow: boolean;
   models: Model[];
+  loading: boolean;
+  onOpenApiSettings?: () => void;
   selectedModel: Model | null;
   providerLabels: Record<MainAgentProvider, string>;
   getThinkingOptions: (model: Model) => ModelThinkingOption[];
@@ -86,9 +89,10 @@ function PickerScrollPane({ resetKey, revealSelection, onScroll, children }: {
 }
 
 export function ChatModelPicker<Model extends PickerModel>({
-  anchorRef, openBelow, models, selectedModel, providerLabels, getThinkingOptions, getThinkingLevel, getFastMode,
+  anchorRef, openBelow, models, loading, onOpenApiSettings, selectedModel, providerLabels, getThinkingOptions, getThinkingLevel, getFastMode,
   onSelectModel, onSelectThinking, onChangeFastMode, onClose,
 }: ChatModelPickerProps<Model>) {
+  const paused = usePausedProviders();
   const [search, setSearch] = useState('');
   const [browsedProvider, setBrowsedProvider] = useState<MainAgentProvider | null>(null);
   const [thinkingAnchor, setThinkingAnchor] = useState<{ key: string; button: HTMLButtonElement } | null>(null);
@@ -220,7 +224,7 @@ export function ChatModelPicker<Model extends PickerModel>({
         <div className="eterx-model-menu-title">Model</div>
         <div className="eterx-model-search relative">
           <Search className="pointer-events-none absolute top-1/2 size-3.5 -translate-y-1/2" aria-hidden="true" />
-          <input autoFocus className="outline-hidden" aria-label="Search models" placeholder="Search models"
+          <input autoFocus className="outline-hidden" aria-label="Search models and providers" placeholder="Search models / providers"
             value={search} onChange={event => {
               closeThinking();
               setSearch(event.target.value);
@@ -236,7 +240,7 @@ export function ChatModelPicker<Model extends PickerModel>({
                     closeThinking();
                     setBrowsedProvider(provider);
                   }}>
-                  <ProviderIconAsset provider={provider} className="eterx-model-provider-icon size-4" />
+                  <ModelProviderIconAsset provider={provider} className="eterx-model-provider-icon size-4" />
                   <span className="min-w-0 truncate">{providerLabels[provider]}</span>
                   {group?.provider === provider && <ChevronRight className="ml-auto size-3.5 shrink-0" aria-hidden="true" />}
                 </button>
@@ -244,10 +248,11 @@ export function ChatModelPicker<Model extends PickerModel>({
             </PickerScrollPane>
           </section>
           <section className="eterx-model-picker-pane" aria-label={group ? `${providerLabels[group.provider]} models` : 'Models'}>
-            <div className="eterx-model-picker-heading">Models</div>
+            <div className="eterx-model-picker-heading">{group ? providerLabels[group.provider] + ' models' : 'Models'}</div>
             <PickerScrollPane key={group?.provider} resetKey={`${query}\n${selectedModel?.optionKey ?? ''}`} revealSelection={!query}
               onScroll={() => { if (thinkingAnchor) closeThinking(thinkingRef.current?.contains(document.activeElement)); }}>
               {group ? group.models.map(model => {
+                const unavailable = paused.has(model.provider);
                 const options = getThinkingOptions(model);
                 const fast = getFastMode(model);
                 const level = options.length ? options.find(option => option.id === getThinkingLevel(model)) : undefined;
@@ -255,20 +260,19 @@ export function ChatModelPicker<Model extends PickerModel>({
                 return (
                   <div key={model.optionKey} className="eterx-model-picker-row"
                     data-thinking-open={expanded || undefined}
-                    onMouseEnter={event => {
-                      if (thinkingRef.current?.contains(document.activeElement)) return;
-                      const button = event.currentTarget.querySelector<HTMLButtonElement>('.eterx-model-picker-thinking-trigger');
-                      if (button) openFor(model.optionKey, button);
-                    }}
                     onMouseLeave={scheduleDismiss}>
                     <button type="button" className="eterx-model-picker-model" aria-pressed={model.optionKey === selectedModel?.optionKey}
-                      title={model.label} onClick={() => {
+                      disabled={unavailable}
+                      title={unavailable ? 'Provider temporarily unavailable' : model.label === model.modelName ? model.label : model.modelName} onClick={() => {
                         anchorRef.current?.querySelector('button')?.focus({ preventScroll: true });
                         onSelectModel(model);
                       }}>
-                      <span className="truncate">{model.label}</span>
+                      <span className="eterx-model-name-with-badges">
+                        <span className="truncate">{model.label}</span>
+                        {unavailable ? <span className="eterx-model-badge">Unavailable</span> : <ModelBadges provider={model.provider} modelId={model.modelName} />}
+                      </span>
                     </button>
-                    {fast !== null && (
+                    {!unavailable && fast !== null && (
                       <button type="button" className="eterx-model-picker-fast"
                         aria-label={`Fast mode for ${model.label}`} aria-pressed={fast}
                         title={`Fast ${fast ? 'on' : 'off'} · ${model.provider === 'openai' ? 'Higher API rates' : 'Uses plan or credits faster'}`}
@@ -276,7 +280,7 @@ export function ChatModelPicker<Model extends PickerModel>({
                         <Zap className="size-3.5" aria-hidden="true" />
                       </button>
                     )}
-                    {options.length > 0 && (
+                    {!unavailable && options.length > 0 && (
                       <button type="button" className="eterx-model-picker-thinking-trigger"
                         aria-label={`Thinking level for ${model.label}${level ? `, current level ${level.label}` : ''}`}
                         aria-haspopup="menu" aria-expanded={expanded} aria-controls={expanded ? thinkingMenuId : undefined}
@@ -290,7 +294,16 @@ export function ChatModelPicker<Model extends PickerModel>({
                     )}
                   </div>
                 );
-              }) : <p className="eterx-model-picker-empty" role="status">{query ? 'No matching models' : 'No models available'}</p>}
+              }) : (
+                <div className="eterx-model-picker-empty">
+                  <p role="status">{loading ? 'Loading models…' : query ? 'No matching models' : 'No models available'}</p>
+                  {!query && !loading && onOpenApiSettings && (
+                    <button type="button" className="mt-2 text-[var(--composer-menu-ink)] underline underline-offset-2" onClick={onOpenApiSettings}>
+                      Open API settings
+                    </button>
+                  )}
+                </div>
+              )}
             </PickerScrollPane>
           </section>
         </div>

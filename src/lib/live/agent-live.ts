@@ -20,7 +20,7 @@ import {
 } from '../agent/model-routing';
 import { appStorage } from '../client-storage';
 import { MODEL_THINKING_CAPABILITIES_STORAGE_KEY, modelEntryKey } from '../agent/model-selector-store';
-import { recordLiveUsage } from './live-usage';
+import { createLiveSessionTelemetry, recordLiveUsage } from './live-usage';
 import { normalizeGeminiLiveModelName } from './live-provider';
 import { getGeminiLiveThinkingConfig, isGeminiExtendedThinkingModel } from './gemini-live-contract';
 import {
@@ -234,10 +234,11 @@ const appendTranscriptChunk = (currentValue: string, nextValue: string): string 
 
 export class AgentLiveSession implements LiveSession {
   private ws: WebSocket | null = null;
+  private readonly sessionTelemetry = createLiveSessionTelemetry('gemini');
   private turnUsage: Record<string, unknown> | null = null;
-  private flushTurnUsage() {
+  private flushTurnUsage(interrupted = this.isInterruptedThisTurn) {
     const model = normalizeGeminiLiveModelName(this.options?.model).replace(/^models\//, '');
-    recordLiveUsage('gemini', model, this.turnUsage);
+    recordLiveUsage('gemini', model, this.turnUsage, undefined, interrupted ? 'interrupted' : 'succeeded');
     this.turnUsage = null;
   }
   private captureContext: AudioContext | null = null;
@@ -391,6 +392,7 @@ export class AgentLiveSession implements LiveSession {
   private setState(newState: LiveSessionState) {
     if (this.state === newState) return;
     this.state = newState;
+    if (newState === 'idle' || newState === 'error') this.sessionTelemetry.stopped(newState === 'error' ? 'failed' : 'closed');
     this.callbacks.onStateChange(newState);
 
     if (newState === 'idle' || newState === 'error') {
@@ -2015,6 +2017,7 @@ export class AgentLiveSession implements LiveSession {
         console.log('[GeminiLive] Setup complete — starting audio capture');
         // The remote session is connected before local microphone setup
         // finishes, so clear the connecting UI immediately.
+        this.sessionTelemetry.started(normalizeGeminiLiveModelName(this.options?.model), Boolean(this.resumptionHandle));
         this.setState('connected');
         if (this.options?.audioInputEnabled !== false) {
           let audioStarted = false;
@@ -3351,7 +3354,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
    * Internal cleanup of all WebSocket, audio capture, and playback resources.
    */
   private cleanup(preserveVisualCapture = false): void {
-    if (this.turnUsage) this.flushTurnUsage();
+    if (this.turnUsage) this.flushTurnUsage(true);
     if (!preserveVisualCapture) {
       const closingDesktopRun = this.desktopRunId;
       this.desktopRunId = `live-${crypto.randomUUID()}`;

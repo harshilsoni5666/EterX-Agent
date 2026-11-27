@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     source, models, updatedAt: Date.now(), ...(error ? { error } : {}),
     connectionStatus: error ? 'unavailable' : 'catalog-loaded',
   }, { status });
-  if (provider.transport === 'model-voice') return reply([], 'configured-models', 'Choose a model added in Settings → Models. This mode uses the agent model selector.', 400);
+  if (provider.transport === 'model-voice') return reply([], 'configured-models', 'Choose a model from a connected provider in the chat picker.', 400);
   if (!client.hasKey) return reply([], 'unavailable', `Connect ${provider.label} in Models or add a key in Live settings.`, 400);
 
   try {

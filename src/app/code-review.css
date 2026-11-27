@@ -9,14 +9,16 @@
   --code-line-number: #929292;
   --code-fold: #2D2D2D;
   --code-fold-hover: #363636;
-  --diff-added: #00D26A;
-  --diff-removed: #FF514D;
-  --diff-added-bg: #1B301E;
-  --diff-removed-bg: #3B1D1B;
-  --diff-added-gutter: #122518;
-  --diff-removed-gutter: #301513;
-  --diff-added-word: #286D3880;
-  --diff-removed-word: #AF383C70;
+  --diff-default-added: #00D26A;
+  --diff-default-removed: #FF514D;
+  --diff-added: var(--diff-dark-added, var(--diff-default-added));
+  --diff-removed: var(--diff-dark-removed, var(--diff-default-removed));
+  --diff-added-bg: var(--diff-dark-added-bg, #1B301E);
+  --diff-removed-bg: var(--diff-dark-removed-bg, #3B1D1B);
+  --diff-added-gutter: var(--diff-dark-added-gutter, #122518);
+  --diff-removed-gutter: var(--diff-dark-removed-gutter, #301513);
+  --diff-added-word: var(--diff-dark-added-word, #286D3880);
+  --diff-removed-word: var(--diff-dark-removed-word, #AF383C70);
   --syntax-comment: #929AA6;
   --syntax-string: #9AE66E;
   --syntax-number: #78C8FF;
@@ -37,14 +39,16 @@
   --code-line-number: #69727E;
   --code-fold: #EEEEEE;
   --code-fold-hover: #E4E4E4;
-  --diff-added: #087536;
-  --diff-removed: #CB302B;
-  --diff-added-bg: #E4F4E6;
-  --diff-removed-bg: #FCE8E6;
-  --diff-added-gutter: #CDEACF;
-  --diff-removed-gutter: #F7D4D0;
-  --diff-added-word: #A8DDB2;
-  --diff-removed-word: #F5B9B3;
+  --diff-default-added: #087536;
+  --diff-default-removed: #CB302B;
+  --diff-added: var(--diff-light-added, var(--diff-default-added));
+  --diff-removed: var(--diff-light-removed, var(--diff-default-removed));
+  --diff-added-bg: var(--diff-light-added-bg, #E4F4E6);
+  --diff-removed-bg: var(--diff-light-removed-bg, #FCE8E6);
+  --diff-added-gutter: var(--diff-light-added-gutter, #CDEACF);
+  --diff-removed-gutter: var(--diff-light-removed-gutter, #F7D4D0);
+  --diff-added-word: var(--diff-light-added-word, #A8DDB2);
+  --diff-removed-word: var(--diff-light-removed-word, #F5B9B3);
   --syntax-comment: #68717E;
   --syntax-string: #187238;
   --syntax-number: #075DB3;
@@ -162,8 +166,8 @@
   --change-hover: var(--code-fold);
 }
 
-:root[data-theme] :is(.eterx-file-change-added, .eterx-action-diff-added, .eterx-workspace-diff-added) { color: var(--diff-added) !important; }
-:root[data-theme] :is(.eterx-file-change-removed, .eterx-action-diff-removed, .eterx-workspace-diff-removed) { color: var(--diff-removed) !important; }
+:root[data-theme][data-diff-palette] :is(.eterx-file-change-added, .eterx-action-diff-added, .eterx-workspace-diff-added) { color: var(--diff-added) !important; }
+:root[data-theme][data-diff-palette] :is(.eterx-file-change-removed, .eterx-action-diff-removed, .eterx-workspace-diff-removed) { color: var(--diff-removed) !important; }
 .eterx-turn-change-counts, .eterx-workspace-review-totals { font-weight: 500; font-variant-numeric: tabular-nums; }
 
 :root[data-theme] :is(.eterx-inline-diff-panel, .eterx-inline-code-panel, .eterx-review-file-card, .eterx-markdown-code-block, .eterx-turn-changes-popup) {

@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { ChatPermissionMode, PendingToolApproval, ToolApprovalDecision } from '../chat-permissions';
 import { terminalInvocationText } from './terminal-result-trace';
 import { getToolDisplayLabel } from './tool-trace';
+import { recordTelemetry } from '../telemetry/runtime';
 import { getRuntimeWorkspaceRoot, resolveReadableWorkspacePathForContext, resolveWorkspaceDirectoryForContext, resolveWorkspacePathForContext } from './workspace/path_resolver';
 
 type RunScope = {
@@ -40,7 +41,12 @@ const liveModes = globals.__eterxToolApprovals.modes ??= new Map();
 const modeScopeKey = (sessionId: string, chatId: string) => JSON.stringify([sessionId, chatId]);
 
 export function setRuntimeChatPermissionMode(chatId: string, sessionId: string, mode: ChatPermissionMode) {
-  liveModes.set(modeScopeKey(sessionId, chatId), mode);
+  const key = modeScopeKey(sessionId, chatId);
+  const from = liveModes.get(key);
+  liveModes.set(key, mode);
+  if (from !== mode) recordTelemetry('provider.runtime_mode.changed', {
+    interactionMode: 'agent', from, to: mode, runtimeMode: mode,
+  });
 }
 
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
@@ -144,9 +150,11 @@ function blocked(outcome: 'expired' | 'cancelled' | 'reject' | 'unavailable'): B
 }
 
 /** Return a blocking result before a tool or its argument-dependent preparation runs. */
-export async function requestToolApproval(tool: string, args: Record<string, any>, context: any): Promise<BlockedTool | null> {
+export async function requestToolApproval(tool: string, args: Record<string, any>, context: any,
+  options?: { label?: string; requireScope?: boolean }): Promise<BlockedTool | null> {
   const run = scope.getStore();
-  if (!run || INTERNAL_TOOLS.has(tool) || (tool === 'workspace_run_command' && TERMINAL_READ_MODES.has(args.mode))) return null;
+  if (!run) return options?.requireScope ? blocked('unavailable') : null;
+  if (INTERNAL_TOOLS.has(tool) || (tool === 'workspace_run_command' && TERMINAL_READ_MODES.has(args.mode))) return null;
   // Snapshot the policy for this invocation, never for the whole run. An
   // invocation already executing or waiting for approval keeps its decision.
   const mode = liveModes.get(modeScopeKey(run.sessionId, run.chatId)) ?? run.mode;
@@ -170,7 +178,7 @@ export async function requestToolApproval(tool: string, args: Record<string, any
 
   const view = {
     id: randomUUID(), tool,
-    label: tool === 'workspace_run_command' ? (args.mode === 'inspect' ? 'Inspect workspace' : 'Shell') : getToolDisplayLabel(tool),
+    label: options?.label || (tool === 'workspace_run_command' ? (args.mode === 'inspect' ? 'Inspect workspace' : 'Shell') : getToolDisplayLabel(tool)),
     agent: context?.subAgentId ? String(context.agentName || context.subAgentName || 'Subagent') : '',
     workspace,
     preview: approvalPreview(tool, args, context),
@@ -208,6 +216,10 @@ export function decideToolApproval(chatId: string, sessionId: string, id: string
   }
   if (ticket.scope.chatId !== chatId || ticket.scope.sessionId !== sessionId) return 'missing';
 
+  recordTelemetry('provider.request.responded', {
+    interactionMode: 'agent', runtimeMode: liveModes.get(modeScopeKey(sessionId, chatId)) ?? ticket.scope.mode,
+    decision, tool: ticket.view.tool, callerOrigin: 'user',
+  }, { key: id });
   receipts.set(id, { chatId, sessionId, decision });
   setTimeout(() => receipts.delete(id), RECEIPT_TTL_MS).unref?.();
   if (decision === 'approve-once') {

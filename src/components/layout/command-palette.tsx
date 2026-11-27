@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { useLiveChats, type LiveChatLedger } from '../../lib/live-chat-ledger';
+import { ChatHistoryNotice, type ChatHistoryStatus } from '../chat/chat-history-notice';
 
 interface ChatSession {
   id: string;
@@ -23,6 +24,8 @@ interface CommandPaletteProps {
   loadChat: (id: string) => void;
   runningChats?: Set<string>;
   activeChatId?: string | null;
+  historyStatus: ChatHistoryStatus;
+  retryHistory: () => void;
 }
 
 const textFromValue = (value: unknown): string => {
@@ -81,6 +84,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = React.memo(({
   loadChat,
   runningChats = new Set<string>(),
   activeChatId = null,
+  historyStatus,
+  retryHistory,
 }) => {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -211,7 +216,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = React.memo(({
                 {isWorking && <span className="eterx-splash-spinner eterx-command-running-indicator shrink-0" role="status" aria-label="Agent working" />}
               </button>
             );
-          }) : (
+          }) : historyStatus !== 'ready' ? (
+            <ChatHistoryNotice status={historyStatus} onRetry={retryHistory} className="justify-center px-6 py-12 text-[var(--muted-foreground)]" />
+          ) : (
             <div className="eterx-command-empty flex flex-col items-center justify-center px-6 py-20 text-center text-[#8D8985]">
               <Search className="mb-3 h-6 w-6" strokeWidth={1.6} />
               <p className="text-[15px]">No chats found</p>

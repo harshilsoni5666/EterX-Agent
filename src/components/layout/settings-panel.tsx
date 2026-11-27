@@ -1,31 +1,48 @@
 'use client';
-import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
+import { formatModelName } from '../../lib/agent/model-presentation';
 import { requestJson } from '../../lib/request-json';
 import { yieldToMainThread } from '../../lib/yield-to-main';
 import { DEFAULT_GIT_PREFERENCES, normalizeGitPreferences } from '../../lib/git/preferences';
 import { DEFAULT_SCRATCH_RETENTION_DAYS, normalizeScratchRetention } from '../../lib/managed-workspaces';
+import { DEFAULT_APPEARANCE, normalizeAppearancePreferences, type AppearancePreferences } from '../../lib/appearance-preferences';
+import type { ChatScope } from '../../lib/chat-scope';
+import type { WorkspaceSource } from '../ui/workspace-avatar';
 import { ScratchRetentionControl } from './scratch-retention-control';
-import { beginModelCatalogRequest } from '../../lib/model-catalog-client';
+import { WorkspaceFolderSettings } from './workspace-folder-settings';
+import { ContrastControl, DiffPalettePicker } from './diff-appearance-controls';
+import appearanceStyles from './appearance-controls.module.css';
+import settingsPanelStyles from './settings-panel.module.css';
+import {
+  hasDiscoveredModelCatalog, invalidateProviderModelCatalog, isModelCatalogStorageKey,
+  PROVIDER_BASE_URLS_STORAGE_KEY, readAvailableModelEntries, readSavedModelEntries, refreshSavedModelCatalog,
+} from '../../lib/model-catalog-client';
 import { useDesktopUpdates } from '../../lib/desktop-updates';
 import { UpdateWhatsNew } from '../updates/release-notes';
 import { ProviderIconAsset } from '../ui/provider-icon';
 import { AgentToolsSettings } from './agent-tools-settings';
 import { ComputerUseSettings } from './computer-use-settings';
+import { ConnectionsSettings } from './connections-settings';
 import { MicrophoneSettings } from './microphone-settings';
 import { SettingsProfile } from './settings-profile';
-import { SubscriptionSettings } from './subscription-settings';
-import { codexCatalogPending, codexModelIsAvailable, getDesktopSubscription } from '../../lib/chatgpt-subscription-client';
+import { SubscriptionProviders } from './subscription-providers';
+import { getDesktopSubscription } from '../../lib/chatgpt-subscription-client';
+import { subscriptionModelLabel, withSubscriptionModels } from '../../lib/subscription-models-client';
+import { ModelBadges } from '../updates/model-badges';
+import { disconnectAntigravityAccounts } from '../../lib/antigravity-client';
+import { clearNativeProviderAccounts } from '../../lib/native-provider-client';
+import { NATIVE_PROVIDERS } from '../../lib/native-provider-contract';
 import { MODEL_FAST_PREFERENCES_KEY } from '../../lib/model-fast-preferences';
 import { TokenUsageRowsSkeleton } from './settings-usage-skeleton';
 import { ImportSettings } from './import-settings';
 import { SettingsSearch, type SettingsSearchTabInfo } from './settings-search';
 import { SETTINGS_TAB_HEADING, type SettingsSearchResult, type SettingsSearchTab } from './settings-search-index';
 import searchStyles from './settings-search.module.css';
+import themePreviewStyles from './theme-preview.module.css';
 import { buildProfileActivity, EMPTY_PROFILE_ACTIVITY, type ProfileActivityStats } from '../../lib/profile-activity';
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MAIN_AGENT_MODEL_OPTIONS, getModelThinkingOptions, normalizeModelThinkingCapabilities, type MainAgentMode, type MainAgentProvider, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
+import { MAIN_AGENT_MODEL_OPTIONS, type MainAgentMode, type MainAgentProvider } from '../../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
   API_KEY_PRESENCE_STORAGE_KEY,
@@ -36,7 +53,6 @@ import {
   MODEL_CATALOG_STORAGE_KEY,
   MODEL_CONTEXT_WINDOWS_STORAGE_KEY,
   MODEL_OVERRIDE_STORAGE_KEY,
-  MODEL_PROVIDER_MODE,
   MODEL_PROVIDER_ORDER,
   MODEL_SELECTOR_SCHEMA_STORAGE_KEY,
   MODEL_SELECTOR_SCHEMA_VERSION,
@@ -50,10 +66,9 @@ import {
   isConcreteModelId,
   isEmbeddedModelLabel,
   isModelProvider,
+  type SubscriptionProvider,
   modelEntryKey,
-  normalizeModelSelectorEntries,
   parseModelEntryKey,
-  removeModelSelectorEntry,
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
 import {
@@ -65,7 +80,6 @@ import {
   Plug,
   Coins,
   BookText,
-  Brain,
   BadgeCheck,
   Key,
   Mic,
@@ -73,15 +87,20 @@ import {
   SquareTerminal,
   Globe,
   LaptopMinimal,
+  Link2,
   RefreshCw,
   SquareCheck,
   Sparkle,
   Users,
   ArrowDownToLine,
+  ArrowUp,
+  PanelRight,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 import { appStorage, appStorageReady, isAppStorageLoaded, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
-import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
+import { isLocalModelProvider, normalizeProviderBaseURL } from '../../lib/agent/provider-runtime';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { resolveModelContextWindow } from '../../lib/agent/model-context-window';
 import { readContextUsageMeter } from '../../lib/context-usage-meter';
@@ -130,7 +149,6 @@ import {
 
 type SettingsGlyphProps = React.SVGProps<SVGSVGElement> & { strokeWidth?: number };
 const SETTINGS_CHANNEL = 'eterx-settings';
-const PROVIDER_BASE_URLS_STORAGE_KEY = 'eterx_provider_base_urls';
 const lightweightSettingsHoverCss = `
   /* Use the same CSS-only interaction path as the rows in All Chats search.
      This changes response timing only; each tab keeps its existing colors,
@@ -347,7 +365,7 @@ const Spinner = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
 );
 
 // ─── Settings Shape ────────────────────────────────────
-export interface AppSettings {
+export interface AppSettings extends AppearancePreferences {
   // General
   theme: 'dark' | 'light' | 'system';
   userName: string;
@@ -432,6 +450,7 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
+  ...DEFAULT_APPEARANCE,
   theme: 'dark',
   userName: 'Developer',
   customInstructions: '',
@@ -519,7 +538,7 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
   const stored = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Partial<AppSettings>
     : {};
-  const next = { ...DEFAULT_SETTINGS, ...stored } as AppSettings;
+  const next = { ...DEFAULT_SETTINGS, ...stored, ...normalizeAppearancePreferences(stored) } as AppSettings;
   Object.assign(next, normalizeGitPreferences(stored));
   next.dictationModel = typeof stored.dictationModel === 'string' && stored.dictationModel.trim()
     ? stored.dictationModel : DEFAULT_SETTINGS.dictationModel;
@@ -597,18 +616,18 @@ const SETTINGS_TABS: readonly SettingsSearchTabInfo[] = [
   { id: 'mcp', label: 'MCP servers', icon: Plug },
   { id: 'tokens', label: 'Tokens', icon: Coins },
   { id: 'context', label: 'Context', icon: BookText },
-  { id: 'models', label: 'Models', icon: Brain },
   { id: 'subscription', label: 'Subscription', icon: BadgeCheck },
   { id: 'api', label: 'API', icon: Key },
   { id: 'live-convo', label: 'Live Convo', icon: Mic },
   { id: 'git', label: 'Git', icon: Cable },
   { id: 'environments', label: 'Environments', icon: SquareTerminal },
+  { id: 'connections', label: 'Connections', icon: Link2 },
   { id: 'browser', label: 'External service', icon: Globe },
   { id: 'computer', label: 'Computer use', icon: LaptopMinimal },
   { id: 'updates', label: 'Updates', icon: RefreshCw },
 ];
 
-type LegacyTab = 'agent' | 'advanced' | 'account' | 'connections';
+type LegacyTab = 'agent' | 'advanced' | 'account' | 'models';
 
 type ApiProviderStatus = {
   provider: string;
@@ -617,28 +636,7 @@ type ApiProviderStatus = {
   reason?: string;
 };
 
-type ModelDirectoryProvider = {
-  provider: string;
-  connected: boolean;
-  source: 'live' | 'unavailable';
-  models: Array<{
-    id: string;
-    name: string;
-    description?: string;
-    contextLength?: number;
-    inputTokenLimit?: number;
-    outputTokenLimit?: number;
-    capabilities?: string[];
-    thinking?: ModelThinkingCapabilities;
-  }>;
-  excludedCount?: number;
-  error?: string;
-};
-
-type ModelDirectory = Record<string, ModelDirectoryProvider>;
 type ModelOverrides = Record<string, string>;
-type ModelCatalog = Record<string, string[]>;
-type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'live' };
 type LiveModelOption = { value: string; label: string; tag?: string; description?: string };
 const formatUpdateBytes = (value?: number) => {
   const bytes = Math.max(0, Number(value) || 0);
@@ -767,7 +765,6 @@ const PROVIDER_LABEL: Record<string, string> = {
   upstage: 'Upstage Solar',
   custom: 'Custom endpoint',
 };
-const PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = MODEL_PROVIDER_MODE;
 const PROVIDER_ACCENT: Record<string, string> = {
   gemini: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
   mistral: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
@@ -781,7 +778,11 @@ interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   initialTab?: Tab | LegacyTab;
+  initialSubscriptionProvider?: SubscriptionProvider;
   onTabChange?: (tab: Tab) => void;
+  onOpenDevices?: () => void;
+  workspaceSources?: readonly WorkspaceSource[];
+  workspaceScope?: ChatScope;
   standalone?: boolean;
 }
 
@@ -900,12 +901,12 @@ const normalizeSettingsTab = (tab: any): Tab => {
     'mcp',
     'hooks',
     'context',
-    'models',
     'subscription',
     'api',
     'live-convo',
     'git',
     'environments',
+    'connections',
     'worktrees',
     'browser',
     'computer',
@@ -918,14 +919,13 @@ const normalizeSettingsTab = (tab: any): Tab => {
       return 'profile';
     case 'agent':
       return 'configuration';
+    case 'models':
     case 'api':
       return 'api';
     case 'live':
     case 'liveconvo':
     case 'live-convo':
       return 'live-convo';
-    case 'connections':
-      return 'models';
     case 'advanced':
       return 'environments';
     default:
@@ -1063,82 +1063,96 @@ const SegmentedControl = <T extends string,>({
   </div>
 );
 
+const ThemeWorkspacePreview: React.FC<{
+  theme: 'light' | 'dark';
+  split?: boolean;
+}> = ({ theme, split = false }) => (
+  <span className={`${themePreviewStyles.workspace} ${themePreviewStyles[theme]}${split ? ` ${themePreviewStyles.split}` : ''}`}>
+    <span className={themePreviewStyles.sidebar}>
+      <span className={themePreviewStyles.brand}>
+        <span className={themePreviewStyles.mark}><Sparkle className={themePreviewStyles.icon} /></span>
+        <span className={themePreviewStyles.bar} />
+      </span>
+      <span className={themePreviewStyles.newChat}>
+        <Plus className={themePreviewStyles.icon} />
+        <span className={themePreviewStyles.bar} />
+      </span>
+      <span className={themePreviewStyles.recentChats}>
+        <span className={themePreviewStyles.activeChat}><span className={themePreviewStyles.bar} /></span>
+        <span className={themePreviewStyles.bar} />
+        <span className={themePreviewStyles.bar} />
+      </span>
+    </span>
+    <span className={themePreviewStyles.main}>
+      <span className={themePreviewStyles.toolbar}>
+        <span className={themePreviewStyles.model}><span className={themePreviewStyles.bar} /></span>
+        <PanelRight className={themePreviewStyles.icon} />
+      </span>
+      <span className={themePreviewStyles.conversation}>
+        <span className={themePreviewStyles.prompt}>
+          <span className={themePreviewStyles.bar} />
+          <span className={themePreviewStyles.bar} />
+        </span>
+        <span className={themePreviewStyles.reply}>
+          <span className={themePreviewStyles.mark}><Sparkle className={themePreviewStyles.icon} /></span>
+          <span className={themePreviewStyles.replyLines}>
+            <span className={themePreviewStyles.bar} />
+            <span className={themePreviewStyles.bar} />
+            <span className={themePreviewStyles.bar} />
+          </span>
+        </span>
+      </span>
+      <span className={themePreviewStyles.composer}>
+        <span className={themePreviewStyles.bar} />
+        <span className={themePreviewStyles.send}><ArrowUp className={themePreviewStyles.icon} /></span>
+      </span>
+    </span>
+  </span>
+);
+
 const ThemePreviewSelector: React.FC<{
   value: AppSettings['theme'];
   onChange: (value: AppSettings['theme']) => void;
 }> = ({ value, onChange }) => {
-  const options: Array<{ value: AppSettings['theme']; label: string }> = [
-    { value: 'system', label: 'System' },
-    { value: 'light', label: 'Light' },
-    { value: 'dark', label: 'Dark' },
-  ];
-
-  const preview = (theme: AppSettings['theme']) => {
-    const isSystem = theme === 'system';
-    const isDark = theme === 'dark';
-
-    return (
-      <div
-        className="relative aspect-[1.42/1] w-full overflow-hidden rounded-[11px]"
-        style={{ background: isSystem ? 'linear-gradient(90deg, #a8a8a8 0 50%, #626262 50% 100%)' : isDark ? '#626262' : '#f3f3f3' }}
-      >
-        <div
-          className="absolute left-[27%] top-[22%] h-[5%] w-[46%] rounded-full"
-          style={{ background: isSystem ? 'linear-gradient(90deg, #dadada 0 50%, #aaa 50% 100%)' : isDark ? '#aaa' : '#d1d1d1' }}
-        />
-        <div
-          className="absolute left-[15%] top-[30%] h-[3%] w-[70%] rounded-full"
-          style={{ background: isSystem ? 'linear-gradient(90deg, #e0e0e0 0 50%, #9a9a9a 50% 100%)' : isDark ? '#9c9c9c' : '#dedede' }}
-        />
-        <div
-          className="absolute left-[9%] top-[37%] h-[72%] w-[82%] overflow-hidden rounded-t-[14px]"
-          style={{ background: isSystem ? 'linear-gradient(90deg, #f5f5f5 0 50%, #373737 50% 100%)' : '#fff' }}
-        >
-          {[0, 1, 2].map(index => (
-            <div
-              key={index}
-              className="relative h-[28%] border-b"
-              style={{ borderColor: isSystem ? '#686868' : '#e8e8e8' }}
-            >
-              <span
-                className="absolute left-[5%] top-[24%] h-[20%] w-[29%] rounded-full"
-                style={{ background: isSystem ? 'linear-gradient(90deg, #d8d8d8 0 50%, #727272 50% 100%)' : '#d9d9d9' }}
-              />
-              <span
-                className="absolute left-[5%] top-[58%] h-[9%] w-[46%] rounded-full"
-                style={{ background: isSystem ? 'linear-gradient(90deg, #ececec 0 50%, #505050 50% 100%)' : '#eeeeee' }}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  };
+  const options = [
+    { value: 'system', label: 'System', icon: LaptopMinimal },
+    { value: 'light', label: 'Light', icon: Sun },
+    { value: 'dark', label: 'Dark', icon: Moon },
+  ] as const;
 
   return (
-    <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-3">
-      {options.map(option => {
-        const selected = value === option.value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={selected}
-            aria-label={`Use ${option.label.toLowerCase()} theme`}
-            onClick={() => onChange(option.value)}
-            className="group min-w-0 rounded-[13px] text-center focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--muted-foreground)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
-          >
-            <div
-              className={`rounded-[13px] border-2 p-[2px] transition-all duration-200 ${selected ? 'border-[var(--muted-foreground)]' : 'border-transparent group-hover:border-white/25'}`}
+    <div className={themePreviewStyles.selector} role="group" aria-label="Theme">
+      <div className={themePreviewStyles.options}>
+        {options.map(({ value: theme, label, icon: Icon }) => {
+          const selected = value === theme;
+          return (
+            <button
+              key={theme}
+              type="button"
+              aria-pressed={selected}
+              aria-label={`Use ${label.toLowerCase()} theme`}
+              onClick={() => onChange(theme)}
+              className={themePreviewStyles.option}
             >
-              {preview(option.value)}
-            </div>
-            <span className={`mt-2 block text-[13px] font-medium transition-colors ${selected ? 'text-[#F4F4F4]' : 'text-[#A7A7A7] group-hover:text-[#E7E7E7]'}`}>
-              {option.label}
-            </span>
-          </button>
-        );
-      })}
+              <span className={themePreviewStyles.thumbnail} aria-hidden="true">
+                <ThemeWorkspacePreview theme={theme === 'dark' ? 'dark' : 'light'} />
+                {theme === 'system' && <ThemeWorkspacePreview theme="dark" split />}
+              </span>
+              <span className={themePreviewStyles.label}>
+                <span className={themePreviewStyles.labelText}>
+                  <Icon size={14} strokeWidth={1.8} aria-hidden="true" />
+                  {label}
+                </span>
+                {selected && (
+                  <span className={themePreviewStyles.selectionMark} aria-hidden="true">
+                    <Check />
+                  </span>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -1588,7 +1602,7 @@ const MANUAL_GUIDES: Record<string, { title: string; intro: string; steps: Array
     intro: 'Settings are organized by the part of the app they control. Configure the essentials first, then tune behavior as you learn your workflow.',
     steps: [
       ['API', 'Add provider keys and verify that they sync successfully. Keys are used to connect model and external-service providers.'],
-      ['Models', 'Choose a provider, load its current catalog, inspect capabilities and context limits, then add preferred models to the custom selector list.'],
+      ['Chat model picker', 'Choose from the available models grouped by connected provider.'],
       ['General', 'Set work mode, permissions, background behavior, terminal shell, destination defaults, follow-up behavior, notifications, and this manual.'],
       ['Profile and Personalization', 'Set identity, response preferences, tone, and instructions that should apply across conversations.'],
       ['Appearance and Shortcuts', 'Choose theme and density, then learn or configure keyboard shortcuts for faster navigation and common actions.'],
@@ -1601,7 +1615,7 @@ const MANUAL_GUIDES: Record<string, { title: string; intro: string; steps: Array
     title: 'Troubleshooting',
     intro: 'When something does not work, identify whether the issue is credentials, provider discovery, permissions, workspace context, or the running task itself.',
     steps: [
-      ['No models appear', 'Confirm a valid key exists in API, the same provider is selected in Models, and the provider catalog request can reach its endpoint.'],
+      ['No models appear', 'Confirm the provider has a valid key in Settings → API and its endpoint is reachable.'],
       ['A chat uses the wrong model', 'Check the active model in the composer, confirm the model is in the custom list, and verify that a saved model override is not taking priority.'],
       ['The agent cannot access a file', 'Confirm the correct workspace is selected, attach the file directly if needed, and check whether the requested action requires additional permissions.'],
       ['A task stopped or failed', 'Open its run history, read the first error, then check provider credentials, model availability, background settings, and the task’s file paths.'],
@@ -1620,7 +1634,7 @@ type ManualDocumentSection = {
 };
 
 const FULL_MANUAL_SECTIONS: ManualDocumentSection[] = [
-  { title: 'Connecting a Model and API Provider', paragraphs: ['To connect a model and its API provider, first open the Models section and select the provider whose models you want to use.', 'By default, a provider may not display its complete or latest model list. To load all currently available models, you must add at least one API key for that provider.', 'Open the API section, select the relevant provider, and add at least one valid API key. After the API key has been added successfully, return to the Models section. The complete and updated list of models available from that provider will now appear.', 'Select the model you want to use and add it to your Custom Models list. You can add models from multiple providers and manage them together within the same custom list.', 'Once a model has been added, check the chat input bar. From there, you can select your preferred model, configure its thinking level, and adjust any other available model settings.'] },
+  { title: 'Connecting a Model and API Provider', paragraphs: ['Open Settings → API, select a provider, and add a key to its provider pool. Its available chat models appear automatically in the model picker.', 'Open the picker in the chat input to choose a model and adjust its thinking level when available. You can connect multiple providers and switch between them from the same picker.'] },
   { title: 'Connecting External Services', paragraphs: ['External services, such as web search, image generation, and other integrations, can be configured from the Settings tab.', 'Open Settings, navigate to External Services, and select the appropriate provider for the service you want to use. Add the required API key or authentication credentials to complete the connection.', 'Once the credentials have been validated, the external service will be ready to use.', 'Depending on the selected provider, you may also be able to configure additional permissions, access controls, or provider-specific settings.'] },
   { title: 'Selecting an Agent and Operating Mode', paragraphs: ['From the chat input bar, you can select a built-in or custom agent.', 'The agent selector allows you to choose between the following operating modes:'], bullets: ['Chat Mode', 'Agent Mode', 'Autonomous Mode'], subSections: [{ title: 'Chat Mode', text: 'Chat Mode is designed for direct conversations and standard interactions with the selected model or agent.' }, { title: 'Agent Mode', text: 'Agent Mode allows the selected agent to use its available tools, instructions, memory, and connected services to complete more advanced tasks.' }, { title: 'Autonomous Mode', text: 'Autonomous Mode uses a proxy agent that works on your behalf. The proxy agent communicates with, guides, and supervises the main agent while the task is being completed. Select Autonomous Mode and send your first request; a separate proxy-agent panel will appear when the workflow begins.' }], },
   { title: 'Communicating with the Proxy Agent', paragraphs: ['You can communicate directly with the side proxy agent while working in Autonomous Mode.', 'The proxy agent manages proxy-related instructions, task supervision, preferences, and operating rules. You can provide instructions for the current task or define rules that should be followed during future workflows.', 'For example, you can tell the proxy agent:'], bullets: ['How frequently it should intervene', 'What actions require your approval', 'Which rules the main agent must always follow', 'How it should handle errors or uncertain results', 'How much autonomy the main agent should receive'], },
@@ -1729,6 +1743,30 @@ function SettingsScrollList({ children, className, frameClassName = '', enabled 
 
 const SETTINGS_DROPDOWN_OPEN_EVENT = 'eterx-settings-dropdown-open';
 
+function ModelOptionLabel({ value, label }: { value: string; label: string }) {
+  const model = parseModelEntryKey(value);
+  if (!model) return <span className="block truncate">{label}</span>;
+  return <span className="eterx-model-name-with-badges">
+    <span className="truncate">{label}</span>
+    <ModelBadges provider={model.provider} modelId={model.modelId} />
+  </span>;
+}
+
+function exportModelCatalog() {
+  const models = withSubscriptionModels(readAvailableModelEntries()).map(({ provider, modelId }) => ({
+    provider, modelId, name: subscriptionModelLabel(provider, modelId) || formatModelName(modelId),
+  }));
+  const json = JSON.stringify({ schema: 'eterx-model-catalog-v1', models }, null, 2);
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'eterx-model-catalog.json';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 const ModernSelect: React.FC<{
   value: string;
   onChange: (value: string) => void;
@@ -1809,7 +1847,7 @@ const ModernSelect: React.FC<{
               }`}
             >
               <span className="min-w-0 flex-1">
-                <span className="block truncate">{option.label}</span>
+                <ModelOptionLabel value={option.value} label={option.label} />
                 {option.description && (
                   <span className="mt-0.5 block truncate text-[11px] font-normal text-[#8F8F8F]">
                     {option.description}
@@ -2023,8 +2061,9 @@ const ApiKeyRow: React.FC<{
 // ═══════════════════════════════════════════════════════
 // MAIN SETTINGS PANEL
 // ═══════════════════════════════════════════════════════
-export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen, onClose, initialTab = 'general', onTabChange, standalone = false }) => {
+export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen, onClose, initialTab = 'general', initialSubscriptionProvider = 'codex', onTabChange, onOpenDevices, workspaceSources, workspaceScope, standalone = false }) => {
   const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
+  const [subscriptionProvider, setSubscriptionProvider] = useState<SubscriptionProvider>(initialSubscriptionProvider);
   const [searchDestination, setSearchDestination] = useState<SettingsSearchResult | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualTopic, setManualTopic] = useState('model-selection');
@@ -2039,6 +2078,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     setManualOpen(false);
     setActiveTab(normalizeSettingsTab(initialTab));
   }, [initialTab, isOpen]);
+  useEffect(() => {
+    if (isOpen) setSubscriptionProvider(initialSubscriptionProvider);
+  }, [initialSubscriptionProvider, isOpen]);
   const [browserRuntimeStatus, setBrowserRuntimeStatus] = useState<any>(null);
   const [browserRuntimeBusy, setBrowserRuntimeBusy] = useState(false);
   const browserRuntimeBusyRef = useRef(false);
@@ -2057,17 +2099,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [apiSyncStatus, setApiSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
   const [apiSyncMessage, setApiSyncMessage] = useState('Runtime keys are local until synced.');
   const [apiProviderStatus, setApiProviderStatus] = useState<ApiProviderStatus[]>([]);
-  const [modelDirectory, setModelDirectory] = useState<ModelDirectory>({});
   const [liveModelOptionsFromApi, setLiveModelOptionsFromApi] = useState<Record<string, LiveModelOption[]>>({});
   const [liveVoiceOptionsFromApi, setLiveVoiceOptionsFromApi] = useState<Record<string, Array<{ value: string; label: string; tag?: string; description?: string }>>>({});
   const [liveCatalogStatus, setLiveCatalogStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [liveCatalogMessage, setLiveCatalogMessage] = useState('Select a provider to load its live catalog.');
-  const [modelDirectoryStatus, setModelDirectoryStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  const [modelDirectoryUpdatedAt, setModelDirectoryUpdatedAt] = useState<number | null>(null);
   const [modelOverrides, setModelOverrides] = useState<ModelOverrides>({});
-  const [modelCatalog, setModelCatalog] = useState<ModelCatalog>({});
   const [modelEntries, setModelEntries] = useState<ModelSelectorEntry[]>([]);
-  const [chatModelSelection, setChatModelSelection] = useState(AUTO_MODEL_SELECTION);
   const [contextChats, setContextChats] = useState<ContextChatSummary[]>([]);
   const [selectedContextChatId, setSelectedContextChatId] = useState('');
   const [activeContextChatId, setActiveContextChatId] = useState('');
@@ -2091,10 +2128,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     uncachedPromptTokens?: number;
     outputTokens?: number;
   } | null>(null);
-  const [modelThinkingCapabilities, setModelThinkingCapabilities] = useState<Record<string, ModelThinkingCapabilities>>({});
   const [modelApiKeys, setModelApiKeys] = useState<Record<string, string>>({});
   const [providerBaseURLs, setProviderBaseURLs] = useState<Record<string, string>>({});
-  const [selectedConnectionProvider, setSelectedConnectionProvider] = useState<MainAgentProvider>('gemini');
   const [selectedApiProviderValue, setSelectedApiProviderValue] = useState<MainAgentProvider>('gemini');
   const [selectedApiModelValue, setSelectedApiModelValue] = useState('');
   const [exactModelDraft, setExactModelDraft] = useState('');
@@ -2116,21 +2151,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const liveApiKeysRef = useRef<Record<string, string>>({});
   const modelApiKeysRef = useRef<Record<string, string>>({});
   const modelOverridesRef = useRef<ModelOverrides>({});
-  const modelEntriesRef = useRef<ModelSelectorEntry[]>([]);
   const providerBaseURLsRef = useRef<Record<string, string>>({});
   const runtimeSettingsHydratedRef = useRef(false);
   const settingsRevisionRef = useRef(0);
   const settingsRef = useRef(settings);
   const contextChatOverridesRef = useRef(contextChatOverrides);
-  const modelThinkingCapabilitiesRef = useRef(modelThinkingCapabilities);
   const runtimeSettingsWriteRef = useRef<Promise<unknown>>(Promise.resolve());
   const runtimeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runtimeSyncPendingRef = useRef<RuntimeSettingsSnapshot | null>(null);
   const runtimeSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
-  const modelDirectoryRequestsRef = useRef(new Map<string, Promise<void>>());
-  const modelDirectoryGenerationRef = useRef<Record<string, number>>({});
-  const reconcileModelDirectoryRef = useRef<(directory: ModelDirectory) => void>(() => {});
-  const [modelAvailabilityNotice, setModelAvailabilityNotice] = useState('');
   const providerBaseURLSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const providerBaseURLSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const providerBaseURLDirtyRef = useRef(false);
@@ -2142,8 +2171,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   apiKeysRef.current = apiKeys;
   settingsRef.current = settings;
   contextChatOverridesRef.current = contextChatOverrides;
-  modelThinkingCapabilitiesRef.current = modelThinkingCapabilities;
-  modelEntriesRef.current = modelEntries;
   searchSettingsRef.current = searchSettings;
   imageSettingsRef.current = imageSettings;
   videoSettingsRef.current = videoSettings;
@@ -2659,9 +2686,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     };
   }, [activeTab, isOpen]);
 
-  const hasAnyApiKey = useCallback((keys: Record<string, string>) =>
-    Object.values(keys).some(value => Boolean(String(value || '').trim())), []);
-
   const persistApiKeyPresence = useCallback((nextApiKeys: Record<string, string>, nextModelApiKeys: Record<string, string>) => {
     const apiKeyPresence = Object.fromEntries(
       Object.entries(nextApiKeys)
@@ -2676,137 +2700,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     appStorage.setItem(API_KEY_PRESENCE_STORAGE_KEY, JSON.stringify(apiKeyPresence));
     appStorage.setItem(MODEL_API_KEY_PRESENCE_STORAGE_KEY, JSON.stringify(modelApiKeyPresence));
   }, []);
-
-  const refreshModelDirectory = useCallback(async function refreshModelDirectory(
-    keys: Record<string, string> = composeApiKeysForSelections(
-      apiKeys,
-      modelApiKeys,
-      modelEntries,
-      [AUTO_MODEL_SELECTION, ...modelEntries.map(entry => modelEntryKey(entry.provider, entry.modelId))],
-    ),
-    overrides: ModelOverrides = modelOverrides,
-    requestedProviders?: MainAgentProvider[],
-  ): Promise<void> {
-    const discoveryRevision = settingsRevisionRef.current;
-    const providers = Array.from(new Set(
-      (requestedProviders?.length
-        ? requestedProviders
-        : MODEL_PROVIDER_ORDER.filter(provider =>
-            provider === selectedConnectionProvider
-            || splitApiKeyPool(keys[provider]).length > 0
-          ))
-        .filter(isModelProvider),
-    ));
-    if (providers.length > 1) {
-      await Promise.all(providers.map(provider => refreshModelDirectory(keys, overrides, [provider])));
-      return;
-    }
-    if (!providers.length) return;
-    const provider = providers[0];
-    const runDiscovery = async () => {
-      if (discoveryRevision !== settingsRevisionRef.current) return;
-      const isCurrent = beginModelCatalogRequest(provider);
-      setModelDirectoryStatus('loading');
-      try {
-      const res = await requestJson('/api/settings/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKeys: keys,
-          modelOverrides: overrides,
-          baseURLs: providerBaseURLsRef.current,
-          replaceRuntimeKeys: true,
-          providers,
-        }),
-      }, 45_000);
-      const payload = await res.json();
-      if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
-      if (discoveryRevision !== settingsRevisionRef.current || modelDirectoryGenerationRef.current[provider] !== generation) return;
-      if (!isCurrent()) { setModelDirectoryStatus('idle'); return; }
-      const nextDirectory = payload.providers || {};
-      setModelDirectory(previous => ({ ...previous, ...nextDirectory }));
-      reconcileModelDirectoryRef.current(nextDirectory);
-      const withoutRefreshedProviders = <T,>(values: Record<string, T>): Record<string, T> =>
-        Object.fromEntries(Object.entries(values).filter(([key]) => {
-          const entry = parseModelEntryKey(key);
-          return !entry || !nextDirectory[entry.provider]?.connected;
-        }));
-      const discoveredThinkingCapabilities: Record<string, ModelThinkingCapabilities> = {};
-      const discoveredWireCapabilities: Record<string, string[]> = {};
-      Object.values(nextDirectory).forEach((providerValue: any) => {
-        const provider = String(providerValue?.provider || '');
-        (providerValue?.models || []).forEach((model: any) => {
-          const thinking = normalizeModelThinkingCapabilities(model?.thinking);
-          if (provider && model?.id && thinking) {
-            discoveredThinkingCapabilities[modelEntryKey(provider, String(model.id))] = thinking;
-          }
-          if (provider && model?.id && Array.isArray(model?.capabilities)) {
-            discoveredWireCapabilities[modelEntryKey(provider, String(model.id))] = Array.from(new Set(
-              model.capabilities.map((value: unknown) => String(value || '').trim()).filter(Boolean),
-            ));
-          }
-        });
-      });
-      let storedWireCapabilities: Record<string, string[]> = {};
-      try {
-        storedWireCapabilities = JSON.parse(appStorage.getItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY) || '{}');
-      } catch { }
-      appStorage.setItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY, JSON.stringify({
-        ...withoutRefreshedProviders(storedWireCapabilities),
-        ...discoveredWireCapabilities,
-      }));
-      const nextThinking = { ...withoutRefreshedProviders(modelThinkingCapabilitiesRef.current), ...discoveredThinkingCapabilities };
-      modelThinkingCapabilitiesRef.current = nextThinking;
-      setModelThinkingCapabilities(nextThinking);
-      appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(nextThinking));
-      broadcastEterxSettingsUpdate({
-        type: 'model-thinking-capabilities-updated',
-        thinkingCapabilities: nextThinking,
-      });
-      // Preserve exact IDs and never choose a replacement automatically.
-      const discoveredContextWindows: Record<string, number> = {};
-      Object.values(payload.providers || {}).forEach((providerValue: any) => {
-        const provider = String(providerValue?.provider || '');
-        (providerValue?.models || []).forEach((model: any) => {
-          const limit = Number(model?.inputTokenLimit || model?.contextLength || 0);
-          if (provider && model?.id && Number.isFinite(limit) && limit >= 16_000 && limit <= 4_000_000) {
-            discoveredContextWindows[modelEntryKey(provider, String(model.id))] = Math.floor(limit);
-          }
-        });
-      });
-      let storedContextWindows: Record<string, number> = {};
-      try {
-        storedContextWindows = JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}');
-      } catch { }
-      const validStoredContextWindows = Object.fromEntries(
-        Object.entries(storedContextWindows).flatMap(([key, value]) => {
-          const limit = Number(value);
-          return key && Number.isFinite(limit) && limit >= 16_000 && limit <= 4_000_000
-            ? [[key, Math.floor(limit)]]
-            : [];
-        }),
-      );
-      const nextContextWindows = { ...withoutRefreshedProviders(validStoredContextWindows), ...discoveredContextWindows };
-      appStorage.setItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY, JSON.stringify(nextContextWindows));
-      broadcastEterxSettingsUpdate({
-        type: 'model-context-windows-updated',
-        contextWindows: nextContextWindows,
-      });
-      setModelDirectoryUpdatedAt(payload.updatedAt || Date.now());
-      setModelDirectoryStatus('ready');
-      } catch (error) {
-        if (discoveryRevision === settingsRevisionRef.current) setModelDirectoryStatus('error');
-      }
-    };
-    const requestKey = JSON.stringify([providers, keys, providerBaseURLsRef.current, discoveryRevision]);
-    const existing = modelDirectoryRequestsRef.current.get(requestKey);
-    if (existing) return existing;
-    const generation = (modelDirectoryGenerationRef.current[provider] || 0) + 1;
-    modelDirectoryGenerationRef.current[provider] = generation;
-    const request = runDiscovery().finally(() => modelDirectoryRequestsRef.current.delete(requestKey));
-    modelDirectoryRequestsRef.current.set(requestKey, request);
-    await request;
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, persistDesktopRuntimeSettings, selectedConnectionProvider]);
 
   const syncApiKeys = useCallback(async (keys: Record<string, string>, silent = false, overrides: ModelOverrides = {}) => {
     const cleanKeys = Object.fromEntries(
@@ -2846,17 +2739,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         : 0;
       setApiSyncMessage(`${ payload.acceptedCount || 0 } key${ payload.acceptedCount === 1 ? '' : 's' } and ${ modelCount } model override${ modelCount === 1 ? '' : 's' } active.`);
 
-      // Auto-refresh the model catalog only when there is a live credential or
-      // override to discover. An empty snapshot still reaches the runtime so
-      // clearing the last key cannot leave the previous key active.
-      if (hasAnyApiKey(cleanKeys) || Object.keys(cleanModelOverrides).length > 0) {
-        await refreshModelDirectory(cleanKeys, cleanModelOverrides);
-      }
     } catch (error: any) {
       setApiSyncStatus('error');
       setApiSyncMessage(error?.message || 'Could not sync API keys.');
     }
-  }, [hasAnyApiKey, refreshModelDirectory]);
+  }, []);
 
   const dispatchRuntimeSync = useCallback(() => {
     const pending = runtimeSyncPendingRef.current;
@@ -2951,21 +2838,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         nextSettings.liveConvoModel = 'auto';
       }
       const savedModelOverrides = appStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
-      const savedModelCatalog = appStorage.getItem(MODEL_CATALOG_STORAGE_KEY);
-      const savedModelEntries = appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY);
-      const savedThinkingCapabilities = appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
       const savedProviderBaseURLs = appStorage.getItem(PROVIDER_BASE_URLS_STORAGE_KEY);
       const needsSelectorSchemaMigration = appStorage.getItem(MODEL_SELECTOR_SCHEMA_STORAGE_KEY) !== MODEL_SELECTOR_SCHEMA_VERSION;
       const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
-      const parsedModelCatalog = savedModelCatalog ? JSON.parse(savedModelCatalog) : {};
-      const parsedThinkingCapabilities = savedThinkingCapabilities ? JSON.parse(savedThinkingCapabilities) : {};
       const parsedProviderBaseURLs = savedProviderBaseURLs ? JSON.parse(savedProviderBaseURLs) : {};
-      const migratedEntries = normalizeModelSelectorEntries(
-        savedModelEntries ? JSON.parse(savedModelEntries) : undefined,
-        parsedModelCatalog,
-      );
-      const normalizedEntries = normalizeModelSelectorEntries(migratedEntries, parsedModelCatalog);
-      const normalizedCatalog = entriesToModelCatalog(normalizedEntries) as ModelCatalog;
       const desktopApi = (window as any)?.electronAPI;
       const folderRuntimeResponse = await fetch('/api/settings/runtime', { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
       const folderRuntimePayload = await folderRuntimeResponse.json();
@@ -3085,54 +2961,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             .map(([provider, model]) => [provider, typeof model === 'string' ? model.trim() : ''])
             .filter(([provider, model]) =>
               isModelProvider(provider)
-              && Boolean(model)
+              && isConcreteModelId(model)
               && !isEmbeddedModelLabel(model)
-              && normalizedEntries.some(entry => entry.provider === provider && entry.modelId === model)
             ),
         )
         : {};
-      const resolvedModelEntries = normalizeModelSelectorEntries(normalizedEntries, normalizedCatalog);
-      const storedChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-      const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
-      const resolvedModelCatalog = entriesToModelCatalog(resolvedModelEntries) as ModelCatalog;
-      const usableResolvedEntries = resolvedModelEntries.filter(entry =>
-        isLocalModelProvider(entry.provider)
-        || Boolean(normalizedApiKeys[entry.provider])
-        || Boolean(normalizedModelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
-      );
-      const resolvedChatModelSelection = parsedStoredChatModel && (
-        (parsedStoredChatModel.provider === 'codex' && (codexCatalogPending() || codexModelIsAvailable(parsedStoredChatModel.modelId)))
-        || usableResolvedEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
-      )
-        ? storedChatModelSelection
-        : usableResolvedEntries[0]
-          ? modelEntryKey(usableResolvedEntries[0].provider, usableResolvedEntries[0].modelId)
-          : AUTO_MODEL_SELECTION;
       settingsRef.current = nextSettings;
       setSettings(nextSettings);
       appStorage.setItem('eterx_settings', JSON.stringify(nextSettings));
-      setModelEntries(resolvedModelEntries);
-      setModelCatalog(resolvedModelCatalog);
-      setChatModelSelection(resolvedChatModelSelection);
       setModelApiKeys(normalizedModelApiKeys);
-      setModelThinkingCapabilities(
-        parsedThinkingCapabilities && typeof parsedThinkingCapabilities === 'object'
-          ? Object.fromEntries(
-            Object.entries(parsedThinkingCapabilities as Record<string, unknown>)
-              .map(([key, value]) => [key, normalizeModelThinkingCapabilities(value)] as const)
-              .filter(([, value]) => Boolean(value)),
-          ) as Record<string, ModelThinkingCapabilities>
-          : {},
-      );
-      appStorage.setItems({
-        [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(resolvedModelEntries),
-        [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(resolvedModelCatalog),
-        [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(normalizedModelOverrides),
-        [CHAT_MODEL_SELECTION_STORAGE_KEY]: resolvedChatModelSelection,
-      });
+      appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(normalizedModelOverrides));
       setModelOverrides(normalizedModelOverrides);
       setApiKeys(normalizedApiKeys);
-      modelEntriesRef.current = resolvedModelEntries;
       modelApiKeysRef.current = normalizedModelApiKeys;
       modelOverridesRef.current = normalizedModelOverrides;
       apiKeysRef.current = normalizedApiKeys;
@@ -3155,9 +2995,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         : {};
       providerBaseURLsRef.current = effectiveBaseURLs;
       providerBaseURLDirtyRef.current = folderBaseURLs === null && secureBaseURLs === null && Object.keys(effectiveBaseURLs).length > 0;
+      appStorage.setItem(PROVIDER_BASE_URLS_STORAGE_KEY, JSON.stringify(effectiveBaseURLs));
       setProviderBaseURLs(effectiveBaseURLs);
 
       if (needsSelectorSchemaMigration) {
+        const savedEntries = readSavedModelEntries();
+        appStorage.setItems({
+          [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(savedEntries),
+          [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(entriesToModelCatalog(savedEntries)),
+        });
+      }
+      const needsRuntimeConnectionMigration = (folderApiKeys === null && Object.keys(normalizedApiKeys).length > 0)
+        || (folderBaseURLs === null && Object.keys(effectiveBaseURLs).length > 0);
+      if (needsSelectorSchemaMigration || needsRuntimeConnectionMigration) {
         const migrationSaved = await persistDesktopRuntimeSettings(
           normalizedApiKeys,
           normalizedModelApiKeys,
@@ -3174,9 +3024,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         apiKeys: normalizedApiKeys,
         modelApiKeys: normalizedModelApiKeys,
         modelOverrides: normalizedModelOverrides,
-        modelEntries: resolvedModelEntries,
+        modelEntries: readAvailableModelEntries(),
       }, true);
       runtimeSettingsHydratedRef.current = true;
+      void refreshSavedModelCatalog();
       } catch (error) {
         console.warn('Could not load runtime settings:', error);
         if (!cancelled && settingsRevisionRef.current === loadRevision) {
@@ -3225,26 +3076,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const sequence = ++loadSequence;
       const loadRevision = settingsRevisionRef.current;
       await appStorageReady;
-      if (cancelled || hasChanges || !isAppStorageLoaded() || !runtimeSettingsHydratedRef.current) return;
+      if (cancelled || hasChanges || providerBaseURLDirtyRef.current || !isAppStorageLoaded() || !runtimeSettingsHydratedRef.current) return;
 
       const storedSettings = readJson('eterx_settings', {}) as Record<string, unknown>;
-      const storedCatalog = readJson(MODEL_CATALOG_STORAGE_KEY, {}) as ModelCatalog;
-      const storedEntries = readJson(MODEL_SELECTOR_STORAGE_KEY, []);
       const storedOverrides = normalizeStringMap(readJson(MODEL_OVERRIDE_STORAGE_KEY, {}));
       const storedBaseURLs = normalizeStringMap(readJson(PROVIDER_BASE_URLS_STORAGE_KEY, {}));
-      const storedThinking = readJson(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, {});
-      const storedChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-      const syncedEntries = normalizeModelSelectorEntries(storedEntries, storedCatalog);
-      const syncedCatalog = entriesToModelCatalog(syncedEntries) as ModelCatalog;
-      const parsed = parseModelEntryKey(storedChatModelSelection);
-      const syncedChatModelSelection = parsed && (
-        (parsed.provider === 'codex' && (codexCatalogPending() || codexModelIsAvailable(parsed.modelId)))
-        || syncedEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
-      )
-        ? storedChatModelSelection
-        : syncedEntries[0]
-          ? modelEntryKey(syncedEntries[0].provider, syncedEntries[0].modelId)
-          : AUTO_MODEL_SELECTION;
 
       let runtime: any;
       try {
@@ -3280,13 +3116,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const nextVideoSettings = normalizeVideoSettings(runtimeVideoSettings);
       const nextOverrides = runtime.modelOverrides ? runtimeOverrides : storedOverrides;
       const nextBaseURLs = runtime.baseURLs ? runtimeBaseURLs : storedBaseURLs;
-      const syncedThinking = storedThinking && typeof storedThinking === 'object' && !Array.isArray(storedThinking)
-        ? Object.fromEntries(
-            Object.entries(storedThinking as Record<string, unknown>)
-              .map(([key, value]) => [key, normalizeModelThinkingCapabilities(value)] as const)
-              .filter(([, value]) => Boolean(value)),
-          ) as Record<string, ModelThinkingCapabilities>
-        : {};
+      for (const provider of MODEL_PROVIDER_ORDER) {
+        if ((apiKeysRef.current[provider] || '') !== (runtimeApiKeys[provider] || '')
+          || normalizeProviderBaseURL(provider, providerBaseURLsRef.current[provider]) !== normalizeProviderBaseURL(provider, nextBaseURLs[provider])) {
+          invalidateProviderModelCatalog(provider);
+        }
+      }
 
       const nextAppSettings = normalizeAppSettings({
         ...settingsRef.current, ...storedSettings,
@@ -3295,17 +3130,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       });
       settingsRef.current = nextAppSettings;
       setSettings(nextAppSettings);
-      setApiKeys(runtimeApiKeys);
+      setApiKeys(current => JSON.stringify(current) === JSON.stringify(runtimeApiKeys) ? current : runtimeApiKeys);
       setSearchSettings(current => JSON.stringify(current) === JSON.stringify(nextSearchSettings) ? current : nextSearchSettings);
       setImageSettings(current => JSON.stringify(current) === JSON.stringify(nextImageSettings) ? current : nextImageSettings);
       setVideoSettings(current => JSON.stringify(current) === JSON.stringify(nextVideoSettings) ? current : nextVideoSettings);
       setLiveApiKeys(runtimeLiveApiKeys);
       setModelApiKeys(runtimeModelApiKeys);
       setModelOverrides(current => JSON.stringify(current) === JSON.stringify(nextOverrides) ? current : nextOverrides);
-      setModelEntries(syncedEntries);
-      setModelCatalog(syncedCatalog);
-      setChatModelSelection(syncedChatModelSelection);
-      setModelThinkingCapabilities(syncedThinking);
       setProviderBaseURLs(current => JSON.stringify(current) === JSON.stringify(nextBaseURLs) ? current : nextBaseURLs);
       apiKeysRef.current = runtimeApiKeys;
       searchSettingsRef.current = nextSearchSettings;
@@ -3314,10 +3145,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       liveApiKeysRef.current = runtimeLiveApiKeys;
       modelApiKeysRef.current = runtimeModelApiKeys;
       modelOverridesRef.current = nextOverrides;
-      modelEntriesRef.current = syncedEntries;
       providerBaseURLsRef.current = nextBaseURLs;
     };
-    const onExternalCommit = () => { void syncExternalSettings(); };
+    const onExternalCommit = (event: Event) => {
+      const key = (event as CustomEvent).detail?.key;
+      if (isModelCatalogStorageKey(key) || [
+        MODEL_THINKING_CAPABILITIES_STORAGE_KEY, MODEL_WIRE_CAPABILITIES_STORAGE_KEY, MODEL_CONTEXT_WINDOWS_STORAGE_KEY,
+      ].includes(key)) return;
+      void syncExternalSettings();
+    };
     window.addEventListener(FOLDER_STORAGE_READY_EVENT, onExternalCommit);
     window.addEventListener('eterx-folder-storage-updated', onExternalCommit);
     window.addEventListener('focus', onExternalCommit);
@@ -3329,44 +3165,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     };
   }, [hasChanges]);
 
-  // Active model selection is small, conflict-free state. Keep it live even
-  // while the panel protects other in-progress edits from a full reload.
   useEffect(() => {
-    const applySelection = (detail?: unknown) => {
-      const requested = detail && typeof detail === 'object'
-        && typeof (detail as { chatModelSelection?: unknown }).chatModelSelection === 'string'
-        ? String((detail as { chatModelSelection: string }).chatModelSelection)
-        : appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-      const entries = modelEntriesRef.current;
-      const parsed = parseModelEntryKey(requested);
-      const nextSelection = parsed && (
-        (parsed.provider === 'codex' && (codexCatalogPending() || codexModelIsAvailable(parsed.modelId)))
-        || entries.some(entry => modelEntryKey(entry.provider, entry.modelId) === requested)
-      )
-        ? requested
-        : AUTO_MODEL_SELECTION;
-      setChatModelSelection(current => current === nextSelection ? current : nextSelection);
+    const modelKeys = new Set([
+      API_KEY_PRESENCE_STORAGE_KEY, MODEL_API_KEY_PRESENCE_STORAGE_KEY, MODEL_SELECTOR_STORAGE_KEY,
+      MODEL_CATALOG_STORAGE_KEY, PROVIDER_BASE_URLS_STORAGE_KEY, MODEL_CONTEXT_WINDOWS_STORAGE_KEY,
+    ]);
+    const readModels = (event?: Event) => {
+      const key = (event as CustomEvent | undefined)?.detail?.key;
+      if (key && !modelKeys.has(key) && !isModelCatalogStorageKey(key)) return;
+      setModelEntries(readAvailableModelEntries());
     };
-    const onLocalUpdate = (event: Event) => applySelection((event as CustomEvent).detail);
-    const onStorageUpdate = () => applySelection();
-
-    window.addEventListener('eterx-settings-updated', onLocalUpdate);
-    window.addEventListener(FOLDER_STORAGE_READY_EVENT, onStorageUpdate);
-    window.addEventListener('eterx-folder-storage-updated', onStorageUpdate);
-
-    let channel: BroadcastChannel | null = null;
-    try {
-      channel = new BroadcastChannel(SETTINGS_CHANNEL);
-      channel.onmessage = event => applySelection(event.data?.settings);
-    } catch {
-      channel = null;
-    }
-
+    readModels();
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, readModels);
+    window.addEventListener('eterx-folder-storage-updated', readModels);
     return () => {
-      window.removeEventListener('eterx-settings-updated', onLocalUpdate);
-      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onStorageUpdate);
-      window.removeEventListener('eterx-folder-storage-updated', onStorageUpdate);
-      channel?.close();
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, readModels);
+      window.removeEventListener('eterx-folder-storage-updated', readModels);
     };
   }, []);
 
@@ -3408,6 +3222,31 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       }
     };
   }, [persistDesktopRuntimeSettings, providerBaseURLs]);
+
+  useEffect(() => {
+    if (!runtimeSettingsHydratedRef.current) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      await providerBaseURLSyncChainRef.current;
+      const saved = await runtimeSettingsWriteRef.current;
+      if (!cancelled && saved !== false) void refreshSavedModelCatalog();
+    }, 800);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [apiKeys, providerBaseURLs]);
+
+  const updateProviderBaseURL = (provider: MainAgentProvider, value: string) => {
+    settingsRevisionRef.current += 1;
+    providerBaseURLDirtyRef.current = true;
+    const next = { ...providerBaseURLsRef.current };
+    if (value) next[provider] = value;
+    else delete next[provider];
+    providerBaseURLsRef.current = next;
+    invalidateProviderModelCatalog(provider);
+    setProviderBaseURLs(next);
+  };
 
   const flushProviderBaseURLSync = useCallback(async () => {
     const hasPendingTimer = Boolean(providerBaseURLSyncTimerRef.current);
@@ -3627,6 +3466,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   const openSearchResult = useCallback((result: SettingsSearchResult) => {
     setManualOpen(false);
+    if (result.tab === 'subscription') {
+      const provider = NATIVE_PROVIDERS.find(name => result.target.startsWith(name + '-'));
+      setSubscriptionProvider(provider ?? (result.target.startsWith('antigravity-') ? 'antigravity' : 'codex'));
+    }
     setActiveTab(result.tab);
     setSearchDestination({ ...result });
     onTabChange?.(result.tab);
@@ -3634,7 +3477,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   const updateApiKey = useCallback((name: string, value: string) => {
     const trimmed = value.trim();
+    if (trimmed === (apiKeysRef.current[name] || '')) return;
     settingsRevisionRef.current += 1;
+    invalidateProviderModelCatalog(name);
     const next = { ...apiKeysRef.current, [name]: trimmed };
     apiKeysRef.current = next;
     setApiKeys(next);
@@ -3935,7 +3780,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       loadVoices();
       window.speechSynthesis?.addEventListener('voiceschanged', loadVoices);
       setLiveCatalogStatus('ready');
-      setLiveCatalogMessage('Uses models added in Models and their saved connections. Desktop speech recognition runs locally; browser speech recognition may use its speech service.');
+      setLiveCatalogMessage('Uses models from connected providers. Desktop speech recognition runs locally. Browser speech recognition may use its speech service.');
       return () => window.speechSynthesis?.removeEventListener('voiceschanged', loadVoices);
     }
     const controller = new AbortController();
@@ -4036,40 +3881,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const providerSync = (provider: string) => apiProviderStatus.find(status => status.provider === provider);
   const selectedModelOption = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === settings.agentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
   const activeProvider = (selectedModelOption?.provider || 'gemini') as MainAgentProvider;
-  const activeModelOverride = modelOverrides[activeProvider];
-
-  useEffect(() => {
-    if (isOpen) setSelectedConnectionProvider(activeProvider);
-  }, [activeProvider, isOpen]);
-
-  const getProviderModelOptions = useCallback((provider: string) => {
-    const seen = new Set<string>();
-    const options: ProviderModelOption[] = [];
-    const push = (id: unknown, label: unknown, source: ProviderModelOption['source']) => {
-      const modelId = String(id || '').trim();
-      if (!isConcreteModelId(modelId) || seen.has(modelId)) return;
-      seen.add(modelId);
-      options.push({
-        id: modelId,
-        label: String(label || '').trim() || formatModelName(modelId),
-        source,
-      });
-    };
-
-    modelDirectory[provider]?.models?.forEach(model => push(model.id, model.name || model.id, 'live'));
-    if (modelDirectory[provider]?.connected) return options;
-    const savedLabel = (id: string) => formatModelName(id) + ' (saved · unverified)';
-    if (modelOverrides[provider]) push(modelOverrides[provider], savedLabel(modelOverrides[provider]), 'selected');
-    modelCatalog[provider]?.forEach(modelId => push(modelId, savedLabel(modelId), 'saved'));
-
-    return options;
-  }, [modelCatalog, modelDirectory, modelOverrides]);
-
-  const selectedProviderDirectory = modelDirectory[selectedConnectionProvider];
-  const selectedProviderModel = modelOverrides[selectedConnectionProvider] || '';
-  const selectedProviderModelOptions = getProviderModelOptions(selectedConnectionProvider);
-  const selectedProviderKeyCount = providerKeyCount(selectedConnectionProvider);
-  const selectedProviderCanDiscover = isLocalModelProvider(selectedConnectionProvider) || selectedProviderKeyCount > 0;
   const selectedContextChat = contextChats.find(chat => chat.id === selectedContextChatId) || null;
   const selectedContextChatBudget = selectedContextChatId
     ? contextChatOverrides[selectedContextChatId] || 'global'
@@ -4077,15 +3888,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const contextChatMaximum = (chat: ContextChatSummary | null): number => {
     if (!chat) return 0;
     if (!chat.provider || !chat.modelId) return chat.modelMaximum;
-    const liveModel = modelDirectory[chat.provider]?.models.find(model => model.id === chat.modelId);
-    let discovered = normalizeContextWindow(liveModel?.inputTokenLimit || liveModel?.contextLength);
-    if (!discovered) {
-      try {
-        discovered = normalizeContextWindow(JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}')?.[
-          modelEntryKey(chat.provider, chat.modelId)
-        ]);
-      } catch { }
-    }
+    let discovered = 0;
+    try {
+      discovered = normalizeContextWindow(JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}')?.[
+        modelEntryKey(chat.provider, chat.modelId)
+      ]) || 0;
+    } catch { }
     return discovered || chat.modelMaximum || resolveModelContextWindow(chat.provider, chat.modelId);
   };
   const selectedChatBudget = resolveContextWindowBudget(
@@ -4096,140 +3904,50 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const activeContextChat = contextChats.find(chat => chat.id === activeContextChatId) || null;
   const globalContextBudget = resolveContextWindowBudget(resolveSavedContextBudget(settings), contextChatMaximum(activeContextChat));
   const globalContextLimitNote = contextWindowLimitNote(globalContextBudget.requestedContextWindow, globalContextBudget.modelContextWindow);
-  const selectedProviderStatusText = !selectedProviderCanDiscover
-    ? `Add a ${ PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider } API key to load models`
-    : selectedProviderDirectory
-    ? (selectedProviderDirectory.connected
-      ? `${ selectedProviderDirectory.models.length } agent-compatible models${ selectedProviderDirectory.excludedCount ? ` · ${ selectedProviderDirectory.excludedCount } incompatible hidden` : '' }`
-      : selectedProviderDirectory.error || 'Not connected')
-    : 'Open Models to load live models';
   const selectedApiProvider = selectedApiProviderValue || activeProvider;
   const selectedApiProviderLabel = PROVIDER_LABEL[selectedApiProvider] || selectedApiProvider;
   const selectedApiProviderSync = providerSync(selectedApiProvider);
   const selectedApiProviderPoolValue = `provider:${selectedApiProvider}`;
-  const selectedApiProviderModelEntries = modelEntries.filter(entry => entry.provider === selectedApiProvider);
-  const apiPoolEntries = [
+  const apiPoolEntries = useMemo(() => [
     {
       value: selectedApiProviderPoolValue,
       label: 'Provider pool',
       description: `Any ${selectedApiProviderLabel} model`,
-      provider: selectedApiProvider,
-      providerLabel: selectedApiProviderLabel,
-      modelId: '',
       isProviderPool: true,
     },
-    ...selectedApiProviderModelEntries.map(entry => ({
+    ...modelEntries.filter(entry => entry.provider === selectedApiProvider).map(entry => ({
       value: modelEntryKey(entry.provider, entry.modelId),
       label: formatModelName(entry.modelId),
       description: 'Custom model pool',
-      provider: entry.provider,
-      providerLabel: selectedApiProviderLabel,
-      modelId: entry.modelId,
       isProviderPool: false,
     })),
-  ];
+  ], [modelEntries, selectedApiProvider, selectedApiProviderLabel, selectedApiProviderPoolValue]);
   const selectedApiPoolEntry =
     apiPoolEntries.find(entry => entry.value === selectedApiModelValue) ||
     apiPoolEntries[0];
   const selectedApiPoolValue = selectedApiPoolEntry?.isProviderPool
     ? apiKeys[selectedApiProvider] || ''
     : modelApiKeys[selectedApiPoolEntry?.value || ''] || '';
+  const showExactModel = (isLocalModelProvider(selectedApiProvider) || Boolean(apiKeys[selectedApiProvider]))
+    && (selectedApiProvider === 'custom' || isLocalModelProvider(selectedApiProvider) || Boolean(providerBaseURLs[selectedApiProvider]))
+    && !hasDiscoveredModelCatalog(selectedApiProvider);
+  const exactModelId = exactModelDraft.trim();
+  const canAddExactModel = isConcreteModelId(exactModelId) && !isEmbeddedModelLabel(exactModelId);
+  const addExactModel = () => {
+    if (!canAddExactModel) return;
+    const entries = ensureModelSelectorEntry(readSavedModelEntries(), selectedApiProvider, exactModelId);
+    appStorage.setItems({
+      [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(entries),
+      [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(entriesToModelCatalog(entries)),
+    });
+    setExactModelDraft('');
+  };
 
   useEffect(() => {
     if (!apiPoolEntries.some(entry => entry.value === selectedApiModelValue)) {
       setSelectedApiModelValue(selectedApiProviderPoolValue);
     }
   }, [apiPoolEntries, selectedApiProviderPoolValue, selectedApiModelValue]);
-
-  useEffect(() => {
-    setExactModelDraft(selectedProviderModel);
-  }, [selectedConnectionProvider, selectedProviderModel]);
-
-  const refreshModelDirectoryRef = useRef(refreshModelDirectory);
-  refreshModelDirectoryRef.current = refreshModelDirectory;
-
-  useEffect(() => {
-    if (!isOpen || (activeTab !== 'models' && activeTab !== 'api')) return;
-    const discoveryProvider = activeTab === 'api' ? selectedApiProvider : selectedConnectionProvider;
-    if (activeTab === 'api' && !isLocalModelProvider(discoveryProvider) && providerKeyCount(discoveryProvider) === 0) return;
-    let cancelled = false;
-    let inFlight = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const refresh = async () => {
-      if (cancelled || inFlight) return;
-      if (timer) clearTimeout(timer);
-      timer = null;
-      inFlight = true;
-      try {
-        await appStorageReady;
-        const deadline = Date.now() + 10_000;
-        while (!cancelled && !runtimeSettingsHydratedRef.current && Date.now() < deadline) {
-          await new Promise(resolve => window.setTimeout(resolve, 50));
-        }
-        if (cancelled) return;
-        if (!runtimeSettingsHydratedRef.current) {
-          setModelDirectoryStatus('error');
-          return;
-        }
-        const currentEntries = modelEntriesRef.current;
-        const currentKeys = composeApiKeysForSelections(
-          apiKeysRef.current,
-          modelApiKeysRef.current,
-          currentEntries,
-          [AUTO_MODEL_SELECTION, ...currentEntries.map(entry => modelEntryKey(entry.provider, entry.modelId))],
-        );
-        await refreshModelDirectoryRef.current(currentKeys, modelOverridesRef.current, [discoveryProvider]);
-      } catch {
-        if (!cancelled) setModelDirectoryStatus('error');
-      } finally {
-        inFlight = false;
-        // Schedule after completion so slow providers cannot build a backlog.
-        if (!cancelled) timer = setTimeout(() => { void refresh(); }, 30_000);
-      }
-    };
-    const onFocus = () => { void refresh(); };
-    window.addEventListener('focus', onFocus);
-    // Let a pasted/typed key settle before discovery. Do not switch tabs or
-    // choose a model simply because credentials were entered.
-    timer = setTimeout(() => { void refresh(); }, activeTab === 'api' ? 800 : 0);
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [activeTab, isOpen, selectedConnectionProvider, selectedApiProvider, apiKeys, modelApiKeys, providerBaseURLs]);
-
-  const saveModelEntries = useCallback((nextEntries: ModelSelectorEntry[]) => {
-    const normalizedEntries = normalizeModelSelectorEntries(nextEntries, {});
-    const nextCatalog = entriesToModelCatalog(normalizedEntries) as ModelCatalog;
-    modelEntriesRef.current = normalizedEntries;
-    setModelEntries(normalizedEntries);
-    setModelCatalog(nextCatalog);
-    appStorage.setItems({
-      [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(normalizedEntries),
-      [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(nextCatalog),
-    });
-    broadcastEterxSettingsUpdate({
-      type: 'model-selector-updated',
-      modelEntries: normalizedEntries,
-      modelCatalog: nextCatalog,
-    });
-    return normalizedEntries;
-  }, []);
-
-  const saveModelThinkingCapability = useCallback((provider: MainAgentProvider, modelId: string) => {
-    const liveCapability = modelDirectory[provider]?.models.find(model => model.id === modelId)?.thinking;
-    if (!liveCapability) return;
-    const key = modelEntryKey(provider, modelId);
-    const next = { ...modelThinkingCapabilitiesRef.current, [key]: liveCapability };
-    modelThinkingCapabilitiesRef.current = next;
-    setModelThinkingCapabilities(next);
-    appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
-    broadcastEterxSettingsUpdate({
-      type: 'model-thinking-capabilities-updated',
-      thinkingCapabilities: next,
-    });
-  }, [modelDirectory]);
 
   const updateModelApiKey = useCallback((modelKey: string, value: string) => {
     if (!parseModelEntryKey(modelKey)) return;
@@ -4252,152 +3970,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     setHasChanges(true);
     keysChangedRef.current = true;
   }, [modelEntries, persistApiKeyPresence, persistDesktopRuntimeSettings, queueRuntimeSync]);
-
-  const selectCatalogModel = useCallback((provider: string, modelId: string, entriesSnapshot = modelEntriesRef.current) => {
-    if (!isModelProvider(provider)) return;
-    settingsRevisionRef.current += 1;
-    const next = { ...modelOverridesRef.current };
-    const effectiveProvider = modelId ? provider : undefined;
-    const effectiveModelId = modelId || '';
-    if (!modelId) delete next[provider];
-    if (effectiveProvider && effectiveModelId) {
-      next[effectiveProvider] = effectiveModelId;
-    } else {
-      delete next[provider];
-    }
-    modelOverridesRef.current = next;
-    setModelOverrides(next);
-    const chatModelSelection = effectiveProvider && effectiveModelId
-      ? modelEntryKey(effectiveProvider, effectiveModelId)
-      : AUTO_MODEL_SELECTION;
-    setChatModelSelection(chatModelSelection);
-    appStorage.setItems({
-      [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(next),
-      [CHAT_MODEL_SELECTION_STORAGE_KEY]: chatModelSelection,
-    });
-    void persistDesktopRuntimeSettings(apiKeysRef.current, modelApiKeysRef.current, next);
-    broadcastEterxSettingsUpdate({
-      type: 'model-overrides-updated',
-      modelOverrides: next,
-      chatModelSelection,
-    });
-    queueRuntimeSync({
-      apiKeys: apiKeysRef.current,
-      modelApiKeys: modelApiKeysRef.current,
-      modelOverrides: next,
-      modelEntries: entriesSnapshot,
-    }, true);
-    const nextMode = effectiveProvider ? PROVIDER_MODE[effectiveProvider] : undefined;
-    if (nextMode) updateSetting('agentMode', nextMode);
-    setHasChanges(true);
-    keysChangedRef.current = true;
-  }, [persistDesktopRuntimeSettings, queueRuntimeSync, updateSetting]);
-
-  const addModelToSelector = useCallback((provider: string, modelId: string, activate = true) => {
-    const cleanProvider = String(provider || '').trim();
-    const cleanModelId = String(modelId || '').trim();
-    if (!isModelProvider(cleanProvider) || !cleanModelId) return;
-
-    const directory = modelDirectory[cleanProvider];
-    if (directory?.connected && !directory.models.some(model => model.id === cleanModelId)) {
-      setModelAvailabilityNotice('This model is not listed as available by the provider. Choose an available model.');
-      return;
-    }
-    const existingEntries = modelEntriesRef.current;
-    const nextEntries = saveModelEntries(ensureModelSelectorEntry(existingEntries, cleanProvider, cleanModelId));
-    saveModelThinkingCapability(cleanProvider, cleanModelId);
-    if (activate) selectCatalogModel(cleanProvider, cleanModelId, nextEntries);
-    setHasChanges(true);
-    keysChangedRef.current = true;
-  }, [modelDirectory, saveModelEntries, saveModelThinkingCapability, selectCatalogModel]);
-
-  const removeModelFromSelector = useCallback((provider: string, modelId: string) => {
-    const cleanProvider = String(provider || '').trim();
-    const cleanModelId = String(modelId || '').trim();
-    if (!isModelProvider(cleanProvider) || !cleanModelId) return;
-
-    const removedKey = modelEntryKey(cleanProvider, cleanModelId);
-    const nextEntries = saveModelEntries(removeModelSelectorEntry(modelEntriesRef.current, cleanProvider, cleanModelId));
-    if (removedKey in modelThinkingCapabilitiesRef.current) {
-      const next = { ...modelThinkingCapabilitiesRef.current };
-      delete next[removedKey];
-      modelThinkingCapabilitiesRef.current = next;
-      setModelThinkingCapabilities(next);
-      appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
-      broadcastEterxSettingsUpdate({ type: 'model-thinking-capabilities-updated', thinkingCapabilities: next });
-    }
-    try {
-      const storedLevels = JSON.parse(appStorage.getItem(MODEL_THINKING_LEVELS_STORAGE_KEY) || '{}');
-      if (storedLevels && typeof storedLevels === 'object' && removedKey in storedLevels) {
-        delete storedLevels[removedKey];
-        appStorage.setItem(MODEL_THINKING_LEVELS_STORAGE_KEY, JSON.stringify(storedLevels));
-      }
-    } catch { }
-    settingsRevisionRef.current += 1;
-    const nextModelKeys = { ...modelApiKeysRef.current };
-    delete nextModelKeys[removedKey];
-    modelApiKeysRef.current = nextModelKeys;
-    setModelApiKeys(nextModelKeys);
-    persistApiKeyPresence(apiKeysRef.current, nextModelKeys);
-    void persistDesktopRuntimeSettings(apiKeysRef.current, nextModelKeys, modelOverridesRef.current);
-    const currentChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-    const chatModelSelection = currentChatModelSelection === removedKey
-      ? AUTO_MODEL_SELECTION
-      : currentChatModelSelection;
-    const removedActiveOverride = modelOverridesRef.current[cleanProvider] === cleanModelId;
-    if (removedActiveOverride) {
-      selectCatalogModel(cleanProvider, '', nextEntries);
-      setExactModelDraft('');
-    } else if (currentChatModelSelection === removedKey) {
-      appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, chatModelSelection);
-      setChatModelSelection(chatModelSelection);
-    }
-    queueRuntimeSync({
-      apiKeys: apiKeysRef.current,
-      modelApiKeys: nextModelKeys,
-      modelOverrides: modelOverridesRef.current,
-      modelEntries: nextEntries,
-    }, true);
-    broadcastEterxSettingsUpdate({
-      type: 'model-selector-updated',
-      modelEntries: nextEntries,
-      modelCatalog: entriesToModelCatalog(nextEntries),
-      chatModelSelection,
-    });
-    setHasChanges(true);
-    keysChangedRef.current = true;
-  }, [persistApiKeyPresence, persistDesktopRuntimeSettings, queueRuntimeSync, saveModelEntries, selectCatalogModel]);
-
-  reconcileModelDirectoryRef.current = (directory) => {
-    const available = new Map(Object.entries(directory)
-      .filter(([, result]) => result.connected && result.source === 'live' && Array.isArray(result.models))
-      .map(([provider, result]) => [provider, new Set(result.models.map(model => model.id))] as const));
-    const unavailable = (provider: string, id: string) => available.has(provider) && !available.get(provider)!.has(id);
-    const removed = modelEntriesRef.current.filter(entry => unavailable(entry.provider, entry.modelId));
-    const nextOverrides = Object.fromEntries(Object.entries(modelOverridesRef.current)
-      .filter(([provider, id]) => !unavailable(provider, id)));
-    const currentSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-    const selected = parseModelEntryKey(currentSelection);
-    const selectionRemoved = Boolean(selected && unavailable(selected.provider, selected.modelId));
-    if (!removed.length && Object.keys(nextOverrides).length === Object.keys(modelOverridesRef.current).length && !selectionRemoved) return;
-    const nextEntries = saveModelEntries(modelEntriesRef.current.filter(entry => !unavailable(entry.provider, entry.modelId)));
-    modelOverridesRef.current = nextOverrides;
-    setModelOverrides(nextOverrides);
-    const nextSelection = selectionRemoved ? AUTO_MODEL_SELECTION : currentSelection;
-    setChatModelSelection(nextSelection);
-    appStorage.setItems({
-      [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(nextOverrides),
-      [CHAT_MODEL_SELECTION_STORAGE_KEY]: nextSelection,
-    });
-    // Keep credentials and chat history; only remove unavailable selector entries.
-    void persistDesktopRuntimeSettings(apiKeysRef.current, modelApiKeysRef.current, nextOverrides);
-    queueRuntimeSync({ apiKeys: apiKeysRef.current, modelApiKeys: modelApiKeysRef.current,
-      modelOverrides: nextOverrides, modelEntries: nextEntries }, true);
-    broadcastEterxSettingsUpdate({ type: 'model-selector-updated', modelEntries: nextEntries,
-      modelCatalog: entriesToModelCatalog(nextEntries), modelOverrides: nextOverrides, chatModelSelection: nextSelection });
-    setModelAvailabilityNotice('Removed models no longer listed as available by the provider.'
-      + (selectionRemoved ? ' Choose an available model to continue.' : ''));
-  };
 
   if ((!isOpen && !showBatmanEgg) || typeof document === 'undefined') return null;
 
@@ -4427,7 +3999,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: standalone ? 0 : 10, scale: standalone ? 1 : 0.98 }}
               transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
-              className={`eterx-settings-dialog ${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))] rounded-[12px] border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-none`}
+            className={`eterx-settings-dialog ${settingsPanelStyles.dialog} ${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))] rounded-[12px] border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-none`}
             >
               {/* Glass Background */}
               <div className="absolute inset-0 bg-[#151515]" />
@@ -4435,7 +4007,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
               <div className="relative flex min-h-0 flex-1 flex-col sm:flex-row">
 
               {/* ─── Sidebar Tabs ─── */}
-              <div className="relative z-10 w-full sm:w-[200px] shrink-0 overflow-hidden border-b border-white/[0.08] bg-[#1D1D1D] sm:border-b-0 sm:border-t flex flex-col">
+              <div className={`relative z-10 w-full sm:w-[200px] shrink-0 overflow-hidden border-b border-white/[0.08] bg-[#1D1D1D] sm:border-b-0 sm:border-t flex flex-col ${settingsPanelStyles.sidebar}`}>
                 <div className="flex h-11 shrink-0 items-center px-2 border-b border-white/[0.05] pointer-events-auto [-webkit-app-region:no-drag]">
                   <button onClick={handleClose} className="eterx-settings-back-button flex w-full h-8 items-center gap-2.5 rounded-lg px-2.5 text-[#A7A7A7] transition-colors hover:bg-white/[0.05] hover:text-[#F1F1F1] pointer-events-auto [-webkit-app-region:no-drag]">
                     <span className="grid h-5 w-5 shrink-0 place-items-center">
@@ -4472,21 +4044,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
               </div>
 
               {/* ─── Content ─── */}
-              <div className="relative z-20 flex-1 flex flex-col min-w-0 overflow-hidden border-l border-t border-white/[0.08] bg-[#151515]">
+              <div className={`relative z-20 flex-1 flex flex-col min-w-0 overflow-hidden border-l border-t border-white/[0.08] bg-[#151515] ${settingsPanelStyles.content}`}>
                 <SettingsSearch tabs={SETTINGS_TABS} activeTab={activeTab} onSelect={openSearchResult} />
 
                 {/* Scrollable Body */}
                 <div className="eterx-settings-scroll-frame relative flex min-h-0 flex-1">
                   <div ref={settingsBodyRef} className={`${searchStyles.body} min-h-0 min-w-0 flex-1 overflow-x-hidden eterx-scrollbar px-4 sm:px-6 ${activeTab === 'tokens' ? 'overflow-y-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
-                  <div className={`mx-auto w-full ${manualOpen || activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : activeTab === 'agents' ? 'max-w-[860px]' : 'max-w-[560px]'} pb-8`}>
+                  <div className={`mx-auto w-full ${manualOpen || activeTab === 'profile' || activeTab === 'tokens' || activeTab === 'subscription' ? 'max-w-[980px]' : activeTab === 'agents' ? 'max-w-[860px]' : 'max-w-[640px]'} pb-8`}>
                       <div className="mb-6 flex items-center justify-between gap-4">
-                        <h3 data-settings-search-target={SETTINGS_TAB_HEADING} tabIndex={-1} className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">
+                        <h3 data-settings-search-target={SETTINGS_TAB_HEADING} tabIndex={-1} className={`text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4] ${settingsPanelStyles.title}`}>
                           {manualOpen ? 'User manual' : SETTINGS_TABS.find(t => t.id === activeTab)?.label}
-                          {activeTab === 'models' && (
-                            <span className="ml-2 text-[11px] font-normal tracking-normal text-[#8E8A84]">
-                              (Connect ChatGPT in Subscription. Other providers use API credentials.)
-                            </span>
-                          )}
                         </h3>
                         {activeTab === 'tokens' && <div data-settings-search-target="token-count" tabIndex={-1} className="flex items-center gap-3"><span className="text-[12px] text-[#999]">Show token count</span><Toggle enabled={settings.showTokenCount} onChange={value => updateSetting('showTokenCount', value)} /></div>}
                       </div>
@@ -4523,12 +4090,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <article className="rounded-xl border border-white/[0.08] bg-[#202020] p-5 sm:p-7">
                               <div className="flex items-center justify-between gap-4"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#777]">User manual · {manualTopic === 'model-selection' ? 'Settings' : 'Guide'}</div><span className="rounded-full border border-emerald-400/15 bg-emerald-400/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-300">Preview</span></div>
                               {manualTopic === 'model-selection' ? <>
-                                <h4 className="mt-4 text-[21px] font-semibold tracking-[-0.015em] text-[#F1F1F1]">Choose and add a chat model</h4>
-                                <p className="mt-3 text-[14px] leading-6 text-[#B0B0B0]">EterX-Agent discovers models from the provider you configure. Add a key first, load that provider’s catalog, then save the models you want in the chat model selector.</p>
+                                <h4 className="mt-4 text-[21px] font-semibold tracking-[-0.015em] text-[#F1F1F1]">Choose a chat model</h4>
+                                <p className="mt-3 text-[14px] leading-6 text-[#B0B0B0]">The chat picker loads the available models from each connected provider.</p>
                                 <div className="mt-7 space-y-5">
-                                  {[['1', 'Open Settings → API', 'Go to the API section and add at least one API key for the provider you want to use. Keep the key local and use the provider row that matches your account.'], ['2', 'Select the model provider', 'Open Settings → Models and choose the same provider. Once a valid API key is available, EterX-Agent can request the provider’s current model list instead of relying on an outdated preset.'], ['3', 'Load and review models', 'Use the provider catalog to fetch available models. The list can include model IDs, context limits, capabilities, and thinking support returned by that provider.'], ['4', 'Add to your custom list', 'Choose Add for a model you want to use. It becomes part of your saved model list and can then be selected from the model control in the chat composer.']].map(([number, title, description]) => <div key={number} className="flex gap-3.5"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#303030] text-[11px] font-semibold text-[#BFDFFF]">{number}</span><div><div className="text-[13px] font-semibold text-[#F1F1F1]">{title}</div><p className="mt-1 text-[13px] leading-5 text-[#9F9F9F]">{description}</p></div></div>)}
+                                  {[['1', 'Connect a provider', 'Open Settings → API and add at least one key to the provider pool.'], ['2', 'Choose a model in chat', 'Open the model picker in the chat input. Select a provider or search by provider name, model name, or model ID.']].map(([number, title, description]) => <div key={number} className="flex gap-3.5"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#303030] text-[11px] font-semibold text-[#BFDFFF]">{number}</span><div><div className="text-[13px] font-semibold text-[#F1F1F1]">{title}</div><p className="mt-1 text-[13px] leading-5 text-[#9F9F9F]">{description}</p></div></div>)}
                                 </div>
-                                <div className="mt-7 rounded-xl border border-[#3D9BFF]/15 bg-[#3D9BFF]/[0.06] px-4 py-3 text-[12px] leading-5 text-[#AFCDF0]">Tip: if no models appear, check that the API key is valid, the provider is selected in both sections, and the provider endpoint is reachable.</div>
                               </> : (() => {
                                 const guide = MANUAL_GUIDES[manualTopic] || MANUAL_GUIDES['first-chat'];
                                 return <>
@@ -4546,17 +4112,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       {activeTab === 'general' && !manualOpen && (
                         <div>
                           <SectionHeader title="Work mode" />
-                          <p className="-mt-2 mb-5 text-[14px] text-[#A5A5A5]">Choose how EterX-Agent should shape responses for your work.</p>
+                          <p className="-mt-2 mb-5 text-[14px] text-[#A5A5A5]">Choose how EterX handles tasks and works with your workspace.</p>
                           <div data-settings-search-target="work-mode" tabIndex={-1} className="mb-12 grid gap-4 md:grid-cols-2">
                             {[
-                              { id: 'everyday' as const, title: 'General', description: 'Direct user-to-agent workflows for planning, writing, and routine tasks.', icon: SquareCheck },
-                              { id: 'specialist' as const, title: 'Autonomous', description: 'Proxy-agent takes responsibility and collaborates with the main agent to complete goals autonomously on your behalf.', icon: Sparkle },
+                              { id: 'everyday' as const, title: 'General', description: 'Work directly with the agent on planning, writing, and everyday tasks.', icon: SquareCheck },
+                              { id: 'specialist' as const, title: 'Autonomous', description: 'A proxy agent coordinates with the main agent to complete larger goals.', icon: Sparkle },
                             ].map(mode => {
                               const selected = settings.workMode === mode.id;
                               return (
                                 <button
                                   key={mode.id}
                                   type="button"
+                                  data-selected={selected}
                                   onClick={() => updateSetting('workMode', mode.id)}
                                   className={`flex min-h-[82px] items-center justify-between gap-5 rounded-lg border px-5 py-4 text-left transition-colors ${
                                     selected ? 'border-white/[0.12] bg-[#2B2B2B]' : 'border-white/[0.08] bg-[#171717] hover:bg-[#202020]'
@@ -4735,19 +4302,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       {activeTab === 'import' && <ImportSettings />}
 
                       {activeTab === 'appearance' && (
-                        <div>
-                          <SectionHeader title="Appearance" />
+                        <div className={appearanceStyles.appearance}>
                           <SettingsStack>
-                            <SettingsStackRow title="Theme" description="Choose a theme or follow your system appearance" tall>
+                            <SettingsStackRow title="Theme" description="System follows your device’s appearance." tall>
                               <ThemePreviewSelector
                                 value={settings.theme}
                                 onChange={(value) => updateSetting('theme', value)}
                               />
                             </SettingsStackRow>
 
-                            <SettingsStackRow title="UI density" description="Adjust spacing and base text rhythm">
+                            <SettingsStackRow title="UI density" description="Adjust spacing and text size.">
                               <SelectControl
                                 value={settings.fontSize}
+                                width="w-[var(--appearance-control-width)]"
                                 onChange={(value) => updateSetting('fontSize', value as AppSettings['fontSize'])}
                                 options={[
                                   { value: 'compact', label: 'Compact' },
@@ -4756,14 +4323,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 ]}
                               />
                             </SettingsStackRow>
-
-                            <SettingsStackRow title="UI font size" description="Adjust the base size used for the EterX UI">
-                              <span className="inline-flex h-9 items-center gap-2 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-4 text-[13px] font-medium text-[#F2F2F2]">
-                                {settings.fontSize === 'compact' ? '13' : settings.fontSize === 'comfortable' ? '15' : '14'} <span className="text-[#A7A7A7]">px</span>
-                              </span>
-                            </SettingsStackRow>
-
                           </SettingsStack>
+                          <div>
+                            <SectionHeader title="Project/Folder" />
+                            <SettingsStack>
+                              <WorkspaceFolderSettings sources={workspaceSources} scope={workspaceScope} />
+                            </SettingsStack>
+                          </div>
+                          <div>
+                            <SectionHeader title="Readability" />
+                            <SettingsStack>
+                              <SettingsStackRow title="Contrast" description="Make interface text and borders more distinct.">
+                                <ContrastControl value={settings.uiContrast} onChange={value => updateSetting('uiContrast', value)} />
+                              </SettingsStackRow>
+                              <SettingsStackRow title="Diff colors" description="Choose a palette for additions, deletions, and change counts." tall>
+                                <DiffPalettePicker value={settings.diffPalette} onChange={value => updateSetting('diffPalette', value)} />
+                              </SettingsStackRow>
+                            </SettingsStack>
+                          </div>
                         </div>
                       )}
 
@@ -5050,195 +4627,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         </div>
                       )}
 
-                      {/* ═══ API KEYS TAB ═══ */}
-                      {activeTab === 'subscription' && <SubscriptionSettings />}
-                      {activeTab === 'models' && (
-                        <div>
-                          <SectionHeader
-                            title="Model connection"
-                            badge={apiSyncStatus === 'synced' ? 'Live' : undefined}
-                            info="Models saved here become the exact choices shown in the chat model selector. API keys are configured separately in the API tab."
-                          />
-                          <SettingsStack>
-                            <SettingsStackRow title="Provider" description="Browse a provider and choose the exact model used by the main agent.">
-                              <ProviderSelect
-                                value={selectedConnectionProvider}
-                                onChange={(value) => {
-                                  if (!isModelProvider(value)) return;
-                                  setSelectedConnectionProvider(value);
-                                }}
-                                className="w-[240px]"
-                                providers={MODEL_PROVIDER_ORDER}
-                              />
-                            </SettingsStackRow>
-                            <SettingsStackRow
-                              title="Model"
-                              description={selectedProviderModel
-                                ? modelEntryKey(selectedConnectionProvider, selectedProviderModel) === chatModelSelection
-                                  ? 'Exact model active for the next run.'
-                                  : 'Saved model for this provider. Select it to make it active.'
-                                : selectedProviderCanDiscover
-                                  ? 'Choose a real model returned by the provider.'
-                                  : 'Add an API key first; no default or placeholder model is selected.'}
-                              info="The list is built from the provider API and hides embeddings, speech, image, expired, and non-agent models."
-                            >
-                              <ModernSelect
-                                value={selectedProviderModel}
-                                onChange={(modelId) => {
-                                  setExactModelDraft(modelId);
-                                  if (modelId) {
-                                    addModelToSelector(selectedConnectionProvider, modelId, true);
-                                  } else {
-                                    selectCatalogModel(selectedConnectionProvider, '');
-                                  }
-                                }}
-                                placeholder={selectedProviderCanDiscover ? 'Select a live model' : 'Add API key to load models'}
-                                className="w-[360px]"
-                                options={[
-                                  ...selectedProviderModelOptions.map(option => ({
-                                    value: option.id,
-                                    label: option.label,
-                                    description: option.id + ' · ' + (getModelThinkingOptions(
-                                      selectedConnectionProvider,
-                                      option.id,
-                                      selectedProviderDirectory?.models.find(model => model.id === option.id)?.thinking,
-                                    ).map(level => level.label).join(' / ') || 'Standard'),
-
-                                  })),
-                                ]}
-                              />
-                            </SettingsStackRow>
-                            <SettingsStackRow
-                              title="API base URL"
-                              description="Optional OpenAI-compatible endpoint override. Use this for remote servers, Docker hosts, gateways, or a custom provider."
-                              info="HTTP and HTTPS URLs work on Windows, macOS, and Linux. Leave blank to use the provider's official or local default."
-                            >
-                              <div className="flex w-[360px] items-center gap-2">
-                                <input
-                                  value={providerBaseURLs[selectedConnectionProvider] || ''}
-                                  onChange={(event) => {
-                                    const value = event.target.value;
-                                    settingsRevisionRef.current += 1;
-                                    providerBaseURLDirtyRef.current = true;
-                                    setProviderBaseURLs(previous => {
-                                      const next = { ...previous };
-                                      if (value) next[selectedConnectionProvider] = value;
-                                      else delete next[selectedConnectionProvider];
-                                      return next;
-                                    });
-                                  }}
-                                  placeholder={selectedConnectionProvider === 'custom' ? 'https://host.example/v1' : 'Use provider default'}
-                                  spellCheck={false}
-                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
-                                />
-                                 {providerBaseURLs[selectedConnectionProvider] && (
-                                  <SoftButton onClick={() => {
-                                    settingsRevisionRef.current += 1;
-                                    providerBaseURLDirtyRef.current = true;
-                                    setProviderBaseURLs(previous => {
-                                      const next = { ...previous };
-                                      delete next[selectedConnectionProvider];
-                                      return next;
-                                    });
-                                  }}>Default</SoftButton>
-                                )}
-                              </div>
-                            </SettingsStackRow>
-                            <SettingsStackRow
-                              searchTarget="exact-model"
-                              title={selectedConnectionProvider === 'openrouter' ? 'Exact OpenRouter model' : selectedConnectionProvider === 'groq' ? 'Exact Groq model' : 'Exact model ID'}
-                              description={selectedConnectionProvider === 'openrouter'
-                                ? 'Paste any OpenRouter slug, for example openai/gpt-5.5 or anthropic/claude-opus-4.8.'
-                                : selectedConnectionProvider === 'groq'
-                                  ? 'Paste any Groq model id, for example openai/gpt-oss-120b or llama-3.3-70b-versatile.'
-                                : 'Use a provider-specific model ID when it is not listed yet in live discovery.'}
-                              info="Advanced override. The runtime will use this exact ID; refresh discovery afterward to confirm the provider exposes it."
-                            >
-                              <div className="flex w-[280px] items-center gap-2">
-                                <input
-                                  value={exactModelDraft}
-                                  onChange={(event) => setExactModelDraft(event.target.value)}
-                                  onKeyDown={(event) => {
-                                    if (event.key === 'Enter') {
-                                      event.preventDefault();
-                                      addModelToSelector(selectedConnectionProvider, exactModelDraft.trim(), true);
-                                    }
-                                    if (event.key === 'Escape') setExactModelDraft(selectedProviderModel);
-                                  }}
-                                  placeholder={selectedConnectionProvider === 'openrouter' ? 'provider/model-id' : 'model-id'}
-                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
-                                />
-                                <SoftButton onClick={() => addModelToSelector(selectedConnectionProvider, exactModelDraft.trim(), true)}>Add</SoftButton>
-                              </div>
-                            </SettingsStackRow>
-                            <SettingsStackRow
-                              title="Chat model list"
-                              description={modelAvailabilityNotice || "Models in your chat selector, grouped by provider."}
-                              info="The selected chat model is sent with that exact model ID."
-                              tall
-                            >
-                              <div className="w-[360px] rounded-xl border border-white/[0.08] bg-[#141414] p-1.5">
-                                {modelEntries.length === 0 ? (
-                                  <div className="px-3 py-3 text-[12px] leading-5 text-[#8C8C8C]">
-                                    Add a model ID or choose one from provider discovery to make it available in chat.
-                                  </div>
-                                ) : (
-                                  <SettingsScrollList className="max-h-[280px] pr-1">
-                                    {groupModelsByProvider(modelEntries).map(group => (
-                                      <section key={group.provider} aria-label={(PROVIDER_LABEL[group.provider] || group.provider)}>
-                                        <div className="px-2 pb-1 pt-3 text-[11px] font-semibold text-[#8F8F8F]">{(PROVIDER_LABEL[group.provider] || group.provider)}</div>
-                                        {group.models.map(entry => {
-                                          const entryKey = modelEntryKey(entry.provider, entry.modelId);
-                                          const selected = chatModelSelection === entryKey;
-                                          const entryThinkingOptions = getModelThinkingOptions(
-                                            entry.provider,
-                                            entry.modelId,
-                                            modelThinkingCapabilities[entryKey],
-                                          );
-                                          return (
-                                            <div key={entryKey} className={`flex items-center gap-2 rounded-lg px-2 py-2 transition-colors ${ selected ? 'bg-white/[0.055]' : 'hover:bg-white/[0.04]' }`}>
-                                              <div className="min-w-0 flex-1">
-                                                <div title={entry.modelId} className="truncate text-[12px] font-semibold text-[#F1F1F1]">{formatModelName(entry.modelId)}</div>
-                                                <div className="mt-0.5 truncate text-[11px] text-[#777]">
-                                                  {entryThinkingOptions.length ? entryThinkingOptions.map(option => option.label).join(' / ') : 'Standard'}
-                                                </div>
-                                              </div>
-                                              <SoftButton onClick={() => selectCatalogModel(entry.provider, entry.modelId)}>
-                                                {selected ? 'Current' : 'Apply'}
-                                              </SoftButton>
-                                              <button
-                                                type="button"
-                                                onClick={() => removeModelFromSelector(entry.provider, entry.modelId)}
-                                                className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-[#A7A7A7] transition-colors hover:border-red-400/30 hover:bg-red-500/10 hover:text-red-300"
-                                                aria-label={`Remove ${entry.modelId}`}
-                                              >
-                                                <Trash2 className="h-3.5 w-3.5" />
-                                              </button>
-                                            </div>
-                                          );
-                                        })}
-                                      </section>
-                                    ))}
-                                  </SettingsScrollList>
-                                )}
-                              </div>
-                            </SettingsStackRow>
-                            <SettingsStackRow
-                              title="Live model discovery"
-                              description={selectedProviderStatusText}
-                            />
-                          </SettingsStack>
-
-                        </div>
-                      )}
-
-                      {/* ═══ ADVANCED TAB ═══ */}
                       {activeTab === 'api' && (
                         <div>
                           <SectionHeader
                             title="API connections"
                             badge={apiSyncStatus === 'synced' ? 'Saved' : undefined}
-                            info="Provider pools are used by every model from that provider. Custom model pools override the provider pool only for one exact saved model."
                           />
                           <SettingsStack>
                             <SettingsStackRow
@@ -5252,15 +4645,34 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   if (!isModelProvider(value)) return;
                                   setSelectedApiProviderValue(value);
                                   setSelectedApiModelValue(`provider:${value}`);
+                                  setExactModelDraft('');
                                 }}
                                 className="w-[240px]"
                                 providers={MODEL_PROVIDER_ORDER}
                               />
                             </SettingsStackRow>
                             <SettingsStackRow
+                              title="API base URL"
+                              description="Use the default endpoint or enter the URL for a gateway or local server."
+                            >
+                              <div className="flex w-full max-w-[360px] items-center gap-2">
+                                <input
+                                  aria-label="API base URL"
+                                  value={providerBaseURLs[selectedApiProvider] || ''}
+                                  onChange={event => updateProviderBaseURL(selectedApiProvider, event.target.value)}
+                                  placeholder={selectedApiProvider === 'custom' ? 'https://host.example/v1' : 'Use provider default'}
+                                  spellCheck={false}
+                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                />
+                                {providerBaseURLs[selectedApiProvider] && (
+                                  <SoftButton onClick={() => updateProviderBaseURL(selectedApiProvider, '')}>Default</SoftButton>
+                                )}
+                              </div>
+                            </SettingsStackRow>
+                            <SettingsStackRow
                               title="API keys"
-                              description="Add one or more keys. Use a custom model pool only when a model needs different credentials."
-                              info="When a selected model has its own custom pool, that pool is used first. If not, EterX falls back to the provider pool."
+                              description="Add a provider key to load its available models automatically in the chat picker."
+                              info="A model-specific key pool takes priority for that model."
                               tall
                             >
                               <ApiKeyPoolEditor
@@ -5280,46 +4692,38 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 }}
                                 scopeControl={
                                   <div className="flex items-center gap-2">
-                                    <InfoHint text="Provider pool works for every model under this provider. Choosing a saved model creates an exact-model pool that overrides only that model." />
+                                    <InfoHint text="Choose a model to give it a separate key pool." />
                                     <ModernSelect
                                       value={selectedApiPoolEntry.value}
                                       onChange={(value) => setSelectedApiModelValue(value)}
                                       placeholder="Provider pool"
                                       className="w-[230px]"
-                                      options={apiPoolEntries.map(entry => ({
-                                        value: entry.value,
-                                        label: entry.label,
-                                        description: entry.description,
-                                      }))}
+                                      options={apiPoolEntries}
                                     />
                                   </div>
                                 }
                               />
                             </SettingsStackRow>
-                            {(providerKeyCount(selectedApiProvider) > 0 || isLocalModelProvider(selectedApiProvider)) && (
+                            <SettingsStackRow title="Export model catalog" description="Download the models available in EterX, including connected subscriptions.">
+                              <SoftButton onClick={exportModelCatalog}>Export model catalog</SoftButton>
+                            </SettingsStackRow>
+                            {showExactModel && (
                               <SettingsStackRow
-                                title="Model"
-                                description={modelDirectory[selectedApiProvider]?.error
-                                  || (modelDirectory[selectedApiProvider]?.connected
-                                    ? 'Choose a model to add it to the chat selector.'
-                                    : 'Loading models for this connection…')}
+                                searchTarget="exact-model"
+                                title="Exact model ID"
+                                description="Enter the model ID if your endpoint does not list its models."
                               >
-                                <div className="flex w-full max-w-[480px] flex-wrap items-center gap-2">
-                                  <ModernSelect
-                                    value={modelOverrides[selectedApiProvider] || ''}
-                                    onChange={modelId => {
-                                      if (modelId) addModelToSelector(selectedApiProvider, modelId, true);
-                                    }}
-                                    placeholder="Select a model"
-                                    className="min-w-[220px] flex-1"
-                                    options={getProviderModelOptions(selectedApiProvider).map(option => ({
-                                      value: option.id, label: option.label,
-                                    }))}
+                                <div className="flex w-full max-w-[300px] items-center gap-2">
+                                  <input
+                                    aria-label="Exact model ID"
+                                    value={exactModelDraft}
+                                    onChange={event => setExactModelDraft(event.target.value)}
+                                    onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addExactModel(); } }}
+                                    placeholder="model-id"
+                                    spellCheck={false}
+                                    className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                                   />
-                                  <SoftButton onClick={() => {
-                                    setSelectedConnectionProvider(selectedApiProvider);
-                                    setActiveTab('models');
-                                  }}>Manage models</SoftButton>
+                                  <SoftButton onClick={addExactModel} disabled={!canAddExactModel}>Add</SoftButton>
                                 </div>
                               </SettingsStackRow>
                             )}
@@ -5327,7 +4731,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           {apiSyncStatus === 'error' && <p className="mt-2 text-[12px] text-red-300" role="status">{apiSyncMessage}</p>}
 
-                          {modelAvailabilityNotice && <p role="status" className="my-3 text-[12px] text-amber-300">{modelAvailabilityNotice}</p>}
                           <SectionHeader title="Service APIs" />
                           <SettingsStack>
                             <SettingsStackRow
@@ -5399,7 +4802,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow
                               title="Live Model"
                               description={selectedLiveModelUnavailable ? (activeLiveProvider.transport === 'model-voice' ? 'The saved model was removed. Choose another added model.' : 'This ID is not listed. The provider will resolve it when connecting.') : activeLiveProvider.transport === 'model-voice' ? 'Choose any added provider/model, including local and custom endpoints.' : 'Specific model engine active for current provider stream.'}
-                              info={activeLiveProvider.transport === 'model-voice' ? 'Use selected chat model follows your explicit chat selection. Add models in the Models tab first. Tool use depends on the model and server capabilities.' : `Models are loaded for ${activeLiveProvider.label} and never fall back to another provider.`}
+                              info={activeLiveProvider.transport === 'model-voice' ? 'Use selected chat model follows your chat picker selection. Tool use depends on the model and server capabilities.' : `Models are loaded for ${activeLiveProvider.label} and never fall back to another provider.`}
                             >
                               <ModernSelect
                                 value={settings.liveConvoModel || 'auto'}
@@ -5977,6 +5380,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         </div>
                       )}
 
+                      {activeTab === 'connections' && <ConnectionsSettings onOpenDevices={onOpenDevices} />}
+
                       {activeTab === 'computer' && (
                         <ComputerUseSettings
                           settings={settings}
@@ -6000,7 +5405,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow title="Debug mode" description="Show detailed internal logs, tool calls, and runtime traces in console.">
                               <Toggle enabled={settings.debugMode} onChange={v => updateSetting('debugMode', v)} />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Performance telemetry" description="Collect anonymous performance metrics to improve agent speed.">
+                            <SettingsStackRow title="Performance telemetry" description="Share usage and performance metrics with PostHog using an installation ID.">
                               <Toggle enabled={settings.telemetry} onChange={v => updateSetting('telemetry', v)} />
                             </SettingsStackRow>
                           </SettingsStack>
@@ -6031,9 +5436,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     appStorage.removeItem(MODEL_API_KEYS_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
+                                    appStorage.removeItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_THINKING_LEVELS_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY);
                                     appStorage.removeItem(PROVIDER_BASE_URLS_STORAGE_KEY);
+                                    MODEL_PROVIDER_ORDER.forEach(invalidateProviderModelCatalog);
                                     appStorage.removeItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY);
                                     settingsRef.current = DEFAULT_SETTINGS;
                                     transitionEterxTheme(DEFAULT_SETTINGS.theme, () => {
@@ -6049,10 +5456,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     liveApiKeysRef.current = {};
                                     setLiveApiKeys({});
                                     setModelOverrides({});
-                                    setModelCatalog({});
                                     setModelEntries([]);
                                     setModelApiKeys({});
-                                    setModelThinkingCapabilities({});
                                     providerBaseURLDirtyRef.current = true;
                                     setProviderBaseURLs({});
                                     setContextChatOverrides({});
@@ -6061,9 +5466,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     setApiSyncStatus('idle');
                                     setApiSyncMessage('Add a provider key to activate the local runtime gateway.');
                                     setApiProviderStatus([]);
-                                    setModelDirectory({});
-                                    setModelDirectoryStatus('idle');
-                                    setModelDirectoryUpdatedAt(null);
                                     broadcastEterxSettingsUpdate(DEFAULT_SETTINGS);
                                     setHasChanges(false);
                                     void (async () => {
@@ -6071,6 +5473,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                         await Promise.all([
                                           (window as any)?.electronAPI?.clearSecureRuntimeSettings?.(),
                                           getDesktopSubscription()?.disconnectAll?.(),
+                                          disconnectAntigravityAccounts().catch(error => console.warn('Could not disconnect Antigravity accounts:', error)),
+                                          clearNativeProviderAccounts().catch(error => console.warn('Could not disconnect local provider accounts:', error)),
                                         ]);
                                         await fetch('/api/settings/runtime', { method: 'DELETE' });
                                         await fetch('/api/settings/keys', {
@@ -6095,7 +5499,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   const data = JSON.stringify({
                                     settings,
                                     modelOverrides,
-                                    modelCatalog,
+                                    modelCatalog: entriesToModelCatalog(modelEntries),
                                     modelEntries,
                                     note: 'API keys are intentionally excluded from exports. Re-enter them in Settings on the destination machine.',
                                   }, null, 2);

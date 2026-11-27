@@ -1,4 +1,5 @@
 import type { ThemeRegistration } from 'shiki';
+import { getDiffColors, type DiffPalette } from './appearance-preferences';
 
 // Shared by the workspace highlighter, editable files, and Markdown code blocks.
 export const codePalettes = {
@@ -7,9 +8,6 @@ export const codePalettes = {
     string: '#9AE66E', number: '#78C8FF', keyword: '#FF6B80',
     declaration: '#E7D8FF', type: '#FFD178', function: '#C792FF',
     variable: '#FFB454', property: '#52DAFF', punctuation: '#AAB2BF',
-    added: '#00D26A', removed: '#FF514D', addedBackground: '#1B301E',
-    removedBackground: '#3B1D1B', addedGutter: '#122518', removedGutter: '#301513',
-    addedWord: '#286D3880', removedWord: '#AF383C70',
     lineNumber: '#929292', selection: '#3E597B80', surface: '#222222', border: '#363636',
   },
   light: {
@@ -17,15 +15,13 @@ export const codePalettes = {
     string: '#187238', number: '#075DB3', keyword: '#C42B49',
     declaration: '#7536AF', type: '#925300', function: '#7638BF',
     variable: '#914B12', property: '#006C91', punctuation: '#58616E',
-    added: '#087536', removed: '#CB302B', addedBackground: '#E4F4E6',
-    removedBackground: '#FCE8E6', addedGutter: '#CDEACF', removedGutter: '#F7D4D0',
-    addedWord: '#A8DDB2', removedWord: '#F5B9B3',
     lineNumber: '#69727E', selection: '#BBD7F5', surface: '#F3F4F5', border: '#D9DDE2',
   },
 };
 
 function createShikiTheme(mode: keyof typeof codePalettes): ThemeRegistration {
   const c = codePalettes[mode];
+  const diff = getDiffColors(mode);
   return {
     name: `eterx-${mode}`, type: mode,
     colors: { 'editor.background': c.background, 'editor.foreground': c.foreground },
@@ -44,16 +40,17 @@ function createShikiTheme(mode: keyof typeof codePalettes): ThemeRegistration {
       { scope: ['markup.heading'], settings: { foreground: c.property, fontStyle: 'bold' } },
       { scope: ['markup.bold'], settings: { fontStyle: 'bold' } },
       { scope: ['markup.italic'], settings: { fontStyle: 'italic' } },
-      { scope: ['markup.inserted'], settings: { foreground: c.added } },
-      { scope: ['markup.deleted'], settings: { foreground: c.removed } },
+      { scope: ['markup.inserted'], settings: { foreground: diff.added.text } },
+      { scope: ['markup.deleted'], settings: { foreground: diff.removed.text } },
     ],
   };
 }
 
 export const workspaceCodeThemes = [createShikiTheme('light'), createShikiTheme('dark')];
 
-export function createMonacoCodeTheme(mode: keyof typeof codePalettes) {
+export function createMonacoCodeTheme(mode: keyof typeof codePalettes, palette?: DiffPalette) {
   const c = codePalettes[mode];
+  const diff = getDiffColors(mode, palette);
   const tokenColors: Record<string, string> = {
     '': c.foreground, comment: c.comment, string: c.string, number: c.number,
     keyword: c.keyword, 'keyword.control': c.keyword, 'keyword.declaration': c.declaration,
@@ -76,10 +73,10 @@ export function createMonacoCodeTheme(mode: keyof typeof codePalettes) {
       'scrollbarSlider.activeBackground': `${c.lineNumber}AA`,
       'diffEditor.insertedTextBackground': '#00000000', 'diffEditor.removedTextBackground': '#00000000',
       'diffEditor.insertedTextBorder': '#00000000', 'diffEditor.removedTextBorder': '#00000000',
-      'diffEditor.insertedLineBackground': c.addedBackground, 'diffEditor.removedLineBackground': c.removedBackground,
-      'diffEditorGutter.insertedLineBackground': c.addedGutter, 'diffEditorGutter.removedLineBackground': c.removedGutter,
-      'editorGutter.addedBackground': c.added, 'editorGutter.deletedBackground': c.removed,
-      'diffEditorOverview.insertedForeground': c.added, 'diffEditorOverview.removedForeground': c.removed,
+      'diffEditor.insertedLineBackground': diff.added.line, 'diffEditor.removedLineBackground': diff.removed.line,
+      'diffEditorGutter.insertedLineBackground': diff.added.gutter, 'diffEditorGutter.removedLineBackground': diff.removed.gutter,
+      'editorGutter.addedBackground': diff.added.text, 'editorGutter.deletedBackground': diff.removed.text,
+      'diffEditorOverview.insertedForeground': diff.added.text, 'diffEditorOverview.removedForeground': diff.removed.text,
       'diffEditor.unchangedRegionBackground': c.surface, 'diffEditor.unchangedRegionForeground': c.lineNumber,
     },
   };
@@ -100,7 +97,8 @@ export function createPrismCodeTheme(mode: keyof typeof codePalettes) {
     function: { color: c.function }, 'function-variable': { color: c.function },
     'class-name': { color: c.type }, builtin: { color: c.type }, variable: { color: c.variable },
     parameter: { color: c.variable }, entity: { color: c.property }, url: { color: c.property },
-    inserted: { color: c.added, background: c.addedBackground }, deleted: { color: c.removed, background: c.removedBackground },
+    inserted: { color: 'var(--diff-added)', background: 'var(--diff-added-bg)' },
+    deleted: { color: 'var(--diff-removed)', background: 'var(--diff-removed-bg)' },
     important: { color: c.keyword, fontWeight: 'bold' }, bold: { fontWeight: 'bold' }, italic: { fontStyle: 'italic' },
   };
 }

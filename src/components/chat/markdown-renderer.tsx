@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import * as Dialog from '@radix-ui/react-dialog';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
 // @ts-ignore
@@ -10,7 +11,7 @@ import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 // @ts-ignore
 import { createPrismCodeTheme } from '../../lib/code-theme';
-import { Check, ChevronDown, Code2, Copy, Download, Globe2, Maximize2, Minimize2, MoreHorizontal, WrapText } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Code2, Copy, Download, Globe2, Maximize2, Minimize2, MoreHorizontal, WrapText, X } from 'lucide-react';
 import { CopyButton, safeCopyTextToClipboard, safeCopyPngToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
@@ -19,7 +20,10 @@ import { LinkHoverTooltip } from './link-hover-tooltip';
 import { ReplyImage } from './image-gallery';
 import { remarkRichMath } from '../../lib/markdown/remark-rich-math';
 import { remarkAnswerStructure } from '../../lib/markdown/remark-answer-structure';
+import { remarkReplyStructure } from '../../lib/markdown/remark-reply-structure';
+import { parseAnswerVisual } from '../../lib/markdown/answer-visual';
 import { normalizeSourceCitations } from '../../lib/imports/presentation';
+import { AnswerVisual } from './answer-visual';
 
 // Text paints immediately. Expensive code/diagram work is settled once its
 // stream closes instead of retokenizing a growing block on every word.
@@ -49,6 +53,8 @@ export const remarkPlugins: any[] = [
   remarkAnswerStructure,
   remarkIncompleteLocalLinks,
 ];
+export const replyRemarkPlugins = [...remarkPlugins, remarkReplyStructure];
+
 function rehypeAnswerMath() {
   return (tree: any, file: any) => rehypeKatex({
     // rehype-katex catches parse errors and renders them inline.
@@ -244,23 +250,19 @@ const useResolvedTheme = () => {
 };
 
 export const useClipboard = (text: string, timeout = 2000) => {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [result, setResult] = useState<{ copied: boolean } | null>(null);
 
   const copy = async () => {
-    const ok = await safeCopyTextToClipboard(text);
-    if (ok) {
-      setCopied(true);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), timeout);
-    }
+    setResult({ copied: await safeCopyTextToClipboard(text) });
   };
 
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-  }, []);
+  useEffect(() => {
+    if (!result) return;
+    const timer = setTimeout(() => setResult(null), timeout);
+    return () => clearTimeout(timer);
+  }, [result, timeout]);
 
-  return { copied, copy };
+  return { copied: result?.copied === true, copyFailed: result?.copied === false, copy };
 };
 
 // Keep phrasing content valid when a display equation occurs inside a
@@ -277,10 +279,15 @@ const MarkdownCopyAction = ({ text, label }: { text: string; label: string }) =>
   </>;
 };
 
-const MarkdownTable = ({ children, copyText, csv, label, rowCount, columnCount, ...props }:
-  React.TableHTMLAttributes<HTMLTableElement> & {
-    copyText: string; csv: string; label: string; rowCount: number; columnCount: number;
-  }) => {
+type MarkdownTableProps = React.TableHTMLAttributes<HTMLTableElement> & {
+  copyText: string;
+  csv: string;
+  label: string;
+  rowCount: number;
+  columnCount: number;
+};
+
+const MarkdownTable = ({ children, copyText, csv, label, rowCount, columnCount, ...props }: MarkdownTableProps) => {
   const [expanded, setExpanded] = useState(false);
   const regionId = useId();
   const tall = rowCount > 12;
@@ -308,6 +315,98 @@ const MarkdownTable = ({ children, copyText, csv, label, rowCount, columnCount, 
     </div>
   </div>;
 };
+
+const ChatTable = ({ children, className, copyText, csv, label, ...props }:
+  Omit<MarkdownTableProps, 'rowCount' | 'columnCount'>) => {
+  const [expanded, setExpanded] = useState(false);
+  const expandedScroll = useRef<HTMLDivElement>(null);
+  const { copied, copyFailed, copy } = useClipboard(copyText);
+  const copyStatus = copied ? 'Table copied to clipboard' : copyFailed ? 'Could not copy table' : '';
+  const CopyIcon = copied ? Check : copyFailed ? AlertCircle : Copy;
+  const table = <table {...props} className={className ? `eterx-markdown-table ${className}` : 'eterx-markdown-table'}>{children}</table>;
+  const exportActions = <>
+    <Tooltip text={copyStatus || 'Copy table'} side="top" showOnFocus>
+      <button type="button" className="eterx-chat-table-action" aria-label="Copy table" onClick={copy}>
+        <CopyIcon size={16} aria-hidden="true" />
+      </button>
+    </Tooltip>
+    <span className="sr-only" role="status">{copyStatus}</span>
+    <Tooltip text="Download CSV" side="top" showOnFocus>
+      <button type="button" className="eterx-chat-table-action" aria-label="Download table as CSV"
+        onClick={() => downloadTextFile(`\uFEFF${csv}`, 'eterx-table.csv', 'text/csv;charset=utf-8')}>
+        <Download size={16} aria-hidden="true" />
+      </button>
+    </Tooltip>
+  </>;
+
+  return <Dialog.Root open={expanded} onOpenChange={setExpanded}>
+    <div className="eterx-chat-table">
+      <div className="eterx-chat-table-actions" role="group" aria-label="Table actions">
+        {exportActions}
+        <Tooltip text="Expand table" side="top" showOnFocus>
+          <Dialog.Trigger asChild>
+            <button type="button" className="eterx-chat-table-action" aria-label="Expand table">
+              <Maximize2 size={16} aria-hidden="true" />
+            </button>
+          </Dialog.Trigger>
+        </Tooltip>
+      </div>
+      <div className="eterx-markdown-table-wrap" role="region" aria-label={label} tabIndex={0}>
+        {table}
+      </div>
+    </div>
+    <Dialog.Portal>
+      <Dialog.Overlay className="eterx-chat-table-overlay" />
+      <Dialog.Content className="eterx-chat-table-dialog" aria-describedby={undefined} onOpenAutoFocus={event => {
+        event.preventDefault();
+        expandedScroll.current?.focus({ preventScroll: true });
+      }}>
+        <header className="eterx-chat-table-dialog-header">
+          <Dialog.Title className="eterx-chat-table-dialog-title">Expanded table</Dialog.Title>
+          <div className="eterx-chat-table-actions" role="group" aria-label="Table actions">
+            {exportActions}
+            <Tooltip text="Close table" side="left" showOnFocus>
+              <Dialog.Close asChild>
+                <button type="button" className="eterx-chat-table-action" aria-label="Close table">
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </Dialog.Close>
+            </Tooltip>
+          </div>
+        </header>
+        <div ref={expandedScroll} className="eterx-markdown-table-wrap" role="region" aria-label={label} tabIndex={0}
+          onClick={event => {
+            // The chat image viewer opens outside this dialog's focus scope.
+            if (event.target instanceof Element && event.target.closest('.eterx-markdown-figure button')) {
+              setExpanded(false);
+            }
+          }}>
+          {table}
+        </div>
+      </Dialog.Content>
+    </Dialog.Portal>
+  </Dialog.Root>;
+};
+
+type MarkdownTableNodeProps = React.TableHTMLAttributes<HTMLTableElement> & {
+  node?: unknown;
+  'data-table-copy'?: string;
+  'data-table-csv'?: string;
+  'data-table-label'?: string;
+  'data-table-row-count'?: string | number;
+  'data-table-column-count'?: string | number;
+};
+
+const RenderMarkdownTable = ({ node, 'data-table-copy': copyText = '', 'data-table-csv': csv = '',
+  'data-table-label': label = 'Data table', 'data-table-row-count': rowCount = 0,
+  'data-table-column-count': columnCount = 0, chatFeed = false, ...props }:
+  MarkdownTableNodeProps & { chatFeed?: boolean }) => {
+  const tableProps = { ...props, copyText: String(copyText), csv: String(csv), label: String(label) };
+  return chatFeed ? <ChatTable {...tableProps} />
+    : <MarkdownTable {...tableProps} rowCount={Number(rowCount)} columnCount={Number(columnCount)} />;
+};
+
+export const ChatMarkdownTable = (props: MarkdownTableNodeProps) => <RenderMarkdownTable {...props} chatFeed />;
 
 const ToolbarButton = ({
   label,
@@ -1006,6 +1105,11 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, complete
 }, (prevProps, nextProps) => prevProps.content === nextProps.content && prevProps.language === nextProps.language
   && prevProps.forceSource === nextProps.forceSource && prevProps.complete === nextProps.complete);
 
+const AnswerVisualBlock = React.memo(function AnswerVisualBlock({ source, complete }: { source: string; complete: boolean }) {
+  const data = complete ? parseAnswerVisual(source) : null;
+  return data ? <AnswerVisual data={data} /> : <CodeBlock language="json" content={source} complete />;
+});
+
 export const makeMarkdownHeading = (Tag: keyof React.JSX.IntrinsicElements, className: string) => {
   const Heading = ({ node, children, className: authoredClassName = '', ...props }: any) => {
     const text = getNodeText(children);
@@ -1039,7 +1143,8 @@ export const markdownComponents = {
       ? <ResponsiveMath className={className} source={getMathSource(node)} {...props}>{children}</ResponsiveMath>
       : <span className={className} {...props}>{children}</span>;
   },
-  code: function MarkdownCode({ inline, className, children, node, 'data-block-code': blockCode, 'data-code-complete': codeComplete, ...props }: any) {
+  code: function MarkdownCode({ inline, className, children, node, 'data-block-code': blockCode,
+    'data-code-complete': codeComplete, 'data-answer-visual': answerVisual, ...props }: any) {
     const streaming = React.useContext(MarkdownStreamContext);
     const match = /language-([^\s]+)/.exec(className || '');
     const language = match ? match[1].toLowerCase() : '';
@@ -1051,8 +1156,13 @@ export const markdownComponents = {
       node?.position?.start?.line === node?.position?.end?.line
     );
 
+    const complete = codeComplete === true || codeComplete === 'true';
+    if (!isInlineCode && answerVisual) {
+      if (streaming && !complete) return null;
+      return <AnswerVisualBlock source={content} complete={complete} />;
+    }
+
     if (!isInlineCode && streaming) {
-      const complete = codeComplete === true || codeComplete === 'true';
       return <CodeBlock language={language} content={content} complete={complete} forceSource={!complete} {...props} />;
     }
 
@@ -1108,7 +1218,11 @@ export const markdownComponents = {
   h6: makeMarkdownHeading('h6', 'eterx-answer-heading-6'),
   strong: ({ node, ...props }: any) => <strong className="font-semibold tracking-normal" {...props} />,
   em: ({ node, ...props }: any) => <em className="italic" {...props} />,
-  blockquote: ({ node, ...props }: any) => {
+  blockquote: ({ node, 'data-answer-details': detailsLabel, ...props }: any) => {
+    if (detailsLabel) return <details className="eterx-answer-details">
+      <summary>{detailsLabel}</summary>
+      <div className="eterx-answer-details-body">{props.children}</div>
+    </details>;
     const quoteText = getNodeText(node).trim().toLowerCase();
     const callout = quoteText.startsWith('warning:') || quoteText.startsWith('caution:')
       ? 'warning'
@@ -1124,11 +1238,7 @@ export const markdownComponents = {
     );
   },
   hr: ({ node, ...props }: any) => <hr className="eterx-markdown-hr my-4 border-white/[0.08]" {...props} />,
-  table: ({ node, 'data-table-copy': copyText = '', 'data-table-csv': csv = '', 'data-table-label': label = 'Data table',
-    'data-table-row-count': rowCount = 0, 'data-table-column-count': columnCount = 0, ...props }: any) => (
-    <MarkdownTable copyText={String(copyText)} csv={String(csv)} label={String(label)}
-      rowCount={Number(rowCount)} columnCount={Number(columnCount)} {...props} />
-  ),
+  table: RenderMarkdownTable,
   thead: ({ node, ...props }: any) => <thead className="eterx-markdown-thead bg-white/[0.04] border-b border-white/[0.08]" {...props} />,
   tbody: ({ node, ...props }: any) => <tbody className="eterx-markdown-tbody" {...props} />,
   th: ({ node, style, ...props }: any) => <th scope="col" className="eterx-markdown-th border-b border-r border-white/[0.06] last:border-r-0 px-3 py-2 font-semibold" style={{ textAlign: 'start', ...style }} {...props} />,

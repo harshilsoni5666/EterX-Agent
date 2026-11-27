@@ -28,8 +28,10 @@ import { normalizeContextWindow } from '../../context-window-policy';
 import { refreshLiveContextBudget } from '../live-context-budget';
 import { createProviderChatStream } from '../provider-stream-adapter';
 import { meterModelResponse } from '../../usage/ledger';
-import { withTelemetryScope } from '../../telemetry/runtime';
+import { publicTelemetryModel, recordTelemetry, withTelemetryScope } from '../../telemetry/runtime';
 import { createCodexSubscriptionClient } from '../codex-subscription-runtime';
+import { runSubscriptionTurn } from '../native-provider/turn';
+import { isNativeSessionProvider } from '../../native-provider-contract';
 import { applyAnthropicPromptCachePolicy, applyOpenAIPromptCachePolicy } from '../provider-prompt-cache';
 import { assertSuccessfulCompatibleFinish, createCompatibleTaggedReasoningSplitter, splitCompatibleDeltaContent } from '../provider-capabilities';
 import {
@@ -1319,6 +1321,9 @@ const generateCapsulePartWithKey = async (
   conversationScope?: string,
 ): Promise<string> => {
   const systemInstruction = 'Perform exact, loss-aware agent state transfer. Output only the requested continuation capsule.';
+  if (isNativeSessionProvider(model.provider)) {
+    return (await runSubscriptionTurn(model.provider, { model: model.modelId, prompt, instruction: systemInstruction, signal: abortSignal, auxiliary: true })).text;
+  }
   // The shared instructions end before per-part state. Preserve this boundary
   // across chunks and repair retries without moving source data into the system.
   const boundary = prompt.indexOf('\n\nThis is transcript part ');
@@ -1423,7 +1428,8 @@ const generateCapsulePart = async (
   onRetry?: (attempt: number, totalAttempts: number) => void,
 ): Promise<string> => {
   const configuredKeys = Array.from(new Set(getScopedRuntimeApiKeyValues(runtimeSettings, model.provider).filter(Boolean)));
-  const apiKeys = model.provider === 'codex' ? [''] : configuredKeys.length > 0 ? configuredKeys
+  const accountProvider = model.provider === 'codex' || isNativeSessionProvider(model.provider);
+  const apiKeys = accountProvider ? [''] : configuredKeys.length > 0 ? configuredKeys
     : isLocalModelProvider(model.provider) ? ['local-no-key-required'] : [];
   if (apiKeys.length === 0) {
     throw new Error(`No ${model.provider} API key is available for context compaction.`);
@@ -1444,7 +1450,7 @@ const generateCapsulePart = async (
   // every configured key could turn a requested three-attempt recovery into
   // dozens of compaction calls. Rotate through the pool across the bounded
   // attempts so a bad/rate-limited credential still cannot pin the chat.
-  const totalAttempts = model.provider === 'codex' ? 1 : Math.max(1, Math.min(3, Math.floor(retryRounds)));
+  const totalAttempts = accountProvider ? 1 : Math.max(1, Math.min(3, Math.floor(retryRounds)));
   const isRetryableCompactionAttemptError = (error: unknown) => {
     if (isProviderFailoverError(error)) return true;
     const message = String((error as any)?.message || error || '').toLowerCase();
@@ -2705,6 +2711,8 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
 
   const transaction = (async () => {
     let compactionId = pendingRetry?.compactionId || `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    let telemetryStarted: number | undefined;
+    let telemetryOutcome: 'succeeded' | 'failed' | 'cancelled' = 'failed';
     const model = {
       ...settings.model!,
       ...(settings.modelSource === 'active'
@@ -2761,6 +2769,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       // transaction identity. Emitting before retry-ID reconciliation could
       // leave an orphaned, permanently "Compacting" row under the superseded
       // ID while the real transaction completed under a new one.
+      telemetryStarted = performance.now();
       emit({
         type: 'context_compaction',
         phase: 'compacting',
@@ -3029,6 +3038,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         timestamp: Date.now(),
       });
       emit({ type: 'context_usage', chatId: input.chatId, timestamp: Date.now(), ...finalUsage });
+      telemetryOutcome = 'succeeded';
       return {
         contents: nextContents,
         compacted: true,
@@ -3039,6 +3049,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       };
     } catch (error: any) {
       if (input.abortSignal?.aborted || String(error?.message || error) === 'CANCELLED_BY_USER') {
+        telemetryOutcome = 'cancelled';
         const preservedUsage = measurePayload(exactCallerContents, contextWindow);
         emit({
           type: 'context_compaction', phase: 'failed', compactionId, chatId: input.chatId,
@@ -3134,6 +3145,13 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         trustedCapsuleMarker,
       };
     } finally {
+      if (telemetryStarted !== undefined) {
+        recordTelemetry('feature.used', { feature: 'compaction', outcome: telemetryOutcome }, {
+          dimensions: { provider: usedModel.provider, model: publicTelemetryModel(usedModel.provider, usedModel.modelId) },
+          key: compactionId,
+          measurements: { durationMs: Math.round(performance.now() - telemetryStarted), durationReports: 1 },
+        });
+      }
       await releaseCompactionLease(durableLease);
     }
   })().finally(() => activeCompactions.delete(input.chatId));

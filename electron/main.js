@@ -949,12 +949,17 @@ async function stopDesktopRunsForClose({ keepScheduled = false, keepChannels = f
 }
 
 function requestSubscriptionHandoff(action, id, mode) {
-  const target = new URL('/api/agent/subscription-handoff', getAppTarget());
+  return requestDesktopSubscription('/api/agent/subscription-handoff', { action, id, mode },
+    action === 'stop' ? 20_000 : 8_000, 'EterX could not prepare the account change.');
+}
+
+function requestDesktopSubscription(route, body, timeout, fallbackMessage) {
+  const target = new URL(route, getAppTarget());
   const key = codexBridgeEnvironment?.ETERX_CODEX_BRIDGE_KEY;
   if (!key || !['http:', 'https:'].includes(target.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) {
     throw new Error('The local subscription runtime is unavailable.');
   }
-  const payload = JSON.stringify({ action, id, mode });
+  const payload = JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const client = target.protocol === 'https:' ? https : http;
     const request = client.request(target, {
@@ -963,17 +968,17 @@ function requestSubscriptionHandoff(action, id, mode) {
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload),
         'x-eterx-subscription-control': key,
       },
-      signal: AbortSignal.timeout(action === 'stop' ? 20_000 : 8_000),
+      signal: AbortSignal.timeout(timeout),
     }, response => {
-      let body = '';
+      let data = '';
       response.setEncoding('utf8');
-      response.on('data', chunk => { body += chunk; });
+      response.on('data', chunk => { data += chunk; });
       response.on('error', reject);
       response.on('end', () => {
         try {
-          const result = JSON.parse(body);
+          const result = JSON.parse(data);
           if (response.statusCode !== 200) {
-            reject(Object.assign(new Error(result.error || 'EterX could not prepare the account change.'), { status: response.statusCode }));
+            reject(Object.assign(new Error(result.error || fallbackMessage), { status: response.statusCode }));
           } else {
             resolve(result);
           }
@@ -3827,6 +3832,10 @@ function createWindow() {
   });
   mainWindow.webContents.on('dom-ready', publishMainWindowVisibility);
   mainWindow.webContents.on('did-finish-load', () => {
+    if (mainWindow && isTrustedAppUrl(mainWindow.webContents.getURL())) {
+      clearBootRetry();
+      bootFailureCount = 0;
+    }
     publishMainWindowVisibility();
     if (mainWindow?.isVisible()) void notifyDesktopResume();
   });
@@ -3879,6 +3888,27 @@ ipcMain.handle('select-files', async () => {
   });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths;
+});
+
+ipcMain.handle('workbench-choose-file', async (event, kind) => {
+  const target = BrowserWindow.fromWebContents(event.sender);
+  if (!target || (target !== mainWindow && !chatWindows.has(target)) ||
+      event.senderFrame !== event.sender.mainFrame || !isTrustedRenderer(event.sender)) {
+    throw new Error('File selection is unavailable in this window.');
+  }
+  const options = kind === 'ssh-key'
+    ? { title: 'Choose an SSH identity file', properties: ['openFile', 'showHiddenFiles', 'dontAddToRecent'] }
+    : kind === 'app' && process.platform === 'darwin'
+      ? { title: 'Choose a simulator app', properties: ['openDirectory', 'treatPackageAsDirectory'] }
+      : kind === 'apk'
+        ? { title: 'Choose an Android APK', properties: ['openFile'], filters: [{ name: 'Android app', extensions: ['apk'] }] }
+        : null;
+  if (!options) throw new Error('Choose a file for the selected device or connection.');
+  const result = await dialog.showOpenDialog(target, options);
+  const selected = result.filePaths[0];
+  if (result.canceled || !selected) return null;
+  if (kind !== 'ssh-key' && path.extname(selected).toLowerCase() !== '.' + kind) throw new Error('Choose a .' + kind + ' build.');
+  return selected;
 });
 
 // IPC: List folder contents for browsing
@@ -4168,6 +4198,33 @@ registerChatGptSubscriptionHandler('disconnect', (subscription, id) =>
   typeof id === 'string' ? subscription.disconnect(id) : null);
 registerChatGptSubscriptionHandler('disconnect-all', subscription => subscription.disconnectAll());
 registerChatGptSubscriptionHandler('dismiss-plan-welcome', subscription => subscription.dismissPlanWelcome());
+
+const ANTIGRAVITY_ACTIONS = new Set(['state', 'watch', 'install', 'sign-in', 'submit-code', 'cancel', 'refresh', 'sign-out', 'disconnect-all', 'switch', 'remove', 'usage']);
+ipcMain.handle('antigravity-provider', (event, input) => {
+  if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame || !isTrustedAppUrl(event.senderFrame.url)) return null;
+  const { action, accountId, label, code, revision } = input || {};
+  if (!ANTIGRAVITY_ACTIONS.has(action) || (action === 'submit-code' && (typeof code !== 'string' || code.length > 8192))) return null;
+  return requestDesktopSubscription('/api/settings/antigravity', {
+    action, code: action === 'submit-code' ? code : undefined,
+    accountId: typeof accountId === 'string' ? accountId.slice(0, 80) : undefined,
+    label: typeof label === 'string' ? label.slice(0, 80) : undefined,
+    revision: typeof revision === 'string' ? revision.slice(0, 96) : undefined,
+  }, action === 'watch' ? 27_000 : 12_000, 'EterX could not reach the Antigravity connection.');
+});
+
+const NATIVE_PROVIDER_ACTIONS = new Set(['watch', 'refresh', 'binary', 'sign-in', 'switch', 'cancel', 'sign-out', 'clear']);
+const NATIVE_PROVIDERS = new Set(['cursor', 'grok-build', 'claude-code']);
+ipcMain.handle('native-provider', (event, input) => {
+  if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame || !isTrustedAppUrl(event.senderFrame.url)) return null;
+  const { action, provider } = input || {};
+  if (!NATIVE_PROVIDER_ACTIONS.has(action) || (action !== 'watch' && !NATIVE_PROVIDERS.has(provider))) return null;
+  const value = (field, max) => typeof input[field] === 'string' ? input[field].slice(0, max) : undefined;
+  return requestDesktopSubscription('/api/settings/native-providers', {
+    action, provider, accountId: value('accountId', 80), label: value('label', 80),
+    apiKey: action === 'sign-in' && provider === 'cursor' ? value('apiKey', 4096) : undefined,
+    binaryPath: value('binaryPath', 1024), revision: value('revision', 96),
+  }, action === 'watch' ? 27_000 : 12_000, 'EterX could not reach the provider connection.');
+});
 
 ipcMain.handle('gateway-get-state', async () => ({
   available: await secureStorageAvailable(),

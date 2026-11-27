@@ -513,7 +513,6 @@ html[data-theme="light"] .eterx-workspace-change-status.is-deleted,html[data-the
 .eterx-workspace-side-conversation .eterx-composer-send-button:disabled { opacity:.4; cursor:default; transform:none; }
 .eterx-workspace-chat-row > svg { color:var(--ws-muted); flex-shrink:0; }
 .eterx-workspace-chat-time { font-size:10px; color:var(--ws-muted); flex:0 0 auto; }
-.eterx-workspace-chat-loading { display:flex; align-items:center; gap:7px; padding:8px 14px; color:var(--ws-muted); font-size:12px; }
 .eterx-workspace-side-conversation .eterx-chat-feed[data-compressed] .eterx-chat-feed-content,.eterx-workspace-side-conversation .eterx-composer-shell[data-compressed],.eterx-workspace-side-conversation .eterx-queued-followup-rail { width:100% !important; min-width:0 !important; max-width:var(--eterx-reference-composer-max,740px) !important; margin-inline:auto; box-sizing:border-box; transform:none !important; }
 .eterx-workspace-side-conversation .eterx-chat-input-dock[data-compressed] { transform:none !important; }
 @container eterx-workspace (max-width:480px) {

@@ -1,6 +1,6 @@
 /** Focused coding-agent tool surface — advanced Cursor-class primitives */
 export const CODE_AGENT_TOOLS = [
-  'workspace_edit_file', 'workspace_run_command', 'scheduled_tasks', 'wait_timer',
+  'workspace_edit_file', 'workspace_run_command', 'workspace_workbench', 'scheduled_tasks', 'wait_timer',
   'browser_control', 'computer', 'screen_agent', 'spawn_sub_agent', 'task_decomposer', 'task_checkpoint',
   'get_skill_guidelines', 'context_memory', 'web_search', 'image_asset_search',
 ] as const;
@@ -47,5 +47,6 @@ CODING WORKFLOW
 - Author source/text changes with workspace_edit_file, grouping related targets. Use execution tools for builds, generators and binary artifacts.
 - Reuse current evidence. When authorized, verify the changed behavior with the narrowest relevant command; respect no-test/no-check instructions.
 - Keep a running command's taskId; use mode=wait/check/list/kill instead of inventing process tools or repeatedly launching it.
+- When workspace_workbench is enabled, publish the live service or select the real device for the user to follow. Inspect the actual result after actions.
 - Use planning, skills, browser evidence and delegation only when relevant, available and authorized.
 `.trim();

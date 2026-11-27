@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../lib/agent/agent-registry';
+import { telemetryClientContext } from '../../../lib/telemetry/client-context';
+import { withTelemetryScope } from '../../../lib/telemetry/runtime';
 import { normalizeMainAgentMode, normalizeModelThinkingCapabilities, normalizeThinkingLevelForModel } from '../../../lib/agent/model-routing';
 import {
   buildAgentBuilderPinnedContext,
@@ -29,6 +31,7 @@ import {
   requireChatOwner,
 } from '../agent/_shared';
 import { isModelProvider } from '../../../lib/agent/model-selector-store';
+import { assertProviderAvailable, ProviderUnavailableError } from '../../../lib/app-presentation/posthog';
 import { resolveChatMediaForRequest } from '../../../lib/chat-media-store';
 import { formatUnknownError } from '../../../lib/agent/error-format';
 import { getCodingMode } from '../../../lib/code/coding-modes';
@@ -120,6 +123,13 @@ export async function POST(req: NextRequest) {
     const requestedModelProvider = selectedModel && typeof selectedModel === 'object'
       ? String((selectedModel as any).provider || '').trim()
       : '';
+    if (isModelProvider(requestedModelProvider)) {
+      try { await assertProviderAvailable(requestedModelProvider); }
+      catch (error) {
+        if (error instanceof ProviderUnavailableError) return attachAgentApiSessionCookie(jsonError(error.message, 503), session);
+        throw error;
+      }
+    }
     const requestedModelName = selectedModel && typeof selectedModel === 'object'
       ? String((selectedModel as any).modelId || (selectedModel as any).modelName || '').trim()
       : '';
@@ -211,7 +221,7 @@ export async function POST(req: NextRequest) {
     await agentRegistry.waitForStoppedRunToSettle(chatId, 5000);
 
     // Start the agent via the registry (fire-and-forget, non-blocking)
-    const startResult = agentRegistry.startAgent(
+    const startResult = withTelemetryScope({}, () => agentRegistry.startAgent(
       chatId,
       effectivePrompt,
       normalizeHistory(history),
@@ -224,7 +234,7 @@ export async function POST(req: NextRequest) {
       runtimeSettings,
       runId,
       desktopAdmissionEpoch,
-    );
+    ), telemetryClientContext(req));
 
     if (startResult.status === 'no_keys') {
       return attachAgentApiSessionCookie(jsonError('All API keys are in use. Try again shortly.', 503, startResult), session);

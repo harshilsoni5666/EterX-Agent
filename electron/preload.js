@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   workspaceFolderRoot: (options) => ipcRenderer.invoke('workspace-folder-root', options),
   workspaceFolderRoots: (options) => ipcRenderer.invoke('workspace-folder-roots', options),
   workspaceFolderList: (path, offset, showHidden) => ipcRenderer.invoke('workspace-folder-list', path, offset, showHidden),
-  workspaceBrowserCreate: (id, theme) => ipcRenderer.invoke('workspace-browser-create', id, theme),
+  workspaceBrowserCreate: (id, theme, developmentPreview) => ipcRenderer.invoke('workspace-browser-create', id, theme, developmentPreview),
   workspaceBrowserCapture: (id) => ipcRenderer.invoke('workspace-browser-capture', id),
   workspaceBrowserMenu: (id, anchor) => ipcRenderer.invoke('workspace-browser-menu', id, anchor),
   workspaceBrowserPreview: (id) => ipcRenderer.invoke('workspace-browser-preview', id),
@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   workspaceBrowserCommand: (id, command, value) => ipcRenderer.invoke('workspace-browser-command', id, command, value),
   workspaceBrowserBounds: (id, bounds) => ipcRenderer.send('workspace-browser-bounds', id, bounds),
   workspaceBrowserClose: (id) => ipcRenderer.invoke('workspace-browser-close', id),
+  workbenchWindowSources: () => ipcRenderer.invoke('workbench-window-sources'),
+  workbenchChooseFile: kind => ipcRenderer.invoke('workbench-choose-file', kind),
+  workbenchPreviewAction: (id, action) => ipcRenderer.invoke('workbench-preview-action', id, action),
   onWorkspaceBrowserEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('workspace-browser-event', listener);
@@ -93,6 +96,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-get'),
   saveSecureRuntimeSettings: (settings) => ipcRenderer.invoke('secure-runtime-settings-save', settings),
   clearSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-clear'),
+  antigravityProvider: request => ipcRenderer.invoke('antigravity-provider', request),
+  nativeProvider: request => ipcRenderer.invoke('native-provider', request),
   chatGptSubscription: {
     getState: () => ipcRenderer.invoke('chatgpt-subscription-state'),
     signIn: profileId => ipcRenderer.invoke('chatgpt-subscription-sign-in', profileId ?? null),

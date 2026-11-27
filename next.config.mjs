@@ -2,7 +2,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const desktopCommonJsPackages = ['cheerio', 'undici', 'fs-extra', 'pdf-parse', 'mathjs', 'playwright-core', 'koffi', 'typescript'];
+const desktopCommonJsPackages = ['cheerio', 'undici', 'fs-extra', 'pdf-parse', 'mathjs', 'playwright-core', 'koffi', 'typescript',
+  '@cursor/sdk', '@anthropic-ai/claude-agent-sdk'];
 
 /** @type {import('next').NextConfig} */
 const repositoryRoot = path.resolve(process.cwd());

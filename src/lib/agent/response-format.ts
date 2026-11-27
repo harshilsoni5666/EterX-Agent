@@ -1,14 +1,29 @@
+import { ANSWER_DETAILS_MARKER, ANSWER_VISUAL_LANGUAGE, ANSWER_VISUAL_LIMITS } from '../markdown/answer-visual';
+
+const CHAT_VISUAL_POLICY = [
+  'Use native visuals in EterX desktop chat and written Live replies when they make the answer easier to understand. A standalone closed ```' + ANSWER_VISUAL_LANGUAGE + ' fence contains exactly one valid JSON object. Mix it with ordinary Markdown where needed. Choose the smallest suitable format:',
+  `- Metrics for a few headline facts (up to ${ANSWER_VISUAL_LIMITS.metrics}): {"type":"metrics","title":"Rollout summary","items":[{"label":"Ready","value":"8 of 10","detail":"Two teams are still testing"}]}.`,
+  `- Bar chart for amounts across categories (up to ${ANSWER_VISUAL_LIMITS.bar}): {"type":"bar","title":"Response time","unit":"ms","items":[{"label":"Cached","value":8},{"label":"Uncached","value":21}]}.`,
+  `- Line chart for a trend in ordered, equally spaced points (up to ${ANSWER_VISUAL_LIMITS.line}): {"type":"line","title":"Weekly volume","unit":"orders","items":[{"label":"Week 1","value":42},{"label":"Week 2","value":null},{"label":"Week 3","value":59}]}. Use null for missing points. Supply at least two known values.`,
+  `- Timeline for milestones or actual intervals (up to ${ANSWER_VISUAL_LIMITS.timeline}): {"type":"timeline","title":"Rollout","unit":"Days from kickoff","domain":[0,7],"items":[{"label":"Pilot","start":1,"end":3},{"label":"Launch","start":6}]}. Omit end for a milestone. Use a consistent numeric time scale and optionally an enclosing domain. For order without timing, use a numbered list or flow diagram.`,
+  '- A visual can include a caption. Item labels and details are plain text. Use numbers for geometry and optional display strings on charts and timelines for custom values or date/time labels. Use values from evidence or clearly labeled scenarios. Use a table when exact values matter more than shape.',
+  `- Fold optional methods or supporting evidence in a Markdown quote. Put the label on its own line and leave a blank quoted line before the body:\n> ${ANSWER_DETAILS_MARKER} Method\n>\n> Explain the method here.\nKeep the main finding and material limitations visible.`,
+  '- Use regular Markdown, diagrams, images, and real artifact links when they fit. For a destination outside EterX chat, follow that surface’s formatting and deliverable requirements. Use its native format or a suitable attachment for visuals.',
+].join('\n');
+
 /**
  * One compact presentation policy for user-facing agents. Specialist formats
  * retain precedence; providers share guidance without rewriting their output.
  */
-export const RICH_ANSWER_POLICY = String.raw`Choose a useful presentation, not a fixed response template.
+export const RICH_ANSWER_POLICY = String.raw`Choose the clearest presentation for the request. A short answer should usually stay in prose. Add structure or visuals only when they clarify real information, help the user act, or fulfill an explicit format request.
 - For a comparison or decision with shared attributes, use a compact Markdown table and explain the deciding trade-off in prose. Preserve unknown values as unknown. Put units in headers and keep long explanations outside cells.
 - For a process, architecture, dependency, interaction or state transition that is easier to see, include a Mermaid diagram and explain its main implication nearby. Use flowchart for flow/dependencies, sequenceDiagram for exchanges, stateDiagram-v2 for states, and erDiagram for data relationships. A diagram should explain a relationship, not decorate an answer.
 - Put Mermaid in a complete mermaid-tagged code fence. Use simple unique identifiers and quote labels with spaces or punctuation; keep labels short. Prefer several focused diagrams to one unreadable graph. Use accTitle and accDescr when supported by the chosen diagram type. Do not put prose, Markdown tables or another fence inside a diagram.
 - For a substantial answer, give the result first, then the explanation, evidence and useful next action or limitation. Use small examples when they clarify behavior. Do not replace an explanation with a diagram or duplicate every fact in prose, a table and a diagram.
 - Keep deliverables usable: name the artifact, link its real location, and explain what the user can do with it. Preserve exact code and values; do not silently repair or invent source content for presentation.
-- For voice, publish tables, diagrams, equations and longer code in chat and speak the conclusion or a short explanation. Never read pipes, fence markers, graph arrows, URLs or entire code blocks aloud. A user who asks for detail should receive a substantive written answer even when the spoken summary is brief.`;
+- For voice, publish tables, diagrams, equations and longer code in chat and speak the conclusion or a short explanation. Never read pipes, fence markers, graph arrows, URLs or entire code blocks aloud. A user who asks for detail should receive a substantive written answer even when the spoken summary is brief.
+
+${CHAT_VISUAL_POLICY}`;
 
 export const FINAL_ANSWER_POLICY = String.raw`Adapt replies to the current request, agent role, audience, language, depth, and delivery surface. Explicit user formats and specialist deliverable requirements take precedence. These are judgment guidelines, not a fixed template; WORK NOTES governs progress updates.
 

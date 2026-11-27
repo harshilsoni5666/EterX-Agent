@@ -2,13 +2,14 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { FolderOpen, GitBranch, GitFork, Globe, Lightbulb, Loader2, Maximize2, Minimize2, Plus, TerminalSquare, X } from 'lucide-react';
+import { Activity, ArrowUpRight, FolderOpen, GitBranch, GitFork, Globe, Lightbulb, Loader2, Maximize2, Minimize2, PanelRightClose, Plus, TerminalSquare, X } from 'lucide-react';
 import { openPlanInWorkspace, WorkspacePlan } from './task-plan-card';
 import { planViewKey, type TaskTrackerState } from '../../lib/task-plan-trace';
 import { addWorkspaceFolder, addWorkspaceTab, closeWorkspaceTab, resolveWorkspaceOwner, updateWorkspace, useSideWorkspace, type WorkspaceKind } from '../../lib/side-workspace-store';
 import { createTerminal, showTerminal, useChatTerminalControls } from '../../lib/chat-terminal-store';
 import { ChatTerminalDock } from './chat-terminal-dock';
 import type { SideChatActions, SideChatSession } from './workspace-side-chat';
+import type { ChatHistoryStatus } from './chat-history-notice';
 import type { LiveChatLedger } from '../../lib/live-chat-ledger';
 import type { BrowserCapture } from './workspace-browser';
 import { WorkspaceFileIcon, WorkspaceSiteIcon } from './workspace-file-icon';
@@ -27,6 +28,7 @@ import { useWorkspaceScrollBoundary } from './use-workspace-scroll-boundary';
 import { revealInWorkspaceScroller } from './workspace-scroll';
 
 const workspaceChoices = [
+  { kind: 'workbench', title: 'Workbench', detail: 'Follow local runs, services, and devices', icon: Activity, key: 'W' },
   { kind: 'plan', title: 'Plan', detail: 'Read the plan and follow its steps', icon: Lightbulb, key: 'P' },
   { kind: 'chat', title: 'Side chat', detail: 'Keep two conversations in view', icon: MessagesCircle, key: 'S' },
   { kind: 'subagents', title: 'Sub-Agents', detail: 'Follow agents and switch between their chats', icon: GitFork, key: 'A' },
@@ -40,13 +42,17 @@ const name = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() || path
 const Files = memo(WorkspaceFiles);
 const Browser = memo(WorkspaceBrowser);
 const Review = memo(WorkspaceReview);
+const Workbench = dynamic(() => import('./workspace-workbench').then(module => module.WorkspaceWorkbench), {
+  ssr: false,
+  loading: () => <div className="eterx-workspace-empty"><Loader2 size={22} className="animate-spin" /><p>Opening workbench…</p></div>,
+});
 const Git = dynamic(() => import('./workspace-git').then(module => module.WorkspaceGit), {
   ssr: false,
   loading: () => <div className="eterx-workspace-empty"><Loader2 size={22} className="animate-spin" /><p>Opening Git…</p></div>,
 });
 const emptyFolders: string[] = [];
 
-export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, plan, planRunning, chats, liveChatLedger, runningChats, actions, agentNavigation, onCapture }: { owner: string; mainChatId: string | null; workspacePath?: string | null; traceLogs: any[]; plan: TaskTrackerState | null; planRunning: boolean; chats: SideChatSession[]; liveChatLedger?: LiveChatLedger; runningChats: Set<string>; actions: SideChatActions; agentNavigation: WorkspaceSubAgentsProps; onCapture: (capture: BrowserCapture, tabId: string) => Promise<void> }) {
+export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, plan, planRunning, chats, liveChatLedger, runningChats, historyStatus, retryHistory, actions, agentNavigation, onCapture, onOpenConnections }: { owner: string; mainChatId: string | null; workspacePath?: string | null; traceLogs: any[]; plan: TaskTrackerState | null; planRunning: boolean; chats: SideChatSession[]; liveChatLedger?: LiveChatLedger; runningChats: Set<string>; historyStatus: ChatHistoryStatus; retryHistory: () => void; actions: SideChatActions; agentNavigation: WorkspaceSubAgentsProps; onCapture: (capture: BrowserCapture, tabId: string) => Promise<void>; onOpenConnections: () => void }) {
   const state = useSideWorkspace(owner);
   const gitPreferences = useGitPreferences();
   const gitEnabled = gitPreferences.ready && gitPreferences.gitIntegration && gitPreferences.gitWorkspaceEnabled;
@@ -241,10 +247,10 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, pla
       </div>
       {state.tabs.length > 0 && <div ref={menuRef} className="eterx-workspace-add"><button aria-label="Add workspace tab" aria-haspopup="menu" aria-expanded={menu} onClick={() => void toggleMenu()}><Plus size={18} /></button>{menu && !nativeMenu && <div className="eterx-workspace-add-menu" role="menu" onKeyDown={event => { if (event.key === 'Escape') { setMenu(false); menuRef.current?.querySelector('button')?.focus(); } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')); const index = items.indexOf(document.activeElement as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length; items[next]?.focus(); } }}>{choices.map(choice => <button role="menuitem" key={choice.kind} onClick={() => choose(choice.kind)}><choice.icon size={17} /><span>{choice.title}</span></button>)}</div>}</div>}
       <button aria-label={state.expanded ? 'Restore split view' : 'Expand workspace'} onClick={() => updateWorkspace(owner, { expanded: !state.expanded })}>{state.expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
-      {state.expanded && <button aria-label="Hide workspace" onClick={() => updateWorkspace(owner, { open: false })}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="3" width="18" height="18" rx="4" /><path d="M16 4v16" /></svg></button>}
+      <button aria-label="Hide workspace" title="Hide workspace" onClick={() => updateWorkspace(owner, { open: false })}><PanelRightClose size={16} /></button>
     </div>
     <div className="eterx-workspace-content" role="tabpanel">
-      {!active ? <div className="eterx-workspace-launcher eterx-scrollbar"><div className="eterx-workspace-launcher-grid">{choices.map(choice => <button key={choice.kind} onClick={() => choose(choice.kind)}><span className="eterx-workspace-launcher-icon"><choice.icon size={20} /></span><span><strong>{choice.title}</strong></span></button>)}</div></div>
+      {!active ? <div className="eterx-workspace-launcher eterx-scrollbar"><div className="eterx-workspace-launcher-grid">{choices.map(choice => <button key={choice.kind} data-featured={choice.kind === 'workbench' || undefined} onClick={() => choose(choice.kind)}><span className="eterx-workspace-launcher-icon"><choice.icon size={20} /></span><span><strong>{choice.title}</strong>{choice.kind === 'workbench' && <small>{choice.detail}</small>}</span>{choice.kind === 'workbench' && <ArrowUpRight size={16} />}</button>)}</div></div>
         : active.kind === 'terminal' ? terminal.open && terminal.placement === 'right' ? <ChatTerminalDock chatId={owner} cwd={terminalRoot} embedded /> : <div className="eterx-workspace-empty"><TerminalSquare size={32} /><h3>Your terminal sessions</h3><p>{terminal.open ? 'The terminal is currently docked below the chat.' : 'Open your local shell in this workspace.'}</p><button onClick={() => void openTerminal()}>Open terminal here</button></div>
         : active.kind === 'plan' ? <WorkspacePlan key={active.id} tab={active} owner={owner} ledger={liveChatLedger}
             running={active.planChatId && active.planChatId !== owner ? runningChats.has(active.planChatId)
@@ -252,10 +258,15 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, pla
             logs={active.planChatId && active.planChatId !== owner ? chats.find(chat => chat.id === active.planChatId)?.traceLogs || [] : traceLogs} />
         : active.kind === 'browser' ? <Browser key={active.id} owner={owner} tab={active} occluded={menu && !nativeMenu} onCapture={capture} />
         : active.kind === 'subagents' ? <WorkspaceSubAgents key={active.id} {...agentNavigation} onSelect={agentId => { agentNavigation.onSelect(agentId); if (state.expanded) updateWorkspace(owner, { expanded: false }); }} />
-        : active.kind === 'chat' ? <SideChat key={active.id} owner={owner} tab={active} chats={chats} liveChatLedger={liveChatLedger} mainChatId={mainChatId} runningChats={runningChats} actions={actions} /> : null}
+        : active.kind === 'chat' ? <SideChat key={active.id} owner={owner} tab={active} chats={chats} liveChatLedger={liveChatLedger} mainChatId={mainChatId} runningChats={runningChats} historyStatus={historyStatus} retryHistory={retryHistory} actions={actions} /> : null}
       {state.tabs.filter(tab => tab.kind === 'files' || tab.kind === 'review' || tab.kind === 'changes' || tab.kind === 'git').map(tab => <div key={tab.id} className="eterx-workspace-retained-panel" hidden={tab.id !== state.activeId}>
         {tab.kind === 'git' ? <Git owner={owner} tab={tab} isActive={tab.id === state.activeId} workspacePath={workspacePath} roots={folderState.roots} rootsLoading={folderState.loading} rootError={folderState.error} onAddFolder={addFolder} onOpenFile={openFile} /> : tab.kind === 'changes' ? <WorkspaceTurnChanges key={tab.changes?.id || tab.id} owner={owner} tab={tab} isActive={tab.id === state.activeId} /> : tab.kind === 'files' ? <Files owner={owner} tab={tab} isActive={tab.id === state.activeId} workspacePath={workspacePath} roots={folderState.roots} rootsLoading={folderState.loading} rootError={folderState.error} onAddFolder={addFolder} onOpenFile={openFile} />
           : <Review owner={owner} tab={tab} isActive={tab.id === state.activeId} files={reviewFiles} workspacePath={workspacePath} roots={folderState.roots} rootsLoading={folderState.loading} rootError={folderState.error} onAddFolder={addFolder} onOpenFile={openFile} />}
+      </div>)}
+      {state.tabs.filter(tab => tab.kind === 'workbench').map(tab => <div key={tab.id} className="eterx-workspace-retained-panel" hidden={tab.id !== state.activeId}>
+        <Workbench owner={owner} chatId={tab.workbenchChatId || mainChatId} tab={tab}
+          workspacePath={tab.workbenchChatId && tab.workbenchChatId !== mainChatId ? chats.find(chat => chat.id === tab.workbenchChatId)?.workspacePath : workspacePath}
+          isActive={tab.id === state.activeId} onOpenConnections={onOpenConnections} />
       </div>)}
     </div>
   </aside>;

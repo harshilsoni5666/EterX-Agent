@@ -5,6 +5,7 @@ import {
   summarizeTraceValue,
 } from './tool-trace';
 import { buildTerminalResultTrace } from './terminal-result-trace';
+import { workbenchTraceArgs } from '../workbench/activity-trace';
 
 type CustomToolLogType = 'command' | 'exploration' | 'file_edit' | 'communication' | 'browser';
 
@@ -98,6 +99,7 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKeys: ['query'] },
     browser_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKeys: ['query'] },
     browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'browser', argKeys: ['action', 'url'] },
+    workspace_workbench: { text: 'Using workbench', type: 'exploration', iconCategory: 'computer', argKeys: ['action'] },
     image_generator: { text: 'Generating image', type: 'file_edit', iconCategory: 'image', argKeys: ['prompt', 'filename'] },
     video_generator: { text: 'Generating video', type: 'file_edit', iconCategory: 'image', argKeys: ['prompt', 'filename'] },
     screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKeys: ['target', 'filename'] },
@@ -256,7 +258,7 @@ export const createCustomToolActionLog = (
     fileCount: traceFields.fileCount,
     command: command || undefined,
     icon: args?.uiIcon,
-    toolArgs: args,
+    toolArgs: toolName === 'workspace_workbench' ? workbenchTraceArgs(args) : args,
     connectorId: args?.connectorId || args?.connector_id || args?.server_id || args?.platform || args?.channel || undefined,
     tool: toolName,
     name: toolName,
@@ -315,6 +317,8 @@ export const createCustomToolResultLogs = (
   at = Date.now(),
 ) => {
   const result = event?.toolResult;
+  if (active.toolName === 'workspace_workbench') return [];
+  if (active.toolName === 'get_skill_guidelines' && active.toolArgs?.skill_name === 'development_workbench') return [];
   const resultText = summarizeCustomToolResult(result);
   const logs: any[] = [];
   const explicitDuration = Number(result?.durationMs);

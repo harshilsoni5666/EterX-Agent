@@ -2,7 +2,7 @@
 export const CODING_LITE_TOOLS = ['workspace_run_command', 'workspace_edit_file'] as const;
 export const CODING_HEAVY_TOOLS = [
   ...CODING_LITE_TOOLS,
-  'browser_control', 'computer', 'screen_agent', 'web_search', 'ask_user', 'task_decomposer',
+  'workspace_workbench', 'browser_control', 'computer', 'screen_agent', 'web_search', 'ask_user', 'task_decomposer',
   'task_checkpoint', 'context_memory', 'wait_timer', 'get_skill_guidelines',
 ] as const;
 
@@ -28,6 +28,7 @@ export function getCodingMode(value: unknown): typeof CODING_MODES[number] | und
 
 export const CODING_TOOL_DETAILS: Record<string, { label: string; description: string }> = {
   workspace_run_command: { label: 'Terminal', description: 'Read, search, run commands and manage processes; batch independent reads.' },
+  workspace_workbench: { label: 'Workbench', description: 'Share live development runs, browser previews, API targets, and native devices.' },
   workspace_edit_file: { label: 'File editing', description: 'Create, edit and delete files with exact selectors and related multi-file changes.' },
   browser_control: { label: 'Browser', description: 'Inspect and exercise web interfaces when browser access is enabled.' },
   computer: { label: 'Desktop apps', description: 'Find native app windows and inspect their controls when Computer Use is enabled.' },

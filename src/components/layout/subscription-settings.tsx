@@ -2,12 +2,13 @@
 
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { ArrowRightLeft, Check, CircleGauge, LoaderCircle, LogOut, MoreHorizontal, Plus, RefreshCw, Trash2, UserRound } from 'lucide-react';
+import { ArrowRightLeft, Check, CircleGauge, LoaderCircle, LogOut, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import {
   getDesktopSubscription, useChatGptSubscription,
   type ChatGptAccount, type ChatGptObservedUsage, type ChatGptSwitchMode,
 } from '../../lib/chatgpt-subscription-client';
+import { IdentityAvatar } from '../ui/identity-avatar';
 import { ProviderIconAsset } from '../ui/provider-icon';
 
 const card = 'rounded-xl border border-[var(--border)] bg-[var(--input-bg)]';
@@ -15,7 +16,7 @@ const bodyText = 'text-[12px] leading-relaxed text-[var(--muted-foreground)]';
 const control = 'inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
 const secondary = `${control} border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--muted)]`;
 const primary = `${control} bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90`;
-const menuItem = 'flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-[12px] outline-hidden data-[highlighted]:bg-[var(--muted)]';
+const menuItem = 'flex min-h-9 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-[12px] font-medium outline-hidden transition-colors data-[highlighted]:bg-[var(--muted)] data-[highlighted]:text-[var(--foreground)]';
 const warning = 'text-amber-800 dark:text-amber-200';
 const positive = 'text-emerald-800 dark:text-emerald-300';
 const accountLabels = {
@@ -34,7 +35,7 @@ const usageLabels: Record<ChatGptObservedUsage['status'], string> = {
 const busyLabels = {
   switching: 'Switching ChatGPT accounts…',
   disconnecting: 'Signing out of ChatGPT…',
-  removing: 'Removing saved connection…',
+  removing: 'Removing saved account…',
 };
 
 type AccountDialog = { kind: 'add' | 'welcome' }
@@ -48,24 +49,24 @@ function getDialogCopy(dialog: AccountDialog) {
     case 'change':
       return {
         title: 'Agents are working',
-        description: `There ${dialog.activeWork === 1 ? 'is 1 active run' : `are ${dialog.activeWork} active runs`}. Change & Resume lets current requests finish, switches to ${dialog.account.label}, and continues the same work.`,
+        description: `There ${dialog.activeWork === 1 ? 'is 1 active run' : `are ${dialog.activeWork} active runs`}. Change & Resume lets current requests finish, switches to ${dialog.account.email || 'the selected ChatGPT account'}, and continues the same work.`,
       };
     case 'connect':
       return {
         title: dialog.account.status === 'pending' ? 'Resume ChatGPT sign-in' : 'Continue with a saved account',
         description: dialog.account.email
-          ? `Choose ${dialog.account.email} in your browser to continue with ${dialog.account.label}.`
-          : `Continue with the ChatGPT account for ${dialog.account.label}.`,
+          ? `Choose ${dialog.account.email} in your browser to continue.`
+          : 'Continue with the saved ChatGPT account in your browser.',
       };
     case 'disconnect':
       return {
         title: 'Sign out of ChatGPT?',
-        description: `${dialog.account.label} will stay in your account list so you can reconnect it later.`,
+        description: `${dialog.account.email || 'This ChatGPT account'} will stay in your account list so you can reconnect it later.`,
       };
     case 'remove':
       return {
-        title: 'Remove saved connection?',
-        description: `${dialog.account.label} will be removed from this device. You can add the account again through ChatGPT.`,
+        title: 'Remove saved account?',
+        description: `${dialog.account.email || 'This ChatGPT account'} will be removed from this device. You can add the account again through ChatGPT.`,
       };
     case 'welcome':
       return {
@@ -96,20 +97,17 @@ function AccountRow({
   const connected = account.status === 'connected';
   const hasSession = connected || account.status === 'consent-required';
   const title = account.email || (account.status === 'pending' ? 'Unfinished connection' : 'ChatGPT account');
+  const subtitle = selected && connected ? null : accountLabels[account.status];
   const reconnect = account.status === 'pending' ? 'Resume sign-in'
     : account.status === 'consent-required' ? 'Enable plan usage' : 'Reconnect';
 
   return (
     <li className={`flex flex-wrap items-center gap-x-4 gap-y-2.5 px-4 py-3 ${selected && connected ? 'bg-emerald-500/[0.035]' : ''}`}>
       <div className="flex min-w-0 flex-1 basis-[12rem] items-center gap-3">
-        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--muted)] text-[var(--muted-foreground)]">
-          <UserRound className="size-4" aria-hidden="true" />
-        </span>
+        <IdentityAvatar identity={account.id} name={title} size={40} />
         <div className="min-w-0">
           <p className="truncate text-[13px] font-semibold text-[var(--foreground)]" title={title}>{title}</p>
-          <p className={`mt-0.5 ${bodyText}`}>
-            {account.label}{(!selected || !connected) && ` · ${accountLabels[account.status]}`}
-          </p>
+          {subtitle && <p className={`mt-0.5 ${bodyText}`}>{subtitle}</p>}
         </div>
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-2">
@@ -126,12 +124,12 @@ function AccountRow({
         )}
         <DropdownMenu.Root modal={false}>
           <DropdownMenu.Trigger asChild>
-            <button type="button" className={`${secondary} w-8 px-0`} disabled={disabled} aria-label={`Options for ${account.label}`}>
+            <button type="button" className={`${secondary} h-9 w-9 px-0 data-[state=open]:bg-[var(--muted)] data-[state=open]:text-[var(--foreground)]`} disabled={disabled} aria-label={`Options for ${title}`}>
               <MoreHorizontal className="size-4" aria-hidden="true" />
             </button>
           </DropdownMenu.Trigger>
           <DropdownMenu.Portal>
-            <DropdownMenu.Content align="end" sideOffset={6} collisionPadding={12} className="z-[100100] min-w-36 rounded-lg border border-[var(--border)] bg-[var(--input-bg)] p-1 text-[var(--foreground)] shadow-lg">
+            <DropdownMenu.Content align="end" sideOffset={6} collisionPadding={12} className="z-[100100] min-w-40 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-1.5 text-[var(--foreground)] shadow-xl shadow-black/20">
               {connected && (
                 <DropdownMenu.Item className={menuItem} onSelect={() => onAction('connect')}>
                   <RefreshCw className="size-3.5" aria-hidden="true" /> Reconnect
@@ -143,7 +141,7 @@ function AccountRow({
                 </DropdownMenu.Item>
               ) : (
                 <DropdownMenu.Item className={`${menuItem} text-red-700 dark:text-red-300`} onSelect={() => onAction('remove')}>
-                  <Trash2 className="size-3.5" aria-hidden="true" /> Remove connection
+                  <Trash2 className="size-3.5" aria-hidden="true" /> Remove account
                 </DropdownMenu.Item>
               )}
             </DropdownMenu.Content>
@@ -248,11 +246,11 @@ export function SubscriptionSettings() {
       <section data-settings-search-target="chatgpt-subscription" tabIndex={-1} className={card}>
         <div className="flex flex-wrap items-start gap-3.5 p-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-[var(--border)] bg-[var(--muted)]">
-            <ProviderIconAsset provider="openai" className="size-5" />
+            <ProviderIconAsset provider="codex" className="size-5" />
           </span>
           <div className="min-w-0 flex-1 basis-[12rem]">
-            <h4 className="text-[14px] font-semibold text-[var(--foreground)]">ChatGPT accounts</h4>
-            <p className={`mt-1 ${bodyText}`}>Choose which ChatGPT account and workspace EterX uses for Codex.</p>
+            <h4 className="text-[14px] font-semibold text-[var(--foreground)]">Codex accounts</h4>
+            <p className={`mt-1 ${bodyText}`}>Connect your ChatGPT account and workspace.</p>
           </div>
           {available && desktop && (accounts.length ? (
             <button type="button" className={secondary} disabled={busy} onClick={() => setDialog({ kind: 'add' })}>

@@ -2,9 +2,11 @@ import { NextRequest } from 'next/server';
 import { AgentOrchestrator } from '../../../../lib/agent/orchestrator';
 import type { MainAgentMode } from '../../../../lib/agent/model-routing';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
+import { assertProviderAvailable, ProviderUnavailableError } from '../../../../lib/app-presentation/posthog';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { beginTelemetryTurn } from '../../../../lib/telemetry/runtime';
+import { telemetryClientContext } from '../../../../lib/telemetry/client-context';
 import {
   cleanString,
   isSafeAgentId,
@@ -64,6 +66,11 @@ export async function POST(req: NextRequest) {
     if (!isModelProvider(selectedProvider) || !selectedModelName) {
       return jsonError('Select a concrete added model and provider before running the standalone builder.', 400);
     }
+    try { await assertProviderAvailable(selectedProvider); }
+    catch (error) {
+      if (error instanceof ProviderUnavailableError) return jsonError(error.message, 503);
+      throw error;
+    }
 
     const runtimeSettings = buildScopedRuntimeSettings();
     const orchestrator = new AgentOrchestrator();
@@ -104,6 +111,8 @@ export async function POST(req: NextRequest) {
             : selectedProvider;
           telemetry = beginTelemetryTurn(crypto.randomUUID(), {
             feature: 'builder', mode: 'agent', origin: 'interactive', provider: selectedProvider, model: selectedModelName,
+          }, {
+            ...telemetryClientContext(req), hasInput: Boolean(currentRequest), hasModel: true,
           });
           const result = await telemetry.run(() => orchestrator.executePipeline(
             'default_user',

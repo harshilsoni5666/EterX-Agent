@@ -2,6 +2,7 @@
 
 import React, { useEffect } from 'react';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { appearanceVariables, normalizeAppearancePreferences } from '../../lib/appearance-preferences';
 import { isAppVisible } from '../../lib/app-visibility';
 import { DEFAULT_THEME, isThemePreference, type ResolvedTheme, type ThemePreference } from '../../lib/theme-config';
 
@@ -18,18 +19,31 @@ type EterxViewTransition = {
 let activeThemeTransition: EterxViewTransition | null = null;
 let themeTransitionRevision = 0;
 
-const readThemePreference = (): ThemePreference => {
+const readSettings = (): Record<string, unknown> => {
   try {
     const saved = appStorage.getItem(SETTINGS_STORAGE_KEY);
-    const settings = saved ? JSON.parse(saved) : {};
-    if (isThemePreference(settings.theme)) {
-      return settings.theme;
-    }
-    return DEFAULT_THEME;
+    const settings = saved ? JSON.parse(saved) : null;
+    return settings && typeof settings === 'object' ? settings : {};
   } catch {
-    return DEFAULT_THEME;
+    return {};
   }
 };
+
+const readThemePreference = (settings = readSettings()): ThemePreference => (
+  isThemePreference(settings.theme) ? settings.theme : DEFAULT_THEME
+);
+
+function applyAppearanceToDocument(settings: unknown) {
+  const appearance = normalizeAppearancePreferences(settings);
+  const root = document.documentElement;
+  const contrast = String(appearance.uiContrast);
+  if (root.dataset.uiContrast === contrast && root.dataset.diffPalette === appearance.diffPalette) return;
+  for (const [property, value] of Object.entries(appearanceVariables(appearance))) {
+    root.style.setProperty(property, value);
+  }
+  root.dataset.uiContrast = contrast;
+  root.dataset.diffPalette = appearance.diffPalette;
+}
 
 const resolveTheme = (theme: ThemePreference): ResolvedTheme => {
   if (theme === 'system') {
@@ -169,7 +183,11 @@ export const broadcastEterxSettingsUpdate = (settings: unknown) => {
 
 export const ThemeBridge = React.memo(() => {
   useEffect(() => {
-    const applyStoredTheme = () => applyEterxTheme();
+    const applyStoredTheme = () => {
+      const settings = readSettings();
+      applyAppearanceToDocument(settings);
+      applyEterxTheme(readThemePreference(settings));
+    };
     let storageLoaded = false;
     // The server-rendered root already contains the synchronous startup
     // preference. Do not read the empty in-memory store before hydration.
@@ -188,11 +206,20 @@ export const ThemeBridge = React.memo(() => {
       const detail = (event as CustomEvent).detail;
       // Theme callers already perform the animated update. Reapplying it here
       // would interrupt the View Transition with a second raw DOM update.
-      if (detail && typeof detail === 'object' && 'theme' in detail) return;
+      if (detail && typeof detail === 'object' && 'theme' in detail) {
+        applyAppearanceToDocument(detail);
+        return;
+      }
       if (storageLoaded) applyStoredTheme();
+    };
+    const onStoredSettingsUpdate = (event: Event) => {
+      if ((event as CustomEvent<{ key: string }>).detail?.key === SETTINGS_STORAGE_KEY) {
+        applyAppearanceToDocument(readSettings());
+      }
     };
 
     window.addEventListener('eterx-settings-updated', onLocalSettingsUpdate);
+    window.addEventListener('eterx-folder-storage-updated', onStoredSettingsUpdate);
     const onStorageReady = (event: Event) => {
       const loaded = (event as CustomEvent<{ loaded?: boolean }>).detail?.loaded;
       if (loaded !== false) {
@@ -210,7 +237,11 @@ export const ThemeBridge = React.memo(() => {
         // The local CustomEvent already handled this window. Ignore its
         // BroadcastChannel echo so it cannot bypass an active circular reveal.
         if (event.data?.sourceId === SETTINGS_SOURCE_ID) return;
-        if (storageLoaded) applyStoredTheme();
+        const settings = event.data?.settings;
+        if (settings && typeof settings === 'object' && 'uiContrast' in settings && 'diffPalette' in settings) {
+          applyAppearanceToDocument(settings);
+        }
+        if (storageLoaded) applyEterxTheme();
       };
     } catch {
       channel = null;
@@ -218,6 +249,7 @@ export const ThemeBridge = React.memo(() => {
 
     return () => {
       window.removeEventListener('eterx-settings-updated', onLocalSettingsUpdate);
+      window.removeEventListener('eterx-folder-storage-updated', onStoredSettingsUpdate);
       window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onStorageReady);
       media?.removeEventListener('change', onSystemThemeChange);
       channel?.close();

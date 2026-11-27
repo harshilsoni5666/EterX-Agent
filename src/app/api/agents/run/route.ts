@@ -18,10 +18,12 @@ import { readAgentFlowProfile } from '../../../../lib/agent/builder-agent';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
+import { assertProviderAvailable, ProviderUnavailableError } from '../../../../lib/app-presentation/posthog';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../../../../lib/agent/self-improvement/engine';
 import { runWithToolApprovals } from '../../../../lib/agent/tool-approval-runtime';
 import { isChatPermissionMode, normalizeChatPermissionMode } from '../../../../lib/chat-permissions';
 import { beginTelemetryTurn } from '../../../../lib/telemetry/runtime';
+import { telemetryClientContext } from '../../../../lib/telemetry/client-context';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -98,6 +100,11 @@ export async function POST(req: NextRequest) {
       );
     }
     const safeModel = requestedModel;
+    try { await assertProviderAvailable('gemini'); }
+    catch (error) {
+      if (error instanceof ProviderUnavailableError) return attachAgentApiSessionCookie(jsonError(error.message, 503), session);
+      throw error;
+    }
     const requestedTemperature = temperature === undefined ? undefined : Number(temperature);
     if (requestedTemperature !== undefined && (!Number.isFinite(requestedTemperature) || requestedTemperature < 0 || requestedTemperature > 2)) {
       return attachAgentApiSessionCookie(jsonError('temperature must be a number between 0 and 2.', 400), session);
@@ -129,6 +136,9 @@ export async function POST(req: NextRequest) {
     const encoder = new TextEncoder();
     const telemetry = beginTelemetryTurn(crypto.randomUUID(), {
       mode: 'agent', origin: 'interactive', provider: 'gemini', model: safeModel, permissions: normalizeChatPermissionMode(permissionMode),
+    }, {
+      ...telemetryClientContext(req), hasInput: normalized.messages.length > 0, hasModel: Boolean(safeModel),
+      hasCwd: Boolean(pinnedContext?.workspacePath), workspaceStrategy: runLocation,
     });
     const stream = new ReadableStream({
       start: controller => runWithToolApprovals({

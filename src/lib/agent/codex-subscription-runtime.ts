@@ -1,7 +1,9 @@
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { OpenAI } from './model-clients';
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
+import { isConcreteModelId } from './model-selector-store';
 
 type Bridge = { address: string; key: string } | null;
 const runtime = globalThis as typeof globalThis & { __eterxCodexBridge?: Bridge };
@@ -16,6 +18,39 @@ export function initializeCodexBridge(): Bridge {
     runtime.__eterxCodexBridge = address && key ? { address, key } : null;
   }
   return runtime.__eterxCodexBridge;
+}
+
+export function isTrustedDesktopSubscriptionRequest(request: Request): boolean {
+  const key = initializeCodexBridge()?.key;
+  const supplied = request.headers.get('x-eterx-subscription-control');
+  if (!key || !supplied) return false;
+  const expected = Buffer.from(key);
+  const received = Buffer.from(supplied);
+  return received.length === expected.length && timingSafeEqual(received, expected);
+}
+
+export async function readCodexSubscriptionModelIds(signal?: AbortSignal): Promise<string[]> {
+  const bridge = initializeCodexBridge();
+  if (!bridge || signal?.aborted) return [];
+  const deadline = AbortSignal.timeout(2500);
+  return new Promise<string[]>(resolve => {
+    const request = http.get({ socketPath: bridge.address, path: '/v1/models',
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+      headers: { 'x-eterx-codex-bridge': bridge.key },
+    }, response => {
+      let data = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { if (data.length < 100_000) data += chunk; });
+      response.on('error', () => resolve([]));
+      response.on('end', () => {
+        try {
+          const models = response.statusCode === 200 ? JSON.parse(data) : null;
+          resolve(Array.isArray(models) ? models.filter(id => typeof id === 'string' && isConcreteModelId(id)) : []);
+        } catch { resolve([]); }
+      });
+    });
+    request.on('error', () => resolve([]));
+  });
 }
 
 function bridgeFetch(bridge: NonNullable<Bridge>): typeof fetch {

@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { getEterxDataDir } from '../../../lib/agent/storage-paths';
-import { rejectCrossOrigin } from '../agent/_shared';
+import { attachAgentApiSessionCookie, getOrCreateAgentApiSession, rejectCrossOrigin } from '../agent/_shared';
+import { telemetryClientContext } from '../../../lib/telemetry/client-context';
+import { observeTelemetryClient, refreshTelemetryPreference } from '../../../lib/telemetry/runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -90,8 +92,14 @@ const writePreferences = async (values: Record<string, string>) => {
   }
 };
 
-export async function GET() {
-  return NextResponse.json({ ok: true, values: readPreferences() });
+export async function GET(req: NextRequest) {
+  const response = NextResponse.json({ ok: true, values: readPreferences() });
+  if (rejectCrossOrigin(req)) return response;
+  const context = telemetryClientContext(req);
+  if (!context.clientType) return response;
+  const session = getOrCreateAgentApiSession(req);
+  observeTelemetryClient(context, session.sessionId);
+  return attachAgentApiSessionCookie(response, session);
 }
 
 export async function PUT(req: NextRequest) {
@@ -128,6 +136,14 @@ export async function PUT(req: NextRequest) {
       }
       await writePreferences(current);
     });
+    if (Object.hasOwn(submittedValues, 'eterx_settings')
+        || (Array.isArray(body?.remove) && body.remove.includes('eterx_settings'))) {
+      refreshTelemetryPreference();
+      const context = telemetryClientContext(req);
+      const session = getOrCreateAgentApiSession(req);
+      if (context.clientType) observeTelemetryClient(context, session.sessionId);
+      return attachAgentApiSessionCookie(NextResponse.json({ ok: true }), session);
+    }
     return NextResponse.json({ ok: true });
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || 'Could not save preferences.' }, { status: 500 });

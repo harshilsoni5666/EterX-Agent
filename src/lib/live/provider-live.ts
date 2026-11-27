@@ -1,4 +1,4 @@
-import { recordLiveUsage } from './live-usage';
+import { createLiveSessionTelemetry, recordLiveUsage } from './live-usage';
 import { requestJson } from '../request-json';
 import { captureMicrophone } from '../microphone';
 import {
@@ -178,6 +178,7 @@ export class ProviderLiveSession implements LiveSession {
   private readonly provider: LiveProviderOption;
   private readonly callbacks: LiveSessionCallbacks;
   private readonly options: LiveSessionOptions;
+  private readonly sessionTelemetry: ReturnType<typeof createLiveSessionTelemetry>;
   private ws: WebSocket | null = null;
   private peerConnection: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
@@ -269,6 +270,7 @@ export class ProviderLiveSession implements LiveSession {
   ) {
     this.chatId = chatId;
     this.provider = provider;
+    this.sessionTelemetry = createLiveSessionTelemetry(provider.provider);
     this.callbacks = callbacks;
     this.options = options;
     this.micMuted = options.audioInputEnabled === false;
@@ -279,6 +281,7 @@ export class ProviderLiveSession implements LiveSession {
   private setState(state: LiveSessionState): void {
     if (this.state === state) return;
     this.state = state;
+    if (state === 'idle' || state === 'error') this.sessionTelemetry.stopped(state === 'error' ? 'failed' : 'closed');
     this.callbacks.onStateChange(state);
     if (state === 'idle' || state === 'error') cancelAnimationFrame(this.modelVolumeLoopId);
   }
@@ -341,6 +344,7 @@ export class ProviderLiveSession implements LiveSession {
 
   private maybeResolveReady(attempt: number): void {
     if (!this.isCurrentAttempt(attempt) || !this.audioReady || !this.captureReady) return;
+    this.sessionTelemetry.started(this.usageModel);
     this.setState('listening');
     this.resolveConnectionReady(attempt);
     this.flushPendingTextTurns();
@@ -1628,8 +1632,14 @@ export class ProviderLiveSession implements LiveSession {
       }
     }
     const responseId = String(message.response_id || message.response?.id || '');
-    if (type === 'response.done' && (message.response?.usage || message.response?.status === 'completed')) {
-      recordLiveUsage(this.provider.provider, message.response?.model || this.usageModel, message.response?.usage, responseId || eventId || undefined);
+    if (type === 'response.done') {
+      const status = message.response?.status;
+      if (message.response?.usage || ['completed', 'failed', 'cancelled', 'incomplete'].includes(status)) {
+        const outcome = status === 'failed' ? 'failed' : status === 'cancelled' ? 'cancelled'
+          : status === 'incomplete' ? 'interrupted' : 'succeeded';
+        recordLiveUsage(this.provider.provider, message.response?.model || this.usageModel, message.response?.usage,
+          responseId || eventId || undefined, outcome);
+      }
     }
     if (type === 'conversation.item.input_audio_transcription.completed' && message.usage) {
       const model = this.provider.transport === 'openai-webrtc' ? 'gpt-4o-mini-transcribe' : 'grok-transcribe';

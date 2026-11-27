@@ -4,17 +4,23 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { parseEnv } from 'node:util';
 import { createPackageWithOptions } from '@electron/asar';
-import { telemetryEndpoint } from '../src/lib/telemetry/protocol.ts';
+import { DEFAULT_POSTHOG_HOST, isPostHogProjectToken, postHogEndpoint } from '../src/lib/telemetry/protocol.ts';
 
 const preparationStarted = performance.now();
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const standaloneRoot = path.join(repositoryRoot, '.next', 'standalone');
 const runtimeRoot = path.join(repositoryRoot, 'desktop-runtime');
-const telemetryUrl = String(process.env.ETERX_TELEMETRY_URL || '').trim();
-if (telemetryUrl && !telemetryEndpoint(telemetryUrl, false)) {
-  throw new Error('The packaged ETERX_TELEMETRY_URL must be an HTTPS URL ending in /v1/events.');
+let telemetryConfig = {};
+try { telemetryConfig = parseEnv(fs.readFileSync(path.join(repositoryRoot, 'telemetry', '.env.local'), 'utf8')); }
+catch (error) { if (error.code !== 'ENOENT') throw error; }
+const postHogToken = (process.env.ETERX_POSTHOG_PROJECT_TOKEN ?? telemetryConfig.ETERX_POSTHOG_PROJECT_TOKEN ?? '').trim();
+const postHogHost = (process.env.ETERX_POSTHOG_HOST ?? telemetryConfig.ETERX_POSTHOG_HOST ?? '').trim() || DEFAULT_POSTHOG_HOST;
+if (postHogToken && (!isPostHogProjectToken(postHogToken) || !postHogEndpoint(postHogHost))) {
+  throw new Error('Configure a PostHog project token and an HTTPS origin for the packaged runtime.');
 }
+const postHogRelease = postHogToken ? { token: postHogToken, host: postHogHost } : null;
 const npmExecPath = String(process.env.npm_execpath || '').trim();
 const npmCommand = npmExecPath ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
 
@@ -137,7 +143,7 @@ fs.writeFileSync(
     + `const fs = require('fs');\n`
     + `const path = require('path');\n`
     + `const Module = require('module');\n`
-    + `process.env.ETERX_TELEMETRY_URL ??= ${JSON.stringify(telemetryUrl)};\n`
+    + `globalThis.__eterxPostHogRelease = ${JSON.stringify(postHogRelease)};\n`
     + `// Next joins cwd with a relative application path. Across Windows drives,\n`
     + `// path.relative returns an absolute path, which path.join corrupts. Use\n`
     + `// the physical archive parent on that drive; data stays in ETERX_DATA_DIR.\n`
@@ -435,7 +441,7 @@ const archiveStarted = performance.now();
 await createPackageWithOptions(stagingRoot, dependencyArchive, {
   dot: true,
   pattern: '/node_modules/**/*',
-  unpack: '**/*.{node,dll,exe,so,dylib}',
+  unpack: '{**/*.{node,dll,exe,so,dylib},**/@cursor/sdk-*/bin/*,**/@cursor/sdk-*/vendor/**/*}',
   // Match exclusions against the staging directory, which is outside the
   // checkout. The moved tree retains npm's install index and shims.
   globOptions: {

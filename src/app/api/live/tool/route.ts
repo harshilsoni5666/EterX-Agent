@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import '../../../../lib/agent/tools';
 import { globalToolRegistry } from '../../../../lib/agent/tools/registry';
 import { finishDesktopSession } from '../../../../lib/agent/computer/desktop-session';
+import { telemetryClientContext } from '../../../../lib/telemetry/client-context';
+import { withTelemetryScope } from '../../../../lib/telemetry/runtime';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -66,12 +68,12 @@ export async function POST(req: NextRequest) {
     }
     const computerUseEnabled = body.computerUseEnabled === true;
     const browserAccessEnabled = body.browserAccessEnabled === true;
-    const result = await tool.execute(parsed.data, {
+    const result = await withTelemetryScope({ origin: 'interactive', feature: 'live', role: 'main' }, () => tool.execute(parsed.data, {
       chatId,
       projectId: chatId,
       runId,
       abortSignal: req.signal,
-      agentSessionId: session.sessionId,
+      agentSessionId: session!.sessionId,
       allowBrowserControl: browserAccessEnabled,
       allowHostControl: computerUseEnabled,
       computerUseEnabled,
@@ -82,7 +84,7 @@ export async function POST(req: NextRequest) {
         ...(computerUseEnabled ? ['host.control', 'host.screenshot'] : []),
         'network.public',
       ],
-    });
+    }), { ...telemetryClientContext(req), interactionMode: 'live' });
 
     return attachAgentApiSessionCookie(NextResponse.json({
       success: result?.success !== false,

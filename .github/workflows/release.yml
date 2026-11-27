@@ -180,7 +180,8 @@ jobs:
 
       - name: Prepare self-contained desktop runtime
         env:
-          ETERX_TELEMETRY_URL: ${{ vars.ETERX_TELEMETRY_URL }}
+          ETERX_POSTHOG_PROJECT_TOKEN: ${{ secrets.ETERX_POSTHOG_PROJECT_TOKEN }}
+          ETERX_POSTHOG_HOST: ${{ vars.ETERX_POSTHOG_HOST }}
         run: npm run desktop:prepare-runtime
 
       - name: Package Windows

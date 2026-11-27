@@ -72,7 +72,7 @@ const TOOL_TTL: Record<string, number> = {
 
 // Tools that should NEVER be cached (have side effects or need fresh results)
 const UNCACHEABLE_TOOLS = new Set([
-  'workspace_edit_file', 'workspace_run_command', 'git_operations',
+  'workspace_edit_file', 'workspace_run_command', 'workspace_workbench', 'git_operations',
   'task_decomposer', 'spawn_sub_agent',
   'scheduled_tasks',
   'screenshot_capture',

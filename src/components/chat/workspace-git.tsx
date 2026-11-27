@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileDiff, FolderOpen, GitBranch, GitCommitHorizontal, GitMerge, History, Loader2, Minus, Plus, RefreshCw, RotateCcw, Search, TerminalSquare, Trash2, UserRound, X } from 'lucide-react';
-import { GIT_CHANGED_EVENT, mutateGit, readGit, useGitPreferences } from '../../lib/git/client';
+import { CHAT_GIT_COMMIT_EVENT, GIT_CHANGED_EVENT, mutateGit, readGit, useGitPreferences } from '../../lib/git/client';
 import type { GitBranch as Branch, GitCommit, GitDiff, GitFile, GitMutation, GitStash, GitStatus, GitView } from '../../lib/git/types';
 import { addWorkspaceTab, openWorkspaceReview, updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { createTerminal, showTerminal } from '../../lib/chat-terminal-store';
@@ -226,6 +226,9 @@ export function WorkspaceGit({ owner, tab, isActive, workspacePath, roots, roots
     pending.current = true; setBusy(label); setFeedback(null); setConfirmation(null);
     try {
       const result = await mutateGit(input);
+      if (result.commit) {
+        window.dispatchEvent(new CustomEvent(CHAT_GIT_COMMIT_EVENT, { detail: { chatId: owner, commit: result.commit } }));
+      }
       if (!mounted.current || rootRef.current !== requestedRoot) return;
       setFeedback({ error: false, text: result.message });
       if (input.action === 'commit') setDrafts(previous => previous[draftKey] === input.message ? { ...previous, [draftKey]: '' } : previous);

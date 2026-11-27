@@ -1,0 +1,423 @@
+.appearance {
+  --appearance-active: #a6b9db;
+  --appearance-active-border: color-mix(in srgb, var(--appearance-active) 72%, transparent);
+  --appearance-active-fill: color-mix(in srgb, var(--appearance-active) 11%, transparent);
+  --appearance-muted: color-mix(in srgb, var(--foreground) 73%, var(--background));
+  --appearance-border: color-mix(in srgb, var(--foreground) 12%, transparent);
+  --appearance-hover-border: color-mix(in srgb, var(--foreground) 25%, transparent);
+  --appearance-fill: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+  --appearance-hover-fill: color-mix(in srgb, var(--foreground) 7%, transparent);
+  --appearance-control-width: 232px;
+  display: grid;
+  gap: 24px;
+  container: appearance / inline-size;
+}
+
+:global(:root[data-theme='light']) .appearance {
+  --appearance-active: #45618b;
+}
+
+.appearance :global(.eterx-settings-stack) {
+  border-radius: 15px;
+}
+
+.workspaceSection {
+  padding: 16px 20px;
+}
+
+.workspaceSection + .workspaceSection {
+  border-top: 1px solid var(--border);
+}
+
+.folderRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--appearance-control-width));
+  align-items: center;
+  gap: 14px;
+}
+
+.iconHeader,
+.iconToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.settingText {
+  min-width: 0;
+}
+
+.iconHeader .settingText {
+  flex: 1 1 115px;
+}
+
+.title {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settingText p,
+.emptyIcon {
+  color: var(--appearance-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settingText p {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+:is(.folderButton, .action, .sourceOption, .iconOption, .paletteOption) {
+  border: 1px solid var(--appearance-border);
+  border-radius: 10px;
+  background: var(--appearance-fill);
+  color: var(--foreground);
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.folderButton,
+.sourceOption {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
+  text-align: start;
+}
+
+.folderButton {
+  width: 100%;
+  min-height: 45px;
+}
+
+.controlIcon {
+  display: grid;
+  flex: none;
+  width: 28px;
+  aspect-ratio: 1;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--appearance-active-fill);
+  color: var(--appearance-active);
+}
+
+.folderChevron {
+  color: var(--appearance-muted);
+}
+
+.folderButton[aria-expanded='true'] .folderChevron {
+  transform: rotate(180deg);
+}
+
+.folderLabel :is(strong, small) {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderLabel strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.folderLabel small {
+  margin-top: 1px;
+  color: var(--appearance-muted);
+  font-size: 11px;
+}
+
+:global(:root) .folderMenu {
+  margin-top: 10px;
+  border: 1px solid var(--appearance-border);
+  border-radius: 10px;
+  background: var(--composer-menu-surface, var(--background));
+}
+
+:global(:root .eterx-composer-shell).folderMenu > :global(.eterx-status-popout-project) {
+  display: flex;
+  flex-direction: column;
+  width: 100% !important;
+  min-width: 0;
+  max-width: none;
+  padding: 6px;
+}
+
+:global(:root .eterx-composer-shell).folderMenu > :global(.eterx-status-popout-project > .eterx-status-menu-section) {
+  max-height: 154px !important;
+}
+
+.error {
+  margin-top: 8px;
+  color: var(--diff-default-removed);
+  font-size: 12px;
+}
+
+.action {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.iconSources,
+.iconGrid,
+.paletteGrid {
+  display: grid;
+  gap: 8px;
+}
+
+.iconSources {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.sourceOption {
+  min-height: 42px;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.3;
+}
+
+.generatedPanel {
+  margin-top: 12px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--background) 28%, transparent);
+}
+
+.iconToolbar {
+  justify-content: space-between;
+  padding-inline-start: 2px;
+  margin-bottom: 6px;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.iconToolbar .action {
+  border-color: transparent;
+  background: transparent;
+  color: var(--appearance-muted);
+}
+
+.iconGrid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.iconOption {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 66px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px 3px;
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.selectionIcon,
+.tileCheck {
+  flex: none;
+  color: var(--appearance-active);
+}
+
+.tileCheck {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-end: 4px;
+}
+
+.contrastControl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: var(--appearance-control-width);
+  max-width: 100%;
+}
+
+.contrastValue {
+  min-width: 49px;
+  padding: 4px 6px;
+  border: 1px solid var(--appearance-border);
+  border-radius: 7px;
+  background: var(--appearance-fill);
+  color: var(--foreground);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.contrastControl input {
+  width: 100%;
+  height: 22px;
+  appearance: none;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.contrastControl input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--appearance-active) var(--contrast-fill), var(--appearance-hover-border) var(--contrast-fill));
+}
+
+.contrastControl input::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  appearance: none;
+  border: 2px solid var(--appearance-active);
+  border-radius: 50%;
+  background: var(--background);
+}
+
+.contrastControl input::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--appearance-hover-border);
+}
+
+.contrastControl input::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--appearance-active);
+}
+
+.contrastControl input::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--appearance-active);
+  border-radius: 50%;
+  background: var(--background);
+}
+
+.paletteGrid {
+  width: 100%;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.paletteOption {
+  --sample-added: var(--sample-dark-added);
+  --sample-added-bg: var(--sample-dark-added-bg);
+  --sample-removed: var(--sample-dark-removed);
+  --sample-removed-bg: var(--sample-dark-removed-bg);
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  text-align: start;
+}
+
+:global(:root[data-theme='light']) .paletteOption {
+  --sample-added: var(--sample-light-added);
+  --sample-added-bg: var(--sample-light-added-bg);
+  --sample-removed: var(--sample-light-removed);
+  --sample-removed-bg: var(--sample-light-removed-bg);
+}
+
+.paletteSample {
+  display: grid;
+  gap: 2px;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.paletteSample > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 19px;
+  padding-inline: 7px;
+  border-inline-start: 2px solid currentColor;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.paletteSample > span::after {
+  width: 48%;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.48;
+  content: '';
+}
+
+.paletteSample > [data-change='added'] { background: var(--sample-added-bg); color: var(--sample-added); }
+.paletteSample > [data-change='removed'] { background: var(--sample-removed-bg); color: var(--sample-removed); }
+.paletteSample > [data-change='removed']::after { width: 34%; }
+
+.paletteLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-height: 22px;
+  padding-inline: 3px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+:is(.folderButton, .action, .sourceOption, .iconOption, .paletteOption):hover:where(:not(:disabled)) {
+  border-color: var(--appearance-hover-border);
+  background: var(--appearance-hover-fill);
+}
+
+:is(.folderButton[aria-expanded='true'], .sourceOption[aria-pressed='true'], .iconOption[aria-pressed='true'], .paletteOption[aria-pressed='true']) {
+  border-color: var(--appearance-active-border);
+  background: var(--appearance-active-fill);
+}
+
+:is(.folderButton, .action, .sourceOption, .iconOption, .paletteOption, .contrastControl input):focus-visible {
+  outline: 2px solid var(--appearance-active);
+  outline-offset: 2px;
+}
+
+:is(.action, .sourceOption, .iconOption):disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@container appearance (max-width: 498px) {
+  .paletteGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container appearance (max-width: 425px) {
+  .folderRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+}
+
+@container appearance (max-width: 400px) {
+  .iconGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@container appearance (max-width: 315px) {
+  .iconSources { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.folderButton, .action, .sourceOption, .iconOption, .paletteOption) { transition: none; }
+}

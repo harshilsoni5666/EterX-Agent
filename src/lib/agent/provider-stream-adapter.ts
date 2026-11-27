@@ -1,5 +1,6 @@
 import type OpenAI from 'openai';
 import { meterModelStream } from '../usage/ledger';
+import { providerAvailabilitySignal } from '../app-presentation/posthog';
 import { providerSupportsStreamUsage } from './provider-capabilities';
 import type { MainAgentProvider } from './model-routing';
 import { applyOpenAIResponsesCachePolicy, mergeProviderUsageSnapshots, withOpenAICacheFallback } from './provider-prompt-cache';
@@ -371,18 +372,27 @@ async function* streamCompatibleChat(
   }
 }
 
-export function createProviderChatStream(
+export async function* createProviderChatStream(
+  client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal, capabilities: string[] = [],
+  conversationScope?: string,
+): AsyncGenerator<any> {
+  const available = await providerAvailabilitySignal(provider, signal);
+  yield* createAvailableProviderChatStream(client, provider, params, available, capabilities, conversationScope);
+}
+
+function createAvailableProviderChatStream(
   client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal, capabilities: string[] = [],
   conversationScope?: string,
 ): AsyncIterable<any> {
   const model = String(params.model || '');
-  const meter = (stream: AsyncIterable<any>) => meterModelStream(provider, params.model, stream, 'compatible', undefined, { signal });
+  const meter = (stream: AsyncIterable<any>, serviceTier = params.service_tier) =>
+    meterModelStream(provider, model, stream, 'compatible', undefined, { signal, serviceTier });
   if (provider === 'codex') {
     const fastAccount = requestedCodexFastAccount(model, capabilities);
     const request = { ...params };
     if (fastAccount) request.service_tier = FAST_TIER;
     else delete request.service_tier;
-    return meter(streamCodexResponses(client, request, signal, fastAccount));
+    return meter(streamCodexResponses(client, request, signal, fastAccount), request.service_tier);
   }
   if (provider === 'openai' && isOpenAiFastModel(model) && isNativeOpenAiEndpoint(client.baseURL)
     && capabilities.includes(openAiFastRequest(model))) {

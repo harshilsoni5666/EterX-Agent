@@ -1,0 +1,82 @@
+.avatar {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: min(12px, 30%);
+  background: var(--muted);
+  user-select: none;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.generated {
+  --icon-lit: hsl(var(--workspace-icon-hue) 78% 82%);
+  --icon-mid: hsl(var(--workspace-icon-hue) 62% 61%);
+  --icon-angle: -24deg;
+  border-color: hsl(var(--workspace-icon-hue) 48% 52% / 45%);
+  background: linear-gradient(145deg, hsl(var(--workspace-icon-hue) 48% 35%), hsl(var(--workspace-icon-hue) 55% 19%));
+  color: #fff;
+}
+
+.generated[data-variant='1'] { --icon-angle: 24deg; }
+
+.pattern {
+  position: absolute;
+  inset: 20%;
+  transform: rotate(var(--icon-angle));
+}
+
+.generated[data-design='monogram'] .pattern {
+  inset: -25%;
+  background: linear-gradient(90deg, transparent 51%, hsl(var(--workspace-icon-hue) 80% 75% / 25%) 51% 73%, transparent 73%);
+}
+
+.initials {
+  z-index: 1;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: -0.055em;
+}
+
+.generated[data-design='orbit'] .pattern {
+  inset: 29% 17%;
+  border: max(1px, 0.11em) solid var(--icon-lit);
+  border-radius: 50%;
+}
+
+.generated[data-design='orbit'] .pattern::after {
+  position: absolute;
+  inset: 33% 38%;
+  border-radius: 50%;
+  background: var(--icon-lit);
+  content: '';
+}
+
+.generated[data-design='stack'] .pattern {
+  inset: 23%;
+  background: linear-gradient(180deg, var(--icon-lit) 0 27%, transparent 27% 37%, var(--icon-mid) 37% 64%, transparent 64% 74%, var(--icon-lit) 74%);
+  clip-path: polygon(30% 0, 100% 0, 100% 27%, 80% 27%, 80% 64%, 62% 64%, 62% 100%, 0 100%, 0 74%, 18% 74%, 18% 37%, 30% 37%);
+}
+
+.generated[data-design='mosaic'] .pattern {
+  inset: 24%;
+  border-radius: 0.24em;
+  background:
+    linear-gradient(var(--icon-lit), var(--icon-lit)) top left / 46% 46% no-repeat,
+    linear-gradient(var(--icon-mid), var(--icon-mid)) top right / 46% 46% no-repeat,
+    linear-gradient(var(--icon-mid), var(--icon-mid)) bottom left / 46% 46% no-repeat,
+    linear-gradient(var(--icon-lit), var(--icon-lit)) bottom right / 46% 46% no-repeat;
+}
+
+.generated[data-design='facet'] .pattern {
+  inset: 18%;
+  background: conic-gradient(from 0deg, var(--icon-lit) 0 25%, var(--icon-mid) 25% 50%, var(--icon-lit) 50% 67%, var(--icon-mid) 67% 83%, var(--icon-lit) 83%);
+  clip-path: polygon(50% 0, 100% 41%, 61% 100%, 22% 85%, 0 38%);
+}

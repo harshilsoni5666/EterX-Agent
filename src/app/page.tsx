@@ -1,6 +1,7 @@
 "use client";
 
-import { codexCatalogPending, codexModelThinking, codexModelWireCapabilities, withCodexSubscriptionModels } from '../lib/chatgpt-subscription-client';
+import { subscriptionCatalogPending, subscriptionModelThinking, subscriptionModelWireCapabilities, withSubscriptionModels } from '../lib/subscription-models-client';
+import { readAgentModelPreference } from '../lib/agent-model-preferences';
 import { readModelFastRequest } from '../lib/model-fast-preferences';
 import { withFastRequestTags } from '../lib/agent/model-fast-mode';
 
@@ -13,6 +14,7 @@ import { mergeChatWorkspaceSelection } from '../lib/imports/workspace';
 import { createDictationCapture, DICTATION_FINISH_TIMEOUT_MS, type DictationPhase } from '../lib/microphone';
 import { useDesktopUpdates } from '../lib/desktop-updates';
 import { UpdateNotification } from '../components/updates/update-notification';
+import { SubscriptionLimitAlert } from '../components/layout/subscription-limit-alerts';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
 import Loading from './loading';
 import { reloadApp } from '../lib/reload-app';
@@ -30,17 +32,20 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
+import { ChatHistoryNotice, type ChatHistoryStatus } from '../components/chat/chat-history-notice';
 import { NewChatRipple } from '../components/chat/new-chat-ripple';
 import { NewChatAtmosphere } from '../components/chat/new-chat-atmosphere';
 import { useChatMedia } from '../components/chat/chat-media';
 import { ChatTerminalDock } from '../components/chat/chat-terminal-dock';
 import { WorkPanel } from '../components/chat/work-panel';
+import { workbenchTraceResult } from '../lib/workbench/activity-trace';
 import { projectFolderName } from '../components/layout/project-folder-picker';
 import type { RunLocation } from '../lib/managed-workspaces';
 import { SideWorkspace } from '../components/chat/side-workspace';
+import { WorkspaceWorkbenchSync } from '../components/chat/workspace-workbench-sync';
 import { MessagesCircle } from '../components/chat/workspace-icons';
 import type { SideChatActions, SideChatSettings } from '../components/chat/workspace-side-chat';
-import { addWorkspaceTab, disposeWorkspace, resolveWorkspaceOwner, toggleWorkspace, transferWorkspace, useSideWorkspaceControls, workspaceTabOwner } from '../lib/side-workspace-store';
+import { addWorkspaceTab, disposeWorkspace, openWorkbenchView, resolveWorkspaceOwner, toggleWorkspace, transferWorkspace, useSideWorkspaceControls, workspaceTabOwner } from '../lib/side-workspace-store';
 import type { BrowserCapture } from '../components/chat/workspace-browser';
 import { createTerminal, disposeChatTerminals, toggleTerminalPlacement, transferChatTerminals, useChatTerminalControls } from '../lib/chat-terminal-store';
 import { FloatingLiveWidget } from '../components/chat/FloatingLiveWidget';
@@ -50,7 +55,7 @@ import {
 } from '../components/chat/LiveMissionStrip';
 // @ts-ignore — react-markdown's runtime types vary between desktop bundles.
 import ReactMarkdown from 'react-markdown';
-import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from '../components/chat/markdown-renderer';
+import { markdownComponents, normalizeMarkdownForRendering, rehypePlugins, replyRemarkPlugins } from '../components/chat/markdown-renderer';
 import { LocalFileLinkChip, decodeLocalFileHref, localAwareUrlTransform } from '../components/chat/local-file-link';
 import { Maximize2, Minimize2, AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic, Power, LifeBuoy, Bug, Mail, Paperclip, Camera } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
@@ -84,18 +89,18 @@ import {
   CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY,
   CHAT_MODEL_SELECTION_STORAGE_KEY,
   MODEL_API_KEY_PRESENCE_STORAGE_KEY,
-  MODEL_CATALOG_STORAGE_KEY,
   MODEL_CONTEXT_WINDOWS_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
-  MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
   MODEL_WIRE_CAPABILITIES_STORAGE_KEY,
   modelEntryKey,
   isModelProvider,
-  normalizeModelSelectorEntries,
+  isAccountModelProvider,
+  type SubscriptionProvider,
   parseModelEntryKey,
   type ModelSelectorEntry,
 } from '../lib/agent/model-selector-store';
+import { readAvailableModelEntries } from '../lib/model-catalog-client';
 import {
   createCustomToolActionLog,
   createCustomToolResultLogs,
@@ -137,7 +142,8 @@ import {
 import { mergeStreamingText, mergeVisibleNarrativeText } from '../lib/streaming-lifecycle';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 import { isProjectFile } from '../lib/utils/file-icon-utils';
-import { appStorage, appStorageReady, flushAppStorage, flushDurableState, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../lib/client-storage';
+import { appStorage, appStorageReady, flushAppStorage, flushDurableState, isAppStorageLoaded, registerDurableFlush, subscribeAppStorageKeys, FOLDER_STORAGE_READY_EVENT } from '../lib/client-storage';
+import { DEFAULT_RUN_LOCATION_KEY, DEFAULT_WORKSPACE_PATH_KEY } from '../lib/project-folders';
 import { clearDraftChatPermissionMode, readChatPermissionPreference, rememberChatPermissionMode } from '../lib/chat-permission-preferences';
 import { isLocalModelProvider } from '../lib/agent/provider-runtime';
 import { resolveModelContextWindow as resolveClientContextWindow } from '../lib/agent/model-context-window';
@@ -154,7 +160,7 @@ import {
   type ScheduledTaskRecord,
   type ScheduledTaskRun,
 } from '../lib/scheduled-tasks';
-import { flushScheduledTaskWrites, persistScheduledTasks as persistScheduledTaskRecords } from '../lib/scheduled-task-sync';
+import { flushScheduledTaskWrites, pendingScheduledTaskWriteAt, scheduledTaskFocusWriteInFlight, persistScheduledTasks as persistScheduledTaskRecords } from '../lib/scheduled-task-sync';
 import {
   buildSubAgentPinnedContext,
   DEFAULT_SUB_AGENT_RUNTIME_SETTINGS,
@@ -162,7 +168,9 @@ import {
 } from '../lib/agent/sub-agent-settings';
 import { PollingConcurrencyGate } from '../lib/agent/polling-coordinator';
 import { LiveChatLedger, projectChatMetadata } from '../lib/live-chat-ledger';
-import { mergeChatFocusDisposition, type ChatFocusDisposition, type FocusGroup } from '../lib/chat-focus';
+import { mergeChatFocusDisposition, readFocusTrace, type ChatFocusDisposition, type FocusGroup } from '../lib/chat-focus';
+import { CHAT_GIT_COMMIT_EVENT } from '../lib/git/client';
+import { mergeChatCommitReceipts, type ChatCommitReceipt } from '../lib/git/chat-commits';
 import { yieldToMainThread } from '../lib/yield-to-main';
 import { useEventCallback } from '../lib/use-event-callback';
 import { preloadAppPanel } from '../lib/preload-app-panel';
@@ -558,6 +566,7 @@ interface ChatSession extends ChatTitleMetadata, ChatFocusDisposition {
   title: string;
   updatedAt: number;
   traceLogs: any[];
+  workspaceCommits?: ChatCommitReceipt[];
   /** Exact model owned by the newest admitted query in this chat. */
   modelSelection?: string;
   isFavorite?: boolean;
@@ -876,13 +885,12 @@ const readRuntimeModelApiKeys = (): Record<string, string> => readStringRecord(M
 
 const readRuntimeModelEntries = () => {
   if (typeof window === 'undefined') return [];
-  try {
-    const savedEntries = JSON.parse(appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || '[]');
-    const savedCatalog = JSON.parse(appStorage.getItem(MODEL_CATALOG_STORAGE_KEY) || '{}');
-    return withCodexSubscriptionModels(normalizeModelSelectorEntries(savedEntries, savedCatalog));
-  } catch {
-    return withCodexSubscriptionModels([]);
-  }
+  return withSubscriptionModels(readAvailableModelEntries());
+};
+
+const availableAgentModelPreference = (agentId: string) => {
+  const preferred = readAgentModelPreference(agentId);
+  return preferred && readRuntimeModelEntries().some(entry => modelEntryKey(entry.provider, entry.modelId) === preferred) ? preferred : undefined;
 };
 
 const readRuntimeChatModelSelection = () => {
@@ -897,7 +905,7 @@ const readRuntimeModelThinkingCapability = (selection = readRuntimeChatModelSele
   if (typeof window === 'undefined') return null;
   const entry = parseModelEntryKey(selection);
   if (!entry) return null;
-  if (entry.provider === 'codex') return codexModelThinking(entry.modelId);
+  if (isAccountModelProvider(entry.provider)) return subscriptionModelThinking(entry.provider, entry.modelId);
   try {
     const raw = JSON.parse(appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}');
     return normalizeModelThinkingCapabilities(raw?.[modelEntryKey(entry.provider, entry.modelId)]);
@@ -912,7 +920,7 @@ const readRuntimeModelWireCapabilities = (selection = readRuntimeChatModelSelect
   if (!entry) return [];
   const fast = readModelFastRequest(selection);
   const requestOptions = fast ? [fast] : [];
-  if (entry.provider === 'codex') return withFastRequestTags(codexModelWireCapabilities(entry.modelId), requestOptions).slice(0, 100);
+  if (isAccountModelProvider(entry.provider)) return withFastRequestTags(subscriptionModelWireCapabilities(entry.provider, entry.modelId), requestOptions).slice(0, 100);
   try {
     const raw = JSON.parse(appStorage.getItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY) || '{}');
     const values = raw?.[modelEntryKey(entry.provider, entry.modelId)];
@@ -965,24 +973,12 @@ const normalizePrimaryAgentSelection = (value?: Partial<SelectedAgentState> | nu
   return normalized;
 };
 
-const readRuntimeUsableModelEntries = () => {
-  const entries = readRuntimeModelEntries();
-  const providerKeys = readRuntimeBaseApiKeys();
-  const modelKeys = readRuntimeModelApiKeys();
-  return entries.filter(entry => (
-    entry.provider === 'codex' || isLocalModelProvider(entry.provider)
-    || Boolean(providerKeys[entry.provider])
-    || Boolean(modelKeys[modelEntryKey(entry.provider, entry.modelId)])
-  ));
-};
-
 const resolveRuntimeModelSelection = (selection: unknown): string => {
   const requested = String(selection || '');
-  const usableEntries = readRuntimeUsableModelEntries();
   const parsed = parseModelEntryKey(requested);
-  if (parsed?.provider === 'codex' && codexCatalogPending()) return requested;
-  if (parsed && usableEntries.some(entry =>
-    modelEntryKey(entry.provider, entry.modelId) === requested
+  if (subscriptionCatalogPending(parsed?.provider)) return requested;
+  if (parsed && readRuntimeModelEntries().some(entry =>
+    entry.provider === parsed.provider && entry.modelId === parsed.modelId
   )) return requested;
   return AUTO_MODEL_SELECTION;
 };
@@ -1248,6 +1244,7 @@ const mergeConcurrentChatRevisions = (durable: ChatSession, current: ChatSession
     ...mergeChatWorkspaceSelection(durable, current),
     ...mergeChatTitleMetadata(durable, current),
     ...mergeChatFocusDisposition(durable, current),
+    workspaceCommits: mergeChatCommitReceipts(durable.workspaceCommits, current.workspaceCommits),
     // Metadata follows the newest revision; admitted feed events are a
     // monotonic union and can never be erased by a delayed restore.
     traceLogs: mergedHistory.traceLogs,
@@ -1382,7 +1379,7 @@ function DeepWorkUI() {
     runLocation: 'local' as 'local' | 'sandbox' | 'worktree',
     workspacePath: null as string | null,
   });
-  const [proxyModelEntries, setProxyModelEntries] = useState(() => readRuntimeUsableModelEntries());
+  const [proxyModelEntries, setProxyModelEntries] = useState(readRuntimeModelEntries);
   const proxyChatModelRef = useRef({ owner: '', selection: '' });
   const [contextSettingsRevision, setContextSettingsRevision] = useState(0);
   // Every Proxy control source (local restore, server restore, and user input)
@@ -1778,7 +1775,7 @@ function DeepWorkUI() {
 
   useEffect(() => {
     const refreshProxyModels = () => {
-      setProxyModelEntries(readRuntimeUsableModelEntries());
+      setProxyModelEntries(readRuntimeModelEntries());
       setContextSettingsRevision(revision => revision + 1);
     };
     window.addEventListener('focus', refreshProxyModels);
@@ -1966,11 +1963,10 @@ function DeepWorkUI() {
     setChatsState(previous => projectChatMetadata(previous, snapshot));
   }, []);
   useEffect(() => () => liveChatLedger.cancelPendingPaint(), [liveChatLedger]);
-  const [isChatHistoryLoading, setIsChatHistoryLoading] = useState(true);
-  const [chatHistoryError, setChatHistoryError] = useState<string | null>(null);
-  const [chatHistoryStartupSettled, setChatHistoryStartupSettled] = useState(false);
-  const [hasRestoredChatHistory, setHasRestoredChatHistory] = useState(false);
-  const workspaceStartupReady = startupPreferencesReady && chatHistoryStartupSettled;
+  const [chatHistoryStatus, setChatHistoryStatus] = useState<ChatHistoryStatus>('loading');
+  const [chatDetailStatuses, setChatDetailStatuses] = useState(() => new Map<string, ChatHistoryStatus>());
+  const [requestedWindowChatId, setRequestedWindowChatId] = useState<string | null>(null);
+  const hasRestoredChatHistory = chatHistoryStatus === 'ready';
 
   useEffect(() => {
     let cancelled = false;
@@ -1989,7 +1985,7 @@ function DeepWorkUI() {
   }, []);
 
   useEffect(() => {
-    if (!workspaceStartupReady) return;
+    if (!startupPreferencesReady) return;
     let cancelled = false;
     let frame = 0;
     let timeout = 0;
@@ -2018,8 +2014,8 @@ function DeepWorkUI() {
       cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [workspaceStartupReady]);
-  const startupReady = workspaceStartupReady && startupVisualsReady;
+  }, [startupPreferencesReady]);
+  const startupReady = startupPreferencesReady && startupVisualsReady;
   const sidebarChatsRef = useRef<ChatSession[]>([]);
   const nonBuilderChats = useMemo(() => {
     // Sidebar rows need metadata only. Keep this array referentially stable
@@ -2038,6 +2034,7 @@ function DeepWorkUI() {
         modelSelection: chat.modelSelection,
         focusSettled: chat.focusSettled,
         focusUpdatedAt: chat.focusUpdatedAt,
+        focusWakeAt: chat.focusWakeAt,
         runLocation: chat.runLocation,
         importOrigin: chat.importOrigin,
         importFolder: chat.importFolder,
@@ -2054,6 +2051,7 @@ function DeepWorkUI() {
         && prior.modelSelection === chat.modelSelection
         && prior.focusSettled === chat.focusSettled
         && prior.focusUpdatedAt === chat.focusUpdatedAt
+        && prior.focusWakeAt === chat.focusWakeAt
         && prior.importOrigin === chat.importOrigin
         && prior.importFolder === chat.importFolder
         && prior.runLocation === chat.runLocation;
@@ -2244,8 +2242,8 @@ function DeepWorkUI() {
     composerDefaultsRef.current.workspacePath = path;
     composerDefaultsRef.current.runLocation = runLocation;
     appStorage.setItems({
-      eterx_chat_workspace_path_default: path || '',
-      eterx_chat_run_location_default: runLocation,
+      [DEFAULT_WORKSPACE_PATH_KEY]: path || '',
+      [DEFAULT_RUN_LOCATION_KEY]: runLocation,
     });
   }, []);
   const transferDraftWorkspace = useCallback((draftId: string, chatId: string) => {
@@ -2273,23 +2271,30 @@ function DeepWorkUI() {
     let cancelled = false;
     let restored = false;
     const restore = () => {
-      if (cancelled || restored) return;
-      restored = true;
-      const storedLocation = appStorage.getItem('eterx_chat_run_location_default')
+      if (cancelled) return;
+      const storedLocation = appStorage.getItem(DEFAULT_RUN_LOCATION_KEY)
         ?? composerStatesRef.current.new_chat?.runLocation;
-      composerDefaultsRef.current.runLocation = storedLocation === 'sandbox' || storedLocation === 'worktree'
+      const runLocation = storedLocation === 'sandbox' || storedLocation === 'worktree'
         ? storedLocation : 'local';
-      composerDefaultsRef.current.workspacePath = appStorage.getItem('eterx_chat_workspace_path_default')?.trim() || null;
-      if (!activeChatIdRef.current) showFreshWorkspace();
+      const path = appStorage.getItem(DEFAULT_WORKSPACE_PATH_KEY)?.trim() || null;
+      const defaults = composerDefaultsRef.current;
+      if (restored && defaults.workspacePath === path && defaults.runLocation === runLocation) return;
+      const draftId = terminalDraftIdRef.current;
+      const followsDefault = !workspaceSelectionsRef.current.has(draftId) ||
+        (defaults.runLocation === 'local' && workspaceSelectionsRef.current.get(draftId) === defaults.workspacePath);
+      if (restored && followsDefault) workspaceSelectionsRef.current.delete(draftId);
+      defaults.runLocation = runLocation;
+      defaults.workspacePath = path;
+      if (!activeChatIdRef.current && (!restored || followsDefault)) showFreshWorkspace();
+      restored = true;
     };
-    const onStorageReady = (event: Event) => {
-      if ((event as CustomEvent).detail?.loaded) void appStorageReady.then(restore);
-    };
-    window.addEventListener(FOLDER_STORAGE_READY_EVENT, onStorageReady);
+    const unsubscribe = subscribeAppStorageKeys([DEFAULT_WORKSPACE_PATH_KEY, DEFAULT_RUN_LOCATION_KEY], () => {
+      if (isAppStorageLoaded()) restore();
+    });
     void appStorageReady.then(loaded => { if (loaded) restore(); });
     return () => {
       cancelled = true;
-      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onStorageReady);
+      unsubscribe();
     };
   }, [showFreshWorkspace]);
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
@@ -2521,6 +2526,8 @@ function DeepWorkUI() {
     if (view !== 'chat') {
       setWorkPanel(null);
       setHeaderMenuOpen(false);
+      setGithubDropdownOpen(false);
+      setHoveredSubmenu(null);
       setHeaderSearchOpen(false);
       setHeaderSearchQuery("");
     }
@@ -2542,9 +2549,11 @@ function DeepWorkUI() {
     });
     broadcastEterxSettingsUpdate(settings);
   }, []);
-  const openSettingsWindow = useCallback((tab?: any) => {
+  const [settingsSubscriptionProvider, setSettingsSubscriptionProvider] = useState<SubscriptionProvider>('codex');
+  const openSettingsWindow = useCallback((tab?: any, subscriptionProvider: SubscriptionProvider = 'codex') => {
     setIsUsageOpen(false);
     preloadAppPanel('settings');
+    setSettingsSubscriptionProvider(subscriptionProvider);
     if (tab && typeof tab === 'string') {
       setSettingsInitialTab(tab);
       if (tab === 'updates') {
@@ -2558,6 +2567,11 @@ function DeepWorkUI() {
   }, [setSettingsInitialTab, setIsSettingsOpen, markUpdateViewed, updateNoticeKey]);
 
   const closeSettingsWindow = useCallback(() => setIsSettingsOpen(false), []);
+  const openWorkbenchDevices = useCallback(() => {
+    if (!activeChatId) return;
+    closeSettingsWindow();
+    openWorkbenchView(terminalChatId, activeChatId, 'devices');
+  }, [activeChatId, closeSettingsWindow, terminalChatId]);
   const openChatSearch = useCallback(() => setCmdPaletteOpen(true), []);
   const closeChatSearch = useCallback(() => setCmdPaletteOpen(false), []);
 
@@ -2867,9 +2881,11 @@ function DeepWorkUI() {
   const chatSnapshotReadyRef = useRef(false);
   const pendingChatRestoreRevisionRef = useRef(0);
   const requestChatRestoreRef = useRef<((manual?: boolean) => Promise<boolean>) | null>(null);
+  const retryChatHistory = useCallback(() => { void requestChatRestoreRef.current?.(true); }, []);
   const pendingChatDeletionIdsRef = useRef<Set<string>>(new Set());
+  const storedChatIdsRef = useRef<Set<string>>(new Set());
   const hydratedChatIdsRef = useRef<Set<string>>(new Set());
-  const chatDetailRequestsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const chatDetailRequestsRef = useRef(new Map<string, { promise: Promise<void>; controller: AbortController }>());
   const chatsRef = useRef<ChatSession[]>([]);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   // All chat mutations pass through this synchronous ledger. React may defer
@@ -2988,7 +3004,7 @@ function DeepWorkUI() {
   useEffect(() => {
     let checking = false;
     const checkTasks = async () => {
-      if (checking) return;
+      if (checking || scheduledTaskFocusWriteInFlight()) return;
       if (!isAppVisible() && appStorage.getItem('eterx_background_scheduled_tasks') === 'false') return;
       checking = true;
       try {
@@ -2996,12 +3012,14 @@ function DeepWorkUI() {
         const parsed = raw ? JSON.parse(raw) : [];
         let tasks: ScheduledTaskRecord[] = Array.isArray(parsed) ? parsed.map(normalizeScheduledTask) : [];
         try {
-          const pendingLocalWriteAt = Number(appStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
+          const pendingLocalWriteAt = pendingScheduledTaskWriteAt();
           if (pendingLocalWriteAt && Date.now() - pendingLocalWriteAt < 15_000) throw new Error('Local schedule write is still syncing.');
           if (pendingLocalWriteAt) appStorage.removeItem('eterx_scheduled_tasks_sync_pending');
           const response = await fetch('/api/scheduled-tasks', { cache: 'no-store' });
+          if (pendingScheduledTaskWriteAt()) return;
           if (response.ok) {
             const snapshot = await response.json();
+            if (pendingScheduledTaskWriteAt()) return;
             const durable = Array.isArray(snapshot?.tasks) ? snapshot.tasks.map(normalizeScheduledTask) : [];
             if (durable.length > 0 || tasks.length === 0 || Number(snapshot?.savedAt || 0) > 0) {
               tasks = durable;
@@ -3011,6 +3029,7 @@ function DeepWorkUI() {
             }
           }
         } catch { }
+        if (scheduledTaskFocusWriteInFlight()) return;
         const now = Date.now();
         let updated = false;
         const dueTasks: ScheduledTaskRecord[] = [];
@@ -3172,10 +3191,12 @@ function DeepWorkUI() {
     setActiveSubAgentTab(null);
 
     updateComposerState(state => ({ ...state, selectedAgent: next }));
+    const preferred = next.agentId ? availableAgentModelPreference(next.agentId) : undefined;
+    if (preferred) handleModelSelectionChange(preferred);
     try {
       appStorage.setItem(SELECTED_AGENT_STORAGE_KEY, JSON.stringify(next));
     } catch { }
-  }, [updateComposerState]);
+  }, [handleModelSelectionChange, updateComposerState]);
 
   const updateProxyControl = useCallback(async (chatId: string, settings: ProxyControlSettings, onError?: (message: string) => void) => {
     const chatModel = proxyChatModelRef.current.owner === chatId ? proxyChatModelRef.current.selection
@@ -4419,10 +4440,10 @@ function DeepWorkUI() {
       if (isModelVoice) {
         if (!defaultLiveWorkerEntry) throw new Error('Select a model in the chat composer or choose an added model in Live settings.');
         const workerKey = modelEntryKey(defaultLiveWorkerEntry.provider, defaultLiveWorkerEntry.modelId);
-        if (defaultLiveWorkerEntry.provider !== 'codex' && !isLocalModelProvider(defaultLiveWorkerEntry.provider)
+        if (!isAccountModelProvider(defaultLiveWorkerEntry.provider) && !isLocalModelProvider(defaultLiveWorkerEntry.provider)
           && !readRuntimeBaseApiKeys()[defaultLiveWorkerEntry.provider]
           && !readRuntimeModelApiKeys()[workerKey]) {
-          throw new Error('Connect the selected model in Settings → Models before starting Live.');
+          throw new Error('Connect the model’s provider in Settings → API before starting Live.');
         }
         resolvedLiveMediaModel = workerKey;
       }
@@ -6353,15 +6374,12 @@ function DeepWorkUI() {
   useEffect(() => {
     let cancelled = false;
     let restoreInFlight: Promise<boolean> | null = null;
-    let lastRestoreAt = 0;
+    let lastRestoreAt = -Infinity;
+    let lastReadRevision = 0;
+    const refreshInterval = 1500;
     let restoreRetryTimer: number | null = null;
     let restoreRetryAttempt = 0;
     const restoreController = new AbortController();
-    // Release the app's startup screen without pretending that the sidebar's
-    // request has finished. Its spinner follows the real request lifecycle.
-    const startupReleaseTimer = window.setTimeout(() => {
-      if (!cancelled) setChatHistoryStartupSettled(true);
-    }, 10_000);
 
     const clearRetryTimer = () => {
       if (restoreRetryTimer !== null) window.clearTimeout(restoreRetryTimer);
@@ -6372,43 +6390,46 @@ function DeepWorkUI() {
       if (cancelled || restoreRetryTimer !== null) return;
       restoreRetryTimer = window.setTimeout(() => {
         restoreRetryTimer = null;
-        void restoreChats(true);
+        void restoreChats();
       }, delay);
     };
 
-    const restoreChats = (force = false, manual = false): Promise<boolean> => {
+    const restoreChats = (manual = false): Promise<boolean> => {
       if (cancelled) return Promise.resolve(false);
-      // Startup, focus, cross-window updates and Retry all share one request.
-      // A second loader must never publish an older error after a success.
+      if (manual && !chatSnapshotReadyRef.current) setChatHistoryStatus('loading');
       if (restoreInFlight) return restoreInFlight;
-      if (!force && chatSnapshotReadyRef.current) return Promise.resolve(true);
-      const throttleRemaining = 1500 - (Date.now() - lastRestoreAt);
-      if (!manual && force && throttleRemaining > 0) {
-        scheduleRestore(throttleRemaining);
-        return Promise.resolve(chatSnapshotReadyRef.current);
-      }
       clearRetryTimer();
       if (manual) restoreRetryAttempt = 0;
-      lastRestoreAt = Date.now();
-      setChatHistoryError(null);
-      setIsChatHistoryLoading(true);
 
       restoreInFlight = (async () => {
         try {
-          // Load the durable snapshot first. Recovery of historical context is
-          // requested separately for the conversation the user opens.
-          const response = await requestJson('/api/chats', {
+          const endpoint = lastReadRevision > 0 ? `/api/chats?knownRevision=${lastReadRevision}` : '/api/chats';
+          const response = await requestJson(endpoint, {
             cache: 'no-store', signal: restoreController.signal,
           }, 120_000);
           if (cancelled) return false;
+          if (response.status === 204 && lastReadRevision > 0) {
+            restoreRetryAttempt = 0;
+            if (activeChatIdRef.current) void hydrateChatHistory(activeChatIdRef.current);
+            return true;
+          }
           if (!response.ok) throw new Error(`Chat restore HTTP ${response.status}`);
           const snapshot = await response.json();
-          if (!Array.isArray(snapshot?.chats)) throw new Error('Chat restore returned an invalid snapshot');
           if (cancelled) return false;
+          if (!Array.isArray(snapshot?.chats) || !Number.isFinite(snapshot.savedAt) || snapshot.savedAt < 0) {
+            throw new Error('Chat restore returned an invalid snapshot');
+          }
+          const savedAt: number = snapshot.savedAt;
+          // A local write can finish after this read started. Its acknowledgement
+          // owns the newer snapshot, including any chats it deleted.
+          if (savedAt < lastChatSnapshotAtRef.current) {
+            restoreRetryAttempt = 0;
+            return chatSnapshotReadyRef.current;
+          }
 
           const firstRestore = !chatSnapshotReadyRef.current;
           const hasLocalChatsBeforeRestore = chatsRef.current.length > 0;
-          const appDataChats = removeGeneratedEmptyChats(sortChats(snapshot.chats)).filter(
+          const appDataChats = removeGeneratedEmptyChats(snapshot.chats).filter(
             chat => !pendingChatDeletionIdsRef.current.has(chat.id)
           );
           const mergedById = new Map(appDataChats.map(chat => [chat.id, chat]));
@@ -6420,11 +6441,12 @@ function DeepWorkUI() {
               ? mergeConcurrentChatRevisions(durableChat, currentChat)
               : currentChat);
           }
-          const restoredChats = removeGeneratedEmptyChats(sortChats(Array.from(mergedById.values())))
+          const restoredChats = sortChats(Array.from(mergedById.values()))
             .map(chat => enforceChatTraceOwnership({
               ...chat,
               traceLogs: canonicalizeClientTraceLogs(chat.traceLogs || [], chat.id),
             }));
+          storedChatIdsRef.current = new Set(appDataChats.map(chat => chat.id));
           setChats(restoredChats);
           const restoredActive = restoredChats.find(chat => chat.id === activeChatIdRef.current);
           if (restoredActive) {
@@ -6445,11 +6467,10 @@ function DeepWorkUI() {
             }
             persistedChatVersionsRef.current = versions;
           }
-          const savedAt = Number(snapshot.savedAt || 0);
-          lastChatSnapshotAtRef.current = Math.max(lastChatSnapshotAtRef.current, Number.isFinite(savedAt) ? savedAt : 0);
+          lastReadRevision = savedAt;
+          lastChatSnapshotAtRef.current = savedAt;
           chatSnapshotReadyRef.current = true;
-          setHasRestoredChatHistory(true);
-          setChatHistoryError(null);
+          setChatHistoryStatus('ready');
           restoreRetryAttempt = 0;
           // Preserve chats created while the initial durable-write gate was
           // closed. Ordinary refreshes are reads and must not trigger saves.
@@ -6458,24 +6479,24 @@ function DeepWorkUI() {
           return true;
         } catch (error) {
           if (cancelled) return false;
-          setChatHistoryError(chatSnapshotReadyRef.current ? 'Couldn’t refresh chats.' : 'Couldn’t load chats.');
-          if (isRequestTimeout(error) || isRequestUnavailable(error)) {
-            console.warn('[Chats] History is temporarily unavailable; retrying in the background.');
-          } else {
-            console.warn('[Chats] History could not be loaded; retrying.', error);
+          if (!chatSnapshotReadyRef.current) setChatHistoryStatus('unavailable');
+          if (restoreRetryAttempt === 0) {
+            if (isRequestTimeout(error) || isRequestUnavailable(error)) {
+              console.warn('[Chats] Chat history storage is temporarily unavailable.');
+            } else {
+              console.warn('[Chats] Could not read chat history.', error);
+            }
           }
-          const delay = Math.min(30_000, 2_000 * (2 ** Math.min(restoreRetryAttempt, 4)));
-          restoreRetryAttempt += 1;
+          const delay = Math.min(30_000, 2_000 * (2 ** restoreRetryAttempt));
+          restoreRetryAttempt = Math.min(restoreRetryAttempt + 1, 4);
           scheduleRestore(delay);
           return false;
         } finally {
           restoreInFlight = null;
+          lastRestoreAt = performance.now();
           if (!cancelled) {
-            setIsChatHistoryLoading(false);
-            setChatHistoryStartupSettled(true);
-            window.clearTimeout(startupReleaseTimer);
             if (pendingChatRestoreRevisionRef.current > lastChatSnapshotAtRef.current) {
-              scheduleRestore(1600);
+              scheduleRestore(refreshInterval);
             } else {
               pendingChatRestoreRevisionRef.current = 0;
             }
@@ -6485,16 +6506,22 @@ function DeepWorkUI() {
       return restoreInFlight;
     };
 
-    requestChatRestoreRef.current = (manual = false) => restoreChats(true, manual);
-    const retryRestoreOnFocus = () => { void restoreChats(true); };
-    window.addEventListener('focus', retryRestoreOnFocus);
-    window.addEventListener('online', retryRestoreOnFocus);
+    requestChatRestoreRef.current = restoreChats;
+    const refreshWhenVisible = () => {
+      if (isAppVisible() && restoreRetryTimer === null && performance.now() - lastRestoreAt >= refreshInterval) {
+        void restoreChats();
+      }
+    };
+    const refreshOnReconnect = () => { void restoreChats(); };
+    const unsubscribeVisibility = subscribeAppVisibility(refreshWhenVisible);
+    window.addEventListener('focus', refreshWhenVisible);
+    window.addEventListener('online', refreshOnReconnect);
 
     const restoreRevision = (revision: number) => {
       if (!Number.isFinite(revision) || revision <= lastChatSnapshotAtRef.current) return;
       pendingChatRestoreRevisionRef.current = Math.max(pendingChatRestoreRevisionRef.current, revision);
       if (restoreInFlight || pendingDurableSnapshotWrite.current) return;
-      scheduleRestore(Math.max(0, 1500 - (Date.now() - lastRestoreAt)));
+      scheduleRestore(Math.max(0, refreshInterval - (performance.now() - lastRestoreAt)));
     };
     const restoreImportedRevision = (event: Event) => {
       restoreRevision(Number((event as CustomEvent).detail?.savedAt || 0));
@@ -6514,10 +6541,10 @@ function DeepWorkUI() {
     return () => {
       cancelled = true;
       restoreController.abort();
-      window.clearTimeout(startupReleaseTimer);
       clearRetryTimer();
-      window.removeEventListener('focus', retryRestoreOnFocus);
-      window.removeEventListener('online', retryRestoreOnFocus);
+      unsubscribeVisibility();
+      window.removeEventListener('focus', refreshWhenVisible);
+      window.removeEventListener('online', refreshOnReconnect);
       window.removeEventListener(IMPORT_UPDATED_EVENT, restoreImportedRevision);
       chatChannel?.close();
       requestChatRestoreRef.current = null;
@@ -7609,33 +7636,60 @@ function DeepWorkUI() {
     setChatLogsById(chatId, logs => stripAgentConnectionLogs(logs));
   };
 
-  const hydrateChatHistory = (chatId: string) => {
-    if (hydratedChatIdsRef.current.has(chatId)) return;
-    if (chatDetailRequestsRef.current.has(chatId)) return chatDetailRequestsRef.current.get(chatId);
+  useEffect(() => {
+    const requests = chatDetailRequestsRef.current;
+    return () => {
+      requests.forEach(({ controller }) => controller.abort());
+      requests.clear();
+    };
+  }, []);
 
-    const detailRequest = requestJson(`/api/chats?id=${ encodeURIComponent(chatId) }`, { cache: 'no-store' })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat load HTTP ${ response.status }`)));
+  const hydrateChatHistory = useEventCallback((chatId: string): Promise<void> => {
+    const pending = chatDetailRequestsRef.current.get(chatId);
+    if (pending) return pending.promise;
+    const currentChat = chatsRef.current.find(chat => chat.id === chatId);
+    if (!currentChat || hydratedChatIdsRef.current.has(chatId) || pendingChatDeletionIdsRef.current.has(chatId) || (
+      !storedChatIdsRef.current.has(chatId) && !persistedChatVersionsRef.current.has(chatId)
+    )) return Promise.resolve();
 
-    const request = detailRequest
-      .then((payload: any) => {
-        const durableChat = payload?.chat as ChatSession | null;
-        if (!durableChat?.id || durableChat.id !== chatId) return;
-        hydratedChatIdsRef.current.add(chatId);
-
+    const updateStatus = (status: ChatHistoryStatus) => setChatDetailStatuses(previous => {
+      if ((previous.get(chatId) ?? 'ready') === status) return previous;
+      const next = new Map(previous);
+      if (status === 'ready') next.delete(chatId);
+      else next.set(chatId, status);
+      return next;
+    });
+    if (!currentChat.traceLogs.length) updateStatus('loading');
+    const controller = new AbortController();
+    const request = (async () => {
+      try {
+        const response = await requestJson(`/api/chats?id=${ encodeURIComponent(chatId) }`, {
+          cache: 'no-store', signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`Chat load HTTP ${response.status}`);
+        const payload = await response.json();
+        if (controller.signal.aborted) return;
         const currentChat = chatsRef.current.find(chat => chat.id === chatId);
+        if (!currentChat) {
+          updateStatus('ready');
+          return;
+        }
+        const durableChat = payload?.chat as ChatSession | null;
+        if (durableChat?.id !== chatId || !Array.isArray(durableChat.traceLogs)) {
+          throw new Error('Chat detail returned an invalid conversation');
+        }
+
         const visibleRevision = activeChatIdRef.current === chatId
           ? {
-              ...(currentChat || durableChat),
+              ...currentChat,
               traceLogs: traceLogsRef.current,
               updatedAt: Math.max(
-                Number(currentChat?.updatedAt || 0),
+                Number(currentChat.updatedAt || 0),
                 Number(durableChat.updatedAt || 0),
               ),
             }
           : currentChat;
-        const hydratedChat = enforceChatTraceOwnership(visibleRevision
-          ? mergeConcurrentChatRevisions(durableChat, visibleRevision)
-          : durableChat);
+        const hydratedChat = mergeConcurrentChatRevisions(durableChat, visibleRevision);
         if (workspaceSelectionsRef.current.has(chatId)) hydratedChat.workspacePath = workspaceSelectionsRef.current.get(chatId)!;
         setChats(currentChats => currentChats.map(currentChat => {
           if (currentChat.id !== chatId) return currentChat;
@@ -7651,21 +7705,25 @@ function DeepWorkUI() {
           setTraceLogs(canonicalizeClientTraceLogs(hydratedChat.traceLogs || [], chatId));
           setActiveWorkspacePath(hydratedChat.workspacePath || null);
         }
+        hydratedChatIdsRef.current.add(chatId);
+        updateStatus('ready');
         // Persist exact recovered turns without blocking startup or other
         // conversations on their context stores.
         void persistChats(chatsRef.current);
-      })
-      .catch(() => {
-        // A later open retries because the folder-backed detail was not marked
-        // hydrated.
-      })
-      .finally(() => {
-        chatDetailRequestsRef.current.delete(chatId);
-      });
+      } catch {
+        if (controller.signal.aborted) return;
+        const currentChat = chatsRef.current.find(chat => chat.id === chatId);
+        updateStatus(currentChat && !currentChat.traceLogs.length ? 'unavailable' : 'ready');
+      } finally {
+        if (chatDetailRequestsRef.current.get(chatId)?.controller === controller) {
+          chatDetailRequestsRef.current.delete(chatId);
+        }
+      }
+    })();
 
-    chatDetailRequestsRef.current.set(chatId, request);
+    chatDetailRequestsRef.current.set(chatId, { promise: request, controller });
     return request;
-  };
+  });
 
   const loadChat = useEventCallback((id: string) => {
     setIsUsageOpen(false);
@@ -7692,13 +7750,14 @@ function DeepWorkUI() {
 
     if (chat) {
       // Sub-agent tabs are scoped to a chat/turn, never globally across chats.
+      setRequestedWindowChatId(null);
       setActiveSubAgentTab(null);
 
       activeComposerSurfaceRef.current = 'main';
       activeChatIdRef.current = id;
       setActiveChatId(id);
       setTraceLogs(canonicalizeClientTraceLogs(chat.traceLogs || [], id));
-      hydrateChatHistory(id);
+      void hydrateChatHistory(id);
       const workspacePath = workspaceSelectionsRef.current.has(id)
         ? workspaceSelectionsRef.current.get(id)! : chat.workspacePath || null;
       setActiveWorkspacePath(workspacePath);
@@ -7851,14 +7910,17 @@ function DeepWorkUI() {
     loadChat(chatId);
   }, [loadChat, setActiveView]);
 
-  const requestedWindowChatOpened = useRef(false);
   useEffect(() => {
-    if (requestedWindowChatOpened.current || !chatSnapshotReadyRef.current) return;
-    const id = new URLSearchParams(window.location.search).get('chat');
-    if (!id || !chats.some(chat => chat.id === id)) return;
-    requestedWindowChatOpened.current = true;
-    openTaskChat(id);
-  }, [chats, isChatHistoryLoading, openTaskChat]);
+    setRequestedWindowChatId(new URLSearchParams(window.location.search).get('chat') || null);
+  }, []);
+  useEffect(() => {
+    if (!requestedWindowChatId || !hasRestoredChatHistory) return;
+    if (activeChatIdRef.current) {
+      setRequestedWindowChatId(null);
+    } else if (chats.some(chat => chat.id === requestedWindowChatId)) {
+      openTaskChat(requestedWindowChatId);
+    }
+  }, [activeChatId, chats, hasRestoredChatHistory, openTaskChat, requestedWindowChatId]);
 
   const copyChatRequestIdsRef = useRef(new Map<string, string>());
   const saveSelectedChatForAction = useEventCallback(async (id: string, action: 'copy' | 'prepare', requestId?: string) => {
@@ -7886,7 +7948,7 @@ function DeepWorkUI() {
       if (!response.ok || !result?.chat?.id) throw new Error(result?.error || 'Could not save this chat. Please try again.');
       const savedSource = action === 'copy' ? result.source : result.chat;
       if (savedSource?.id === id) {
-        hydratedChatIdsRef.current.add(id);
+        storedChatIdsRef.current.add(id);
         setChats(current => current.map(chat => chat.id === id ? mergeConcurrentChatRevisions(savedSource, chat) : chat));
       }
       const savedAt = Number(result.savedAt || 0);
@@ -7907,7 +7969,7 @@ function DeepWorkUI() {
     const requestId = copyChatRequestIdsRef.current.get(id) || crypto.randomUUID();
     copyChatRequestIdsRef.current.set(id, requestId);
     const result = await saveSelectedChatForAction(id, 'copy', requestId);
-    hydratedChatIdsRef.current.add(result.chat.id);
+    storedChatIdsRef.current.add(result.chat.id);
     setChats(current => sortChats([result.chat, ...current.filter(chat => chat.id !== result.chat.id)]));
     copyChatRequestIdsRef.current.delete(id);
     openTaskChat(result.chat.id);
@@ -8008,7 +8070,13 @@ function DeepWorkUI() {
       setActiveChatId(builderChatId);
       setTraceLogs([]);
       setActiveWorkspacePath(null);
-      const builderComposerState = applyComposerState(composerStatesRef.current[builderChatId]);
+      const savedComposer = composerStatesRef.current[builderChatId];
+      let builderComposerState = applyComposerState(savedComposer);
+      const preferred = !savedComposer && availableAgentModelPreference(builderId);
+      const model = preferred ? parseModelEntryKey(preferred) : null;
+      if (model && preferred) builderComposerState = applyComposerState({
+        ...builderComposerState, chatModelSelection: preferred, agentMode: MODEL_PROVIDER_MODE[model.provider],
+      });
       updateComposerStateAtKey(builderChatId, () => builderComposerState);
     } else {
       if (resolvedName && chat.title !== resolvedName && chat.title !== `Building Agent: ${ resolvedName }`) {
@@ -8040,6 +8108,7 @@ function DeepWorkUI() {
   }, [handleAgentChange, showFreshWorkspace, updateInputValue]);
 
   const createNewChat = useCallback(() => {
+    setRequestedWindowChatId(null);
     setIsUsageOpen(false);
     setNewChatEntryId(previous => previous + 1);
     const scope = sidebarChatScopeRef.current;
@@ -8120,6 +8189,18 @@ function DeepWorkUI() {
       return previous.filter(message => !deleteSet.has(message.chatId));
     });
     idsToDelete.forEach(chatId => pendingChatDeletionIdsRef.current.add(chatId));
+    for (const id of idsToDelete) {
+      chatDetailRequestsRef.current.get(id)?.controller.abort();
+      chatDetailRequestsRef.current.delete(id);
+      hydratedChatIdsRef.current.delete(id);
+      storedChatIdsRef.current.delete(id);
+    }
+    setChatDetailStatuses(previous => {
+      if (!idsToDelete.some(id => previous.has(id))) return previous;
+      const next = new Map(previous);
+      idsToDelete.forEach(id => next.delete(id));
+      return next;
+    });
     if (liveChatIdRef.current && deleteSet.has(liveChatIdRef.current)) {
       stopLiveSession();
     }
@@ -8250,14 +8331,48 @@ function DeepWorkUI() {
     const previous = chatsRef.current;
     const target = previous.find(chat => chat.id === id);
     if (!target) return;
+    if (settled && (runningChatsRef.current.has(id) || readFocusTrace(target.traceLogs).status === 'input')) return;
     const next = previous.map(chat => chat.id === id ? {
       ...chat,
       focusSettled: settled,
+      focusWakeAt: null,
       focusUpdatedAt: Math.max(Date.now(), Number(chat.focusUpdatedAt || 0) + 1),
     } : chat);
     setChats(next);
     void persistChats(next);
   }, [setChats]);
+
+  const setChatReminder = useEventCallback(async (id: string, at: number | 'now') => {
+    const previous = chatsRef.current;
+    const target = previous.find(chat => chat.id === id);
+    if (!target) throw new Error('This chat no longer exists.');
+    if (runningChatsRef.current.has(id)) throw new Error('This chat is already working.');
+    const now = Date.now();
+    const wakeAt = at === 'now' ? now : at;
+    if (!Number.isFinite(wakeAt) || wakeAt < now) throw new Error('Choose a future date and time.');
+    const next = previous.map(chat => chat === target ? {
+      ...chat, focusSettled: false, focusWakeAt: wakeAt,
+      focusUpdatedAt: Math.max(now, Number(chat.focusUpdatedAt || 0) + 1),
+    } : chat);
+    setChats(next);
+    void persistChats(next);
+  });
+
+  const rememberWorkspaceCommit = useEventCallback((event: Event) => {
+    const receipt = (event as CustomEvent<{ chatId: string; commit: ChatCommitReceipt }>).detail;
+    const previous = chatsRef.current;
+    const chat = previous.find(item => item.id === receipt?.chatId);
+    if (!chat || !receipt?.commit) return;
+    const workspaceCommits = mergeChatCommitReceipts(chat.workspaceCommits, [receipt.commit]);
+    if (workspaceCommits.length === (chat.workspaceCommits?.length ?? 0)) return;
+    const next = previous.map(item => item === chat ? { ...item, workspaceCommits } : item);
+    setChats(next);
+    void persistChats(next);
+  });
+  useEffect(() => {
+    window.addEventListener(CHAT_GIT_COMMIT_EVENT, rememberWorkspaceCommit);
+    return () => window.removeEventListener(CHAT_GIT_COMMIT_EVENT, rememberWorkspaceCommit);
+  }, [rememberWorkspaceCommit]);
 
   const fetchGeneratedTitle = async (
     history: any[],
@@ -8394,7 +8509,7 @@ function DeepWorkUI() {
     }
   }, [activeChatId]);
 
-  const handleAnswerAskUser = useCallback((timestamp: number, answer: string, responseKey?: string) => {
+  const answerChatQuestion = useCallback((ownerChatId: string, timestamp: number, answer: string, responseKey?: string) => {
     const answeredWith = String(answer || '').trim();
     const normalizedResponseKey = String(responseKey || '').trim();
     if ((!timestamp && !normalizedResponseKey) || !answeredWith) return;
@@ -8402,16 +8517,19 @@ function DeepWorkUI() {
     const answeredAt = Date.now();
     const markAnswered = (logs: any[] = []) => logs.map((log: any) => {
       if (log?.type !== 'ask_user') return log;
-      const sameResponseKey = normalizedResponseKey && String(log.responseKey || '') === normalizedResponseKey;
-      const sameTimestamp = timestamp && Number(log.timestamp) === Number(timestamp);
-      if (!sameResponseKey && !sameTimestamp) return log;
+      const matches = normalizedResponseKey ? String(log.responseKey || '') === normalizedResponseKey
+        : timestamp && Number(log.timestamp) === Number(timestamp);
+      if (!matches) return log;
       return { ...log, answeredWith, answeredAt };
     });
 
-    const ownerChatId = activeChatIdRef.current;
-    if (!ownerChatId) return;
     setChatLogsById(ownerChatId, markAnswered, { touchUpdatedAt: true });
   }, []);
+
+  const handleAnswerAskUser = useCallback((timestamp: number, answer: string, responseKey?: string) => {
+    const owner = activeChatIdRef.current;
+    if (owner) answerChatQuestion(owner, timestamp, answer, responseKey);
+  }, [answerChatQuestion]);
 
   const getPollCursor = (data: any): number => {
     const maxIndex = Number(data?.maxIndex);
@@ -9772,7 +9890,8 @@ function DeepWorkUI() {
     const desktopApi = (window as any)?.electronAPI;
     if (typeof desktopApi?.onPrepareForQuit !== 'function') return;
     const unregisterDurableFlush = registerDurableFlush(async () => {
-      if (!chatSnapshotReadyRef.current) {
+      const needsChatStore = () => chatSnapshotReadyRef.current || chatsRef.current.length > 0 || pendingChatDeletionIdsRef.current.size > 0;
+      if (!chatSnapshotReadyRef.current && needsChatStore()) {
         requestChatRestoreRef.current?.();
         const deadline = Date.now() + 10_000;
         while (!chatSnapshotReadyRef.current && Date.now() < deadline) {
@@ -9784,7 +9903,7 @@ function DeepWorkUI() {
       // Do not force a full-history rewrite during an update: a long-lived
       // workspace can contain a very large trace log and make the renderer
       // miss the update flush deadline even when no new data is pending.
-      const chatsSaved = await persistChats(flushedChats, false, false);
+      const chatsSaved = !needsChatStore() || await persistChats(flushedChats, false, false);
       const preferencesSaved = await flushAppStorage();
       const scheduledTasksSaved = await flushScheduledTaskWrites();
       return chatsSaved && preferencesSaved && scheduledTasksSaved;
@@ -12769,7 +12888,7 @@ function DeepWorkUI() {
     const runModelEntry = requestedRunModelEntry
       && runtimeEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === requestedRunModelSelection)
       && (
-        requestedRunModelEntry.provider === 'codex' || isLocalModelProvider(requestedRunModelEntry.provider)
+        isAccountModelProvider(requestedRunModelEntry.provider) || isLocalModelProvider(requestedRunModelEntry.provider)
         || Boolean(runtimeProviderKeys[requestedRunModelEntry.provider])
         || Boolean(runtimeModelKeys[requestedRunModelSelection])
       )
@@ -13590,7 +13709,9 @@ function DeepWorkUI() {
                 endTime: at,
                 timestamp: at,
                 durationMs,
-                toolResult: event.toolResult,
+                toolResult: active.toolName === 'workspace_workbench'
+                  ? workbenchTraceResult(event.toolResult)
+                  : active.toolName === 'get_skill_guidelines' && active.toolArgs?.skill_name === 'development_workbench' ? undefined : event.toolResult,
                 status: failed ? 'error' : 'completed',
                 isLive: false,
                 isStreaming: false,
@@ -14433,10 +14554,8 @@ function DeepWorkUI() {
       }
     },
     workspace: setChatWorkspace,
-    hydrate: async id => {
-      await hydrateChatHistory(id);
-      if (!hydratedChatIdsRef.current.has(id)) throw new Error('Could not load this conversation. Please retry.');
-    },
+    hydrate: hydrateChatHistory,
+    getHistoryStatus: id => chatDetailStatuses.get(id) ?? 'ready',
     draft: id => {
       const saved = composerStatesRef.current[id];
       return {
@@ -14522,9 +14641,7 @@ function DeepWorkUI() {
     },
     stop: id => stopChatAgent(id),
     read: id => clearUnreadChat(id),
-    answer: (id, timestamp, answer, responseKey) => {
-      setChatLogsById(id, logs => logs.map(log => log.type === 'ask_user' && ((responseKey && log.responseKey === responseKey) || (timestamp && Number(log.timestamp) === timestamp)) ? { ...log, answeredWith: answer, answeredAt: Date.now() } : log), { touchUpdatedAt: true });
-    },
+    answer: answerChatQuestion,
     startLive: (id, settings) => {
       if (liveChatIdRef.current && liveChatIdRef.current !== id) stopLiveSession();
       updateComposerStateAtKey(id, previous => ({
@@ -16567,8 +16684,12 @@ function DeepWorkUI() {
   const isNewChatSurface =
     activeView === 'chat' &&
     !activeChatId &&
+    !requestedWindowChatId &&
     traceLogs.length === 0 &&
     liveState === 'idle';
+  const selectedConversationHistoryStatus = activeChatId && !activeSubAgentTab && !isThinking && traceLogs.length === 0
+    ? chatDetailStatuses.get(activeChatId) ?? 'ready'
+    : 'ready';
 
   const handleClosedSidebarHandlePointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -16638,7 +16759,7 @@ function DeepWorkUI() {
           <div className="eterx-mac-topbar-sidebar-spacer shrink-0 pointer-events-none" />
         )}
 
-        {/* Action buttons — API | Models | Theme | Help | Updates | Usage */}
+        {/* Action buttons — API | Theme | Help | Updates | Usage */}
         <div className="eterx-topbar-actions pointer-events-auto flex min-w-0 items-center gap-0 overflow-hidden [-webkit-app-region:no-drag]">
           {/* API */}
           <button type="button"
@@ -16647,15 +16768,6 @@ function DeepWorkUI() {
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-hidden bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
             API
-          </button>
-
-          {/* Models */}
-          <button type="button"
-            data-active={isSettingsOpen && settingsInitialTab === 'models' ? 'true' : undefined}
-            onClick={() => openSettingsWindow('models')}
-            className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-hidden bg-transparent border-0 transition-colors duration-150"
-            style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
-            Models
           </button>
 
           {/* Theme toggle — light/dark dropdown (Powered by Radix UI Portal) */}
@@ -16838,14 +16950,18 @@ function DeepWorkUI() {
         </div>
         <div className="flex-1 pointer-events-none" />
       </div>
-      {!isSettingsOpen && updateNoticeKey && dismissedUpdateNotice !== updateNoticeKey &&
-        ((desktopUpdate.status === 'available' && desktopUpdate.updateAvailableUnread) || desktopUpdate.status === 'ready' || desktopUpdate.status === 'error') && (
-        <UpdateNotification
-          state={desktopUpdate}
-          onOpen={() => openSettingsWindow('updates')}
-          onDismiss={() => { setDismissedUpdateNotice(updateNoticeKey); markUpdateViewed(); }}
-        />
-      )}
+      <div className="pointer-events-none fixed right-4 top-14 z-[250] flex max-h-[calc(100dvh-4.5rem)] w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2.5">
+        <SubscriptionLimitAlert visible={!isSettingsOpen && !isUsageOpen}
+          onManage={provider => openSettingsWindow('subscription', provider)} />
+        {!isSettingsOpen && updateNoticeKey && dismissedUpdateNotice !== updateNoticeKey &&
+          ((desktopUpdate.status === 'available' && desktopUpdate.updateAvailableUnread) || desktopUpdate.status === 'ready' || desktopUpdate.status === 'error') && (
+          <UpdateNotification
+            state={desktopUpdate}
+            onOpen={() => openSettingsWindow('updates')}
+            onDismiss={() => { setDismissedUpdateNotice(updateNoticeKey); markUpdateViewed(); }}
+          />
+        )}
+      </div>
       {updateActionError && isSettingsOpen && settingsInitialTab === 'updates' && (
         <div role="alert" className="fixed bottom-5 left-1/2 z-[10000] -translate-x-1/2 rounded-xl bg-[#402020] px-5 py-3 text-sm text-white">{updateActionError}</div>
       )}
@@ -16877,10 +16993,11 @@ function DeepWorkUI() {
             focusGroup={sidebarFocusGroup}
             onFocusGroupChange={setSidebarFocusGroup}
             onSetChatSettled={setChatSettled}
+            onSetChatReminder={setChatReminder}
+            onAnswerChatQuestion={answerChatQuestion}
             onOpenFocusTask={openFocusTask}
-            isLoadingChats={isChatHistoryLoading}
-            historyError={chatHistoryError}
-            retryHistory={() => { void requestChatRestoreRef.current?.(true); }}
+            historyStatus={chatHistoryStatus}
+            retryHistory={retryChatHistory}
             activeChatId={activeChatId}
             additionalActiveChatIds={sideVisibleChatIds}
             loadChat={loadChat}
@@ -16902,12 +17019,13 @@ function DeepWorkUI() {
         </>
       )}
 
-      <SettingsPanel isOpen={isSettingsOpen} initialTab={settingsInitialTab as any} onTabChange={setSettingsInitialTab} onClose={closeSettingsWindow} />
+      <SettingsPanel isOpen={isSettingsOpen} initialTab={settingsInitialTab as any} initialSubscriptionProvider={settingsSubscriptionProvider} onTabChange={setSettingsInitialTab} onClose={closeSettingsWindow}
+        onOpenDevices={activeChatId ? openWorkbenchDevices : undefined} workspaceSources={nonBuilderChats} workspaceScope={sidebarChatScope} />
 
       <div data-usage-open={isUsageOpen || undefined} className="eterx-workspace-shell min-w-0 flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
         {isUsageOpen && (
           <div data-usage-panel className={`eterx-main-panel ${sidebarOpen ? '' : 'eterx-main-panel-sidebar-closed'} flex min-h-0 min-w-0 flex-col overflow-hidden`}>
-            <UsageDashboard />
+            <UsageDashboard onManageSubscription={provider => openSettingsWindow('subscription', provider)} />
           </div>
         )}
         <WorkspacePaneVisibleContext.Provider value={!isUsageOpen}>
@@ -17141,6 +17259,10 @@ function DeepWorkUI() {
                                   );
 
                                   if (filteredChats.length === 0) {
+                                    if (chatHistoryStatus !== 'ready') {
+                                      return <ChatHistoryNotice status={chatHistoryStatus} onRetry={retryChatHistory}
+                                        className="px-2.5 py-2 text-[var(--muted-foreground)]" />;
+                                    }
                                     return <div className="eterx-thread-switcher-empty px-2.5 py-2 text-[12px] text-white/30 italic">No threads found</div>;
                                   }
 
@@ -17186,7 +17308,7 @@ function DeepWorkUI() {
               )}
 
               <div className="flex shrink-0 items-center gap-1 pointer-events-auto [-webkit-app-region:no-drag] ml-auto">
-                {isHeaderGitRepo && !!activeChatId && (
+                {canUseMonitor && isHeaderGitRepo && (
                   <div className="relative group">
                     <button
                       type="button"
@@ -17413,6 +17535,7 @@ function DeepWorkUI() {
                 )}
                 {canUseMonitor && (
                   <>
+                    {activeChatId && <WorkspaceWorkbenchSync key={activeChatId} chatId={activeChatId} owner={terminalChatId} />}
                     <Tooltip text="Bottom terminal" side="bottom">
                       <button type="button" aria-label="Toggle bottom terminal" aria-pressed={terminalState.open && terminalState.placement === 'bottom'} onClick={() => { toggleTerminalPlacement(terminalChatId, 'bottom'); if (!terminalState.tabCount) void createTerminal(terminalChatId, activeWorkspacePath); }} className={`eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent transition-all duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/20 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] ${terminalState.open && terminalState.placement === 'bottom' ? 'bg-white/[0.12] text-white' : 'bg-transparent text-[var(--sidebar-muted-text)]'}`}>
                         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.15" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -17650,7 +17773,7 @@ function DeepWorkUI() {
                                               </div>
                                             )}
                                             <div className="proxy-manager-markdown max-w-full min-w-0 break-words">
-                                              <ReactMarkdown urlTransform={localAwareUrlTransform} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={proxyManagerMarkdownComponents}>
+                                              <ReactMarkdown urlTransform={localAwareUrlTransform} remarkPlugins={replyRemarkPlugins} rehypePlugins={rehypePlugins} components={proxyManagerMarkdownComponents}>
                                                 {formatProxyManagerMarkdown(msg.text)}
                                               </ReactMarkdown>
                                             </div>
@@ -17878,6 +18001,7 @@ function DeepWorkUI() {
                       attached={workspaceControls.open}
                       panelId="eterx-chat-work-panel"
                       owner={terminalChatId}
+                      chatId={activeChatId}
                       workspacePath={activeWorkspacePath}
                       workspaceName={currentWorkspacePicker?.name || projectFolderName(activeWorkspacePath)}
                       workspaceLocked={Boolean(currentWorkspacePicker?.locked || activeSubAgentTab || isThinking)}
@@ -17903,6 +18027,17 @@ function DeepWorkUI() {
                       {startupReady && isNewChatSurface && <NewChatAtmosphere key="new-chat-atmosphere" />}
                     </AnimatePresence>
                     {startupReady && isNewChatSurface && <NewChatRipple key={newChatEntryId} containerRef={conversationPaneRef} />}
+                    {requestedWindowChatId && !activeChatId && (
+                      chatHistoryStatus !== 'ready' ? (
+                        <ChatHistoryNotice status={chatHistoryStatus} onRetry={retryChatHistory}
+                          className="shrink-0 justify-center px-4 py-3 text-[var(--muted-foreground)]" />
+                      ) : !chats.some(chat => chat.id === requestedWindowChatId) && (
+                        <p role="status" className="shrink-0 px-4 py-3 text-center text-xs text-[var(--muted-foreground)]">This conversation is unavailable.</p>
+                      )
+                    )}
+                    {activeChatId && <ChatHistoryNotice status={selectedConversationHistoryStatus} conversation
+                      onRetry={() => { void hydrateChatHistory(activeChatId); }}
+                      className="shrink-0 justify-center px-4 py-3 text-[var(--muted-foreground)]" />}
                     {proxyComposerError && !showProxyChat && (
                       <div role="alert" className="absolute inset-x-4 top-3 z-[70] mx-auto flex max-w-xl items-start gap-2 rounded-xl border border-red-400/20 bg-[var(--background)] px-3 py-2 text-[12px] leading-4 text-red-400">
                         <span className="min-w-0 flex-1 break-words">{proxyComposerError}</span>
@@ -17944,6 +18079,7 @@ function DeepWorkUI() {
                       onAnswerAskUser={handleAnswerAskUser}
                       onEditUserMessage={handleEditFeedMessage}
                       onOpenAgentTeam={handleOpenAgentTeam}
+                      onOpenWorkbenchSettings={openSettingsWindow}
                       subAgentAssetIndexes={subAgentAssetIndexes}
                       isFeedActivityPaused={Boolean(selectedFeedPaused)}
                       isSubAgentTab={!!activeSubAgentTab}
@@ -18100,6 +18236,8 @@ function DeepWorkUI() {
                         chats={chats}
                         liveChatLedger={liveChatLedger}
                         runningChats={sidebarRunningChats}
+                        historyStatus={chatHistoryStatus}
+                        retryHistory={retryChatHistory}
                         actions={sideChatActions}
                         agentNavigation={{
                           agents: autonomousSelected ? [] : realSubAgents,
@@ -18111,6 +18249,7 @@ function DeepWorkUI() {
                           onSelect: handleOpenAgentTeam,
                         }}
                         onCapture={attachBrowserCapture}
+                        onOpenConnections={() => openSettingsWindow('connections')}
                       />,
                       workspaceMainPanelRef.current,
                     )}
@@ -18161,6 +18300,8 @@ function DeepWorkUI() {
         loadChat={loadChat}
         runningChats={sidebarRunningChats}
         activeChatId={activeChatId}
+        historyStatus={chatHistoryStatus}
+        retryHistory={retryChatHistory}
       />
 
       <FloatingLiveWidget

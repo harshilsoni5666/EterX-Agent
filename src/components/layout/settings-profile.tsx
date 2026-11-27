@@ -4,6 +4,7 @@ import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatModelName } from '../../lib/agent/model-presentation';
+import { IdentityAvatar } from '../ui/identity-avatar';
 import {
   activityDate, activityDayDistance, activityDayKey, mostUsedActivityValue,
   type ProfileActivityStats,
@@ -180,7 +181,7 @@ export function SettingsProfile({ name, onNameChange, stats, loading, error }: {
 
   return <div ref={rootRef} className={styles.root}>
     <div className={styles.identity}>
-      <div className={styles.avatar} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || 'U'}</div>
+      <IdentityAvatar identity="local-user-profile" name={name.trim() || 'User'} size={46} />
       <div className={styles.identityText}>
         <input data-settings-search-target="profile-name" aria-label="Profile name" autoComplete="name" placeholder="Your name" value={name} onChange={event => onNameChange(event.target.value)} className={styles.name} />
         <span className={styles.identityCaption}>Your activity, at a glance</span>

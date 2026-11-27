@@ -42,7 +42,7 @@ export function UpdateNotification({ state, onOpen, onDismiss }: UpdateNotificat
   }, [notes, state.message, needsAttention]);
 
   return (
-    <aside className="eterx-update-notice fixed right-4 top-14 z-[250] flex w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border shadow-xl" aria-label="Application update">
+    <aside className="eterx-update-notice pointer-events-auto relative flex min-h-0 w-full flex-col overflow-hidden rounded-2xl border shadow-xl" aria-label="Application update">
       <div className="pointer-events-none flex shrink-0 items-center gap-3 px-4 pb-3 pt-4 pr-12" role="status" aria-live="polite" aria-atomic="true">
         <span className="eterx-release-icon flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" aria-hidden="true">
           <StatusIcon size={17} />

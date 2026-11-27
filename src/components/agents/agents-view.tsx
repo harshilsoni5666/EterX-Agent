@@ -4,9 +4,17 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, ArrowUp, SendHorizontal, Download, CheckCircle2, Upload } from 'lucide-react';
 import { PremiumEdit, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
-import type { MainAgentThinkingLevel } from '../../lib/agent/model-routing';
+import { getMainAgentModelConfig, type MainAgentThinkingLevel } from '../../lib/agent/model-routing';
+import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
+import { modelEntryKey, MODEL_PROVIDER_MODE, parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
+import { readAvailableModelEntries } from '../../lib/model-catalog-client';
+import { subscriptionModelLabel, withSubscriptionModels } from '../../lib/subscription-models-client';
+import { readAgentModelPreference, saveAgentModelPreference } from '../../lib/agent-model-preferences';
+import { ProviderIconAsset } from '../ui/provider-icon';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { requestJson } from '../../lib/request-json';
+import { modelBadgeLabel } from '../../lib/app-presentation/contract';
+import { ModelBadgesContext, usePausedProviders } from '../updates/model-badges';
 
 interface Agent {
   id: string;
@@ -25,6 +33,34 @@ interface Agent {
   category?: string;
   starterPrompts?: string[];
   builderMessages?: {role: 'user' | 'assistant', content: string}[];
+}
+
+function AgentModelField({ models, value, onChange }: { models: ModelSelectorEntry[]; value: string; onChange: (value: string) => void }) {
+  const paused = usePausedProviders();
+  const badges = React.useContext(ModelBadgesContext);
+  const selected = parseModelEntryKey(value);
+  const groups = groupModelsByProvider(models);
+  const available = models.some(item => modelEntryKey(item.provider, item.modelId) === value);
+  return <label className="flex flex-col gap-1.5 text-[13px] text-[#8C8A88]">
+    Model
+    <span className="flex items-center gap-2 rounded-xl border border-white/10 bg-[#111111] px-3 text-white focus-within:border-white/25">
+      {selected && <ProviderIconAsset provider={selected.provider} />}
+      <select className="h-11 w-full min-w-0 bg-[#111111] text-[13px] outline-hidden" value={value} onChange={event => onChange(event.target.value)}>
+        <option value="">Use the chat model</option>
+        {value && !available && <option value={value} disabled>{selected?.modelId || value} (unavailable)</option>}
+        {groups.map(group => <optgroup key={group.provider} label={getMainAgentModelConfig(MODEL_PROVIDER_MODE[group.provider]).label}>
+          {group.models.map(({ provider, modelId }) => {
+            const key = modelEntryKey(provider, modelId);
+            const unavailable = paused.has(provider);
+            const label = subscriptionModelLabel(provider, modelId) || formatModelName(modelId);
+            // Native selects reuse the selected option's text when closed.
+            const markers = unavailable ? ['Unavailable'] : key === value ? [] : (badges.get(key) ?? []).map(modelBadgeLabel);
+            return <option value={key} key={modelId} disabled={unavailable}>{[label, ...markers].join(' · ')}</option>;
+          })}
+        </optgroup>)}
+      </select>
+    </span>
+  </label>;
 }
 
 export const AgentsView = React.memo(({
@@ -96,7 +132,7 @@ export const AgentsView = React.memo(({
               toolCount: serverAgent.toolCount,
               kind: serverAgent.kind === 'flow' ? 'flow' : 'agent',
               stepCount: serverAgent.stepCount,
-              preferredModel: existing?.preferredModel,
+              preferredModel: readAgentModelPreference(id) ?? existing?.preferredModel,
               preferredThinkingLevel: existing?.preferredThinkingLevel,
               qualityScore: Number.isFinite(serverAgent.qualityScore) ? serverAgent.qualityScore : existing?.qualityScore,
               readinessPassed: Number.isFinite(serverAgent.readinessPassed) ? serverAgent.readinessPassed : existing?.readinessPassed,
@@ -147,6 +183,18 @@ export const AgentsView = React.memo(({
   // Modal state
   const [isCreating, setIsCreating] = useState(false);
   const [newAgentName, setNewAgentName] = useState("");
+  const [newAgentModel, setNewAgentModel] = useState('');
+  const [modelChoices, setModelChoices] = useState(() => withSubscriptionModels(readAvailableModelEntries()));
+  useEffect(() => {
+    const refresh = () => setModelChoices(withSubscriptionModels(readAvailableModelEntries()));
+    refresh();
+    window.addEventListener('eterx-settings-updated', refresh);
+    window.addEventListener('eterx-folder-storage-ready', refresh);
+    return () => {
+      window.removeEventListener('eterx-settings-updated', refresh);
+      window.removeEventListener('eterx-folder-storage-ready', refresh);
+    };
+  }, []);
   const [newAgentPurpose, setNewAgentPurpose] = useState("");
   const [newAgentTemplate, setNewAgentTemplate] = useState<'general' | 'sales' | 'support' | 'operations' | 'research' | 'coding'>('general');
   const [newAgentIntegration, setNewAgentIntegration] = useState<'none' | 'channels' | 'connectors' | 'all'>('none');
@@ -407,6 +455,7 @@ export const AgentsView = React.memo(({
     // Reset modal state after animation completes
     setTimeout(() => {
       setNewAgentName("");
+      setNewAgentModel('');
       setNewAgentPurpose("");
       setNewAgentTemplate('general');
       setNewAgentIntegration('none');
@@ -428,6 +477,7 @@ export const AgentsView = React.memo(({
     if (!newAgentName.trim()) return;
     const builderId = getOrCreateBuilderId();
     const name = newAgentName.trim();
+    saveAgentModelPreference(builderId, newAgentModel);
     const purpose = newAgentPurpose.trim() || `Create a professional ${newAgentTemplate === 'general' ? 'custom' : newAgentTemplate} agent named ${name}.`;
     const attachChannels = newAgentIntegration === 'channels' || newAgentIntegration === 'all';
     const attachConnectors = newAgentIntegration === 'connectors' || newAgentIntegration === 'all';
@@ -442,6 +492,7 @@ export const AgentsView = React.memo(({
         description: purpose,
         accessType: 'Agent Decides',
         isSetup: false,
+        preferredModel: newAgentModel || undefined,
         builderMessages: [],
       },
       ...previous.filter(agent => agent.id !== builderId),
@@ -801,6 +852,7 @@ export const AgentsView = React.memo(({
                     className="w-full bg-[#111111] border border-white/10 rounded-xl px-4 py-3 text-[14px] text-white outline-hidden focus:border-white/20 transition-all font-sans placeholder:text-[#555350]"
                   />
                 </div>
+                <AgentModelField models={modelChoices} value={newAgentModel} onChange={setNewAgentModel} />
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-2">
                     <label className="text-[13px] font-semibold text-[#8C8A88]">Role template</label>
@@ -897,14 +949,13 @@ export const AgentsView = React.memo(({
                     <span className="text-[#8C8A88]">Access Type</span>
                     <span className="text-white px-2 py-0.5 rounded-sm bg-white/5 border border-white/10">{settingsAgent.accessType}</span>
                   </div>
-                  {settingsAgent.preferredModel && (
-                    <div className="flex items-center justify-between gap-3 text-[13px]">
-                      <span className="text-[#8C8A88]">Preferred model</span>
-                      <span className="max-w-[260px] truncate text-white px-2 py-0.5 rounded-sm bg-white/5 border border-white/10">
-                        {settingsAgent.preferredModel}
-                      </span>
-                    </div>
-                  )}
+                  {settingsAgent.id !== 'default-1' && <AgentModelField models={modelChoices} value={settingsAgent.preferredModel || ''}
+                    onChange={value => {
+                      saveAgentModelPreference(settingsAgent.id, value);
+                      const next = { ...settingsAgent, preferredModel: value || undefined };
+                      setSettingsAgent(next);
+                      setAgents(current => current.map(agent => agent.id === next.id ? next : agent));
+                    }} />}
                   {settingsAgent.preferredThinkingLevel && (
                     <div className="flex items-center justify-between text-[13px]">
                       <span className="text-[#8C8A88]">Thinking level</span>

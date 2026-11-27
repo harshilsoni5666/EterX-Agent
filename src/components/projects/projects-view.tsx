@@ -1,17 +1,19 @@
 "use client";
 
-import { codexCatalogPending, codexModelLabel, codexThinkingCatalog, withCodexSubscriptionModels } from '../../lib/chatgpt-subscription-client';
+import { subscriptionCatalogPending, subscriptionModelLabel, subscriptionThinkingCatalog, withSubscriptionModels } from '../../lib/subscription-models-client';
+import { SUBSCRIPTION_PROVIDER_NAMES } from '../../lib/native-provider-contract';
+import { isAccountModelProvider } from '../../lib/agent/model-selector-store';
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2, Search, Pencil, Pause, RotateCcw } from 'lucide-react';
 import { PremiumSend } from '../ui/premium-icons';
+import { ModelBadges, usePausedProviders } from '../updates/model-badges';
 import { Shimmer } from '../ui/shimmer';
 import { normalizeScheduledTask, scheduledTaskSection, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
-import { persistScheduledTasks } from '../../lib/scheduled-task-sync';
-import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
+import { pendingScheduledTaskWriteAt, persistScheduledTasks } from '../../lib/scheduled-task-sync';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
-import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
+import { isModelCatalogStorageKey, PROVIDER_BASE_URLS_STORAGE_KEY, readAvailableModelEntries, refreshSavedModelCatalog } from '../../lib/model-catalog-client';
 import { requestJson } from '../../lib/request-json';
 
 export type ScheduledTaskItem = ScheduledTaskRecord;
@@ -39,7 +41,6 @@ import {
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
   modelEntryKey,
-  normalizeModelSelectorEntries,
   parseModelEntryKey,
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
@@ -52,6 +53,7 @@ const MODEL_SETTINGS_STORAGE_KEYS = [
   MODEL_API_KEY_STORAGE_KEY, MODEL_OVERRIDE_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY,
   MODEL_SELECTOR_STORAGE_KEY, CHAT_MODEL_SELECTION_STORAGE_KEY,
   MODEL_API_KEY_PRESENCE_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+  PROVIDER_BASE_URLS_STORAGE_KEY,
   'eterx_chat_thinking_level',
 ];
 
@@ -64,11 +66,8 @@ const syncRuntimeModelOverrides = (modelOverrides: Record<string, string>) => {
 };
 
 type StoredModelSettings = {
-  apiKeys: Partial<Record<MainAgentProvider, string>>;
   modelOverrides: Partial<Record<MainAgentProvider, string>>;
-  modelCatalog: Partial<Record<MainAgentProvider, string[]>>;
   modelEntries: ModelSelectorEntry[];
-  modelApiKeys: Record<string, string>;
   thinkingCapabilities: Record<string, ModelThinkingCapabilities>;
   chatModelSelection: string;
 };
@@ -80,7 +79,7 @@ type ChatModelOption = {
   label: string;
   compactLabel: string;
   modelName: string;
-  modelId?: string;
+  modelId: string;
   isAuto?: boolean;
 };
 
@@ -88,7 +87,7 @@ const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
   gemini: 'Google Gemini',
   mistral: 'Mistral',
   openai: 'OpenAI',
-  codex: 'Codex · ChatGPT plan',
+  ...SUBSCRIPTION_PROVIDER_NAMES,
   openrouter: 'OpenRouter',
   groq: 'Groq',
   anthropic: 'Anthropic',
@@ -120,35 +119,6 @@ const readStringRecord = (storageKey: string): Record<string, string> => {
   }
 };
 
-const readStringArrayRecord = (storageKey: string): Record<string, string[]> => {
-  if (typeof window === 'undefined') return {};
-  try {
-    const parsed = JSON.parse(appStorage.getItem(storageKey) || '{}');
-    if (!parsed || typeof parsed !== 'object') return {};
-    return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>)
-        .map(([key, value]) => {
-          const values = Array.isArray(value)
-            ? value
-            : typeof value === 'string'
-              ? value.split(/[\n,]/)
-              : [];
-          return [
-            key,
-            Array.from(new Set(
-              values
-                .map(item => String(item || '').trim())
-                .filter(Boolean),
-            )),
-          ];
-        })
-        .filter(([, value]) => value.length > 0),
-    );
-  } catch {
-    return {};
-  }
-};
-
 const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilities> => {
   if (typeof window === 'undefined') return {};
   try {
@@ -165,50 +135,30 @@ const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilitie
 };
 
 const readStoredModelSettings = (): StoredModelSettings => {
-  const apiKeys = readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
   const storedModelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
-  const modelCatalog = readStringArrayRecord(MODEL_CATALOG_STORAGE_KEY) as Partial<Record<MainAgentProvider, string[]>>;
-  const savedEntries = typeof window !== 'undefined'
-    ? (() => {
-      try {
-        return JSON.parse(appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || '[]');
-      } catch {
-        return [];
-      }
-    })()
-    : [];
   const storedChatModelSelection = typeof window !== 'undefined'
     ? (appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
     : AUTO_MODEL_SELECTION;
   const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
-  const modelEntries = withCodexSubscriptionModels(normalizeModelSelectorEntries(savedEntries, modelCatalog));
+  const modelEntries = withSubscriptionModels(readAvailableModelEntries());
   const modelOverrides = Object.fromEntries(
     Object.entries(storedModelOverrides).filter(([provider, modelId]) =>
       modelEntries.some(entry => entry.provider === provider && entry.modelId === modelId)
     ),
   ) as Partial<Record<MainAgentProvider, string>>;
-  const modelApiKeys = readStringRecord(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
-  const thinkingCapabilities = { ...readThinkingCapabilityRecord(), ...codexThinkingCatalog() };
-  const usableEntries = modelEntries.filter(entry =>
-    entry.provider === 'codex' || isLocalModelProvider(entry.provider)
-    || Boolean(apiKeys[entry.provider])
-    || Boolean(modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
-  );
+  const thinkingCapabilities = { ...readThinkingCapabilityRecord(), ...subscriptionThinkingCatalog() };
   const chatModelSelection = parsedStoredChatModel && (
-    (parsedStoredChatModel.provider === 'codex' && codexCatalogPending())
-    || usableEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
+    subscriptionCatalogPending(parsedStoredChatModel.provider)
+    || modelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
   )
     ? storedChatModelSelection
-    : usableEntries[0]
-      ? modelEntryKey(usableEntries[0].provider, usableEntries[0].modelId)
+    : modelEntries[0]
+      ? modelEntryKey(modelEntries[0].provider, modelEntries[0].modelId)
       : AUTO_MODEL_SELECTION;
 
   return {
-    apiKeys,
     modelOverrides,
-    modelCatalog,
     modelEntries,
-    modelApiKeys,
     thinkingCapabilities,
     chatModelSelection,
   };
@@ -230,7 +180,7 @@ interface ProjectsViewProps {
   onOpenChat?: (chatId: string) => void;
   focusTaskRequest?: { id: string } | null;
   onFocusTaskHandled?: (request: null) => void;
-  onOpenSettingsTab?: (tab: 'api' | 'models') => void;
+  onOpenSettingsTab?: (tab: 'api') => void;
 }
 
 export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
@@ -241,6 +191,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   onFocusTaskHandled,
   onOpenSettingsTab,
 }) => {
+  const pausedProviders = usePausedProviders();
   const [inputValue, setInputValue] = useState("");
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
@@ -367,13 +318,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       if (disposed || inFlight || !isAppVisible()) return;
       inFlight = true;
       try {
-      const pendingLocalWriteAt = Number(appStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
+      const pendingLocalWriteAt = pendingScheduledTaskWriteAt();
         if (pendingLocalWriteAt && Date.now() - pendingLocalWriteAt < 15_000) return;
       if (pendingLocalWriteAt) appStorage.removeItem('eterx_scheduled_tasks_sync_pending');
         const response = await requestJson('/api/scheduled-tasks', { cache: 'no-store', signal: controller.signal }, 15_000);
         if (!response.ok) return;
         const snapshot = await response.json();
-        if (disposed) return;
+        if (disposed || pendingScheduledTaskWriteAt()) return;
         const durable = Array.isArray(snapshot?.tasks) ? snapshot.tasks.map(normalizeScheduledTask) : [];
       const local = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
         if (durable.length === 0 && Number(snapshot?.savedAt || 0) <= 0 && Array.isArray(local) && local.length > 0) {
@@ -652,12 +603,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   useEffect(() => {
     let disposed = false;
-    let previousValues: Array<string | null> | null = null;
-    const handleUpdate = () => {
+    const handleUpdate = (event?: Event) => {
       if (disposed) return;
-      const values = MODEL_SETTINGS_STORAGE_KEYS.map(key => appStorage.getItem(key));
-      if (previousValues && values.every((value, index) => value === previousValues![index])) return;
-      previousValues = values;
+      const key = (event as CustomEvent | undefined)?.detail?.key;
+      if (event?.type === 'eterx-folder-storage-updated' && key
+        && !MODEL_SETTINGS_STORAGE_KEYS.includes(key) && !isModelCatalogStorageKey(key)) return;
       const next = readStoredModelSettings();
       setStoredModelSettings(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
       if (typeof window !== 'undefined') {
@@ -667,7 +617,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     window.addEventListener('eterx-settings-updated', handleUpdate);
     window.addEventListener(FOLDER_STORAGE_READY_EVENT, handleUpdate);
     window.addEventListener('eterx-folder-storage-updated', handleUpdate);
-    void appStorageReady.then(handleUpdate);
+    void appStorageReady.then(() => handleUpdate());
     return () => {
       disposed = true;
       window.removeEventListener('eterx-settings-updated', handleUpdate);
@@ -736,24 +686,20 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   }, [activePopover]);
 
   const modelOptions = useMemo<ChatModelOption[]>(() => {
-    return storedModelSettings.modelEntries.filter(entry => (
-      entry.provider === 'codex' || isLocalModelProvider(entry.provider)
-      || Boolean(storedModelSettings.apiKeys[entry.provider])
-      || Boolean(storedModelSettings.modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
-    )).map(entry => {
+    return storedModelSettings.modelEntries.map(entry => {
       const mode = MODEL_PROVIDER_MODE[entry.provider];
       const baseOption = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === mode) || getMainAgentModelConfig(mode);
       return {
         optionKey: modelEntryKey(entry.provider, entry.modelId),
         id: mode,
         provider: entry.provider,
-        label: (entry.provider === 'codex' ? codexModelLabel(entry.modelId) : undefined) || entry.modelId || entry.provider,
+        label: subscriptionModelLabel(entry.provider, entry.modelId) || entry.modelId || entry.provider,
         compactLabel: baseOption.compactLabel,
         modelName: entry.modelId || entry.provider,
         modelId: entry.modelId,
       };
     });
-  }, [storedModelSettings.apiKeys, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
+  }, [storedModelSettings.modelEntries]);
 
   const selectedModel = useMemo(() => {
     return modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection)
@@ -791,7 +737,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     return activeThinkingOptions.find(option => option.id === safeThinkingLevel);
   }, [activeThinkingOptions, safeThinkingLevel]);
 
-  const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
+  const getModelOptionLabel = useCallback((option: ChatModelOption) => isAccountModelProvider(option.provider)
+    ? `${MODEL_PROVIDER_LABEL[option.provider]} · ${option.label}` : option.label, []);
   const modelDisplayLabel = selectedModel ? getModelOptionLabel(selectedModel) : 'Add API to load models';
   const selectedFormModel = useMemo(
     () => allModelOptions.find(option => option.optionKey === formModel) || null,
@@ -1387,6 +1334,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                   <button
                                     type="button"
                                     key={option.optionKey}
+                                    disabled={pausedProviders.has(option.provider)}
                                     onClick={() => {
                                       setFormModel(option.optionKey);
                                       setActivePopover(null);
@@ -1396,7 +1344,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                         : 'text-white/70 hover:bg-white/[0.04] hover:text-white'
                                       }`}
                                   >
-                                    <span className="truncate">{option.label}</span>
+                                    <span className="eterx-model-name-with-badges">
+                                      <span className="truncate">{option.label}</span>
+                                      {pausedProviders.has(option.provider) ? <span className="eterx-model-badge">Unavailable</span>
+                                        : <ModelBadges provider={option.provider} modelId={option.modelId} />}
+                                    </span>
                                     {option.optionKey === formModel && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
                                   </button>
                                 ))}

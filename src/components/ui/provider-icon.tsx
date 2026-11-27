@@ -1,10 +1,14 @@
 import { Key } from 'lucide-react';
+import styles from './provider-icon.module.css';
 
 // These are checked-in brand assets from the providers or established brand libraries.
 const PROVIDER_ICON_PATH: Record<string, string> = {
   gemini: '/icons/providers/gemini.svg',
   openai: '/icons/providers/openai.svg',
-  codex: '/icons/providers/openai.svg',
+  codex: '/icons/import-providers/codex.png',
+  antigravity: '/icons/providers/antigravity.png',
+  'claude-code': '/icons/import-providers/claude.png',
+  'grok-build': '/icons/providers/grok.svg',
   anthropic: '/icons/providers/anthropic.svg',
   grok: '/icons/providers/grok.svg',
   deepseek: '/icons/providers/deepseek.ico',
@@ -55,6 +59,7 @@ const PROVIDER_ICON_COLOR: Record<string, string> = {
   codex: '#10A37F',
   anthropic: '#D97757',
   grok: NEUTRAL_ICON_COLOR,
+  'grok-build': NEUTRAL_ICON_COLOR,
   deepseek: '#5786FE',
   mistral: '#FA520F',
   groq: '#F55036',
@@ -91,9 +96,13 @@ export function ProviderIconAsset({ provider, className = 'h-4 w-4', color }: {
   className?: string;
   color?: string;
 }) {
+  if (provider === 'cursor') return <span aria-hidden="true" className={`relative inline-block shrink-0 ${className}`}>
+    <img alt="" src="/icons/import-providers/cursor-light.png" className={styles.cursorLight} />
+    <img alt="" src="/icons/import-providers/cursor-dark.png" className={styles.cursorDark} />
+  </span>;
   const iconPath = PROVIDER_ICON_PATH[provider];
   if (!iconPath) return <Key aria-hidden="true" className={`shrink-0 ${className}`} />;
-  if (/\.(?:ico|png|jpe?g|webp)$/i.test(iconPath) || PROVIDER_ICON_INTRINSIC_COLOR.has(provider)) {
+  if ((provider !== 'codex' && /\.(?:ico|png|jpe?g|webp)$/i.test(iconPath)) || PROVIDER_ICON_INTRINSIC_COLOR.has(provider)) {
     return <img aria-hidden="true" alt="" className={`shrink-0 object-contain ${className}`} src={iconPath} />;
   }
   const mask = `url(${iconPath}) center / ${PROVIDER_ICON_MASK_SIZE[provider] || '84%'} no-repeat`;
@@ -103,5 +112,17 @@ export function ProviderIconAsset({ provider, className = 'h-4 w-4', color }: {
       className={`inline-block shrink-0 bg-current ${className}`}
       style={{ color: color ?? PROVIDER_ICON_COLOR[provider], WebkitMask: mask, mask }}
     />
+  );
+}
+
+export function ModelProviderIconAsset({ provider, className = 'h-4 w-4' }: {
+  provider: string;
+  className?: string;
+}) {
+  if (provider !== 'openai') return <ProviderIconAsset provider={provider} className={className} />;
+  return (
+    <span aria-hidden="true" className={`eterx-openai-api-icon-shell inline-flex shrink-0 items-center justify-center ${className}`}>
+      <ProviderIconAsset provider={provider} className="size-3" color="#FFFFFF" />
+    </span>
   );
 }

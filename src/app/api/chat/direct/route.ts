@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { streamDirectChat } from '../../../../lib/chat/direct-chat';
+import { runWithSubscriptionAccount } from '../../../../lib/agent/native-provider/turn';
+import { isNativeSessionProvider } from '../../../../lib/native-provider-contract';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import {
@@ -17,11 +19,13 @@ import {
   requireChatOwner,
 } from '../../agent/_shared';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
+import { assertProviderAvailable, ProviderUnavailableError } from '../../../../lib/app-presentation/posthog';
 import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
 import { beginDirectChatRun, isDirectChatRunning, isManualCompactionActive } from '../../../../lib/agent/manual-compaction';
 import { waitForSubscriptionHandoff } from '../../../../lib/agent/subscription-handoff';
 import { beginTelemetryTurn } from '../../../../lib/telemetry/runtime';
+import { telemetryClientContext } from '../../../../lib/telemetry/client-context';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -85,6 +89,11 @@ export async function POST(req: NextRequest) {
         session,
       );
     }
+    try { await assertProviderAvailable(selectedProvider); }
+    catch (error) {
+      if (error instanceof ProviderUnavailableError) return attachAgentApiSessionCookie(jsonError(error.message, 503), session);
+      throw error;
+    }
 
     if (isManualCompactionActive(chatId)) {
       return attachAgentApiSessionCookie(jsonError('Context is compacting. Please wait until it finishes.', 409), session);
@@ -104,6 +113,9 @@ export async function POST(req: NextRequest) {
     });
     const telemetry = beginTelemetryTurn(JSON.stringify(['chat', chatId, normalizedRunId || crypto.randomUUID()]), {
       mode: 'chat', origin: 'interactive', provider: selectedProvider, model: selectedModelId, effort: thinkingLevel,
+    }, {
+      ...telemetryClientContext(req), hasInput: Boolean(prompt), attachmentCount: chatMediaAttachments.length,
+      hasModel: true, interactionMode: 'chat',
     });
     let completed = false;
     let streamClosed = false;
@@ -131,7 +143,7 @@ export async function POST(req: NextRequest) {
 
         void telemetry.run(async () => {
           await waitForSubscriptionHandoff(streamAbortController.signal);
-          return streamDirectChat({
+          const run = () => streamDirectChat({
             chatId,
             prompt,
             history: normalizeHistory(history),
@@ -147,6 +159,7 @@ export async function POST(req: NextRequest) {
             runId: normalizedRunId,
             runtimeSettings: buildScopedRuntimeSettings(),
           }, trace => send({ type: 'trace', data: trace }), streamAbortController.signal);
+          return isNativeSessionProvider(selectedProvider) ? runWithSubscriptionAccount(selectedProvider, selectedModelId, run) : run();
         })
           .then(result => {
             completed = true;

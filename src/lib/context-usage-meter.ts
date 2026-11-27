@@ -88,6 +88,8 @@ const calibratedPayload = (log: any) => log?.providerCalibrationApplied !== unde
   ? log.providerCalibrationApplied === true
   : Number.isFinite(Number(log?.providerInputTokens)) && Number(log?.providerInputTokens) > 0;
 
+const isContextUsageReceipt = (log: any) => log?.type === 'model_usage' && log.phase !== 'chat_title' && log.usageScope !== 'turn';
+
 export const measureContextHistory = (logs: any[]) => {
   let latestRequestTime = 0;
   let latestPayload: any = null;
@@ -148,7 +150,7 @@ export const measureContextHistory = (logs: any[]) => {
   // from a delayed report for an earlier run.
   const boundary = orderedLogs.findLast(log => log?.type === 'user_action' && !log._queuedFollowUp);
   const baseline = orderedLogs[baselineIndex];
-  const receipt = orderedLogs.findLastIndex(log => log?.type === 'model_usage' && readModelUsage(log).inputMeasured);
+  const receipt = orderedLogs.findLastIndex(log => isContextUsageReceipt(log) && readModelUsage(log).inputMeasured);
   if (receipt > baselineIndex) {
     const received = orderedLogs[receipt];
     if (!baseline || (boundary?.runId && boundary.runId !== baseline.runId && received.runId === boundary.runId)
@@ -173,8 +175,7 @@ export const measureContextHistory = (logs: any[]) => {
         const previousPayload = terminalPayload(previous) ? { ...previous.usage, type: 'context_usage' } : previous;
         const replacedContext = committedPayload(previous) || previousPayload?.contextReplaced === true
           || (terminalPayload(previous) && previous.phase === 'compacted');
-        const previousProviderCount = previous?.type === 'model_usage' && previous.phase !== 'chat_title'
-          && readModelUsage(previous).inputMeasured;
+        const previousProviderCount = isContextUsageReceipt(previous) && readModelUsage(previous).inputMeasured;
         if (!validPayload(previousPayload) && !previousProviderCount && !replacedContext) continue;
         const previousModel = contextMeasurementModel(previousPayload);
         if (previousModel && previousModel !== baselineModel) crossesModelChange = true;
@@ -279,7 +280,7 @@ export const measureContextHistory = (logs: any[]) => {
       continue;
     }
     if (log?.type === 'model_usage') {
-      if (log.phase === 'chat_title') continue;
+      if (!isContextUsageReceipt(log)) continue;
       const measuredUsage = readModelUsage(log);
       if (!measuredUsage.inputMeasured) continue;
       const inputTokens = measuredUsage.promptTokens;

@@ -1,4 +1,5 @@
 import { readModelUsage } from '../model-usage';
+import { isNativeSessionProvider } from '../native-provider-contract';
 import type { TokenRates } from './rate-catalog';
 
 export type UsageSource = 'api' | 'sub' | 'unknown';
@@ -32,7 +33,7 @@ function number(...values: unknown[]): number | undefined {
 }
 
 export function usageSource(provider: string): UsageSource {
-  if (provider === 'codex') return 'sub';
+  if (provider === 'codex' || isNativeSessionProvider(provider)) return 'sub';
   return provider && provider !== 'unknown' ? 'api' : 'unknown';
 }
 
@@ -66,8 +67,13 @@ export function receiptMetrics(provider: string, log: any, media = false) {
     images: number(raw.generatedImages), videoSeconds: number(raw.generatedSeconds),
     resolution: typeof raw.videoResolution === 'string' && /^\d+p$/.test(raw.videoResolution) ? raw.videoResolution : undefined,
     audioSeconds: raw.type === 'duration' ? number(raw.seconds) : undefined,
-    media, inputMeasured: m.inputMeasured, outputMeasured: m.outputMeasured,
+    media, inputMeasured: m.inputMeasured, outputMeasured: m.outputMeasured, reasoningMeasured: m.reasoningMeasured,
     measured: m.totalMeasured, cacheMeasured: m.cacheMeasured || inputDetails?.cached_tokens != null,
+    reportedCacheInput: m.inputMeasured ? cached : number(inputDetails?.cached_tokens, raw.cached_tokens,
+      raw.cachedInputTokens, raw.cachedTokens, raw.cachedContentTokenCount, raw.cache_read_input_tokens, raw.prompt_cache_hit_tokens),
+    reportedCacheWrite: m.cacheWriteTokens,
+    otherInput: number(raw.otherInputTokens, raw.other_input_tokens, raw.toolUsePromptTokens, raw.toolUsePromptTokenCount),
+    otherOutput: number(raw.otherOutputTokens, raw.other_output_tokens),
     ...(reported === undefined ? {} : { reported }),
   };
 }

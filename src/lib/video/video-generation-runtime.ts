@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { recordMediaResponse } from '../usage/ledger';
 import { measureFeature } from '../telemetry/runtime';
+import { assertProviderAvailable, ProviderUnavailableError } from '../app-presentation/posthog';
 import path from 'node:path';
 import { GoogleGenAI } from '@google/genai';
 import { withApiKeyRounds } from '../agent/api-retry';
@@ -531,6 +532,12 @@ async function executeVideoRoute(input: VideoGenerationInput, settings: VideoSet
     const model = input.model?.trim() && provider === preferred ? input.model.trim() : (settings.modelByProvider[provider] || meta.defaultModel);
     if (!meta.available || (input.imageUrl ? !meta.supportsImageInput : !meta.supportsTextToVideo)) {
       failedProviders.push({ provider, model, error: 'This route does not support the requested video operation.' }); continue;
+    }
+    try { await assertProviderAvailable(provider); }
+    catch (error) {
+      if (!(error instanceof ProviderUnavailableError)) throw error;
+      failedProviders.push({ provider, model, error: error.message });
+      continue;
     }
     const keys = keysForProvider(provider, settings);
     if (keys.length === 0) { failedProviders.push({ provider, model, error: 'No credential configured.' }); continue; }

@@ -1,0 +1,126 @@
+.dialog {
+  --settings-canvas: #151515;
+  --settings-sidebar: #1b1b1b;
+  --settings-surface: #1d1d1d;
+  --settings-surface-hover: #252525;
+  --settings-selected: #292929;
+  --settings-border: rgba(255, 255, 255, 0.09);
+  --settings-text: #f1f1f1;
+  --settings-muted: #a6a6a6;
+  --settings-toggle-on: #777;
+  --settings-toggle-off: #444;
+  background-color: var(--settings-canvas) !important;
+  color: var(--settings-text);
+}
+
+:global(:root[data-theme='light']) .dialog {
+  --settings-canvas: #fafaf8;
+  --settings-sidebar: #f2f2ef;
+  --settings-surface: #fff;
+  --settings-surface-hover: #f1f1ee;
+  --settings-selected: #e8e8e4;
+  --settings-border: rgba(31, 31, 29, 0.11);
+  --settings-text: #242422;
+  --settings-muted: #686862;
+  --settings-toggle-on: #65655f;
+  --settings-toggle-off: #d4d4cf;
+}
+
+.dialog > :global(.absolute) {
+  background-color: var(--settings-canvas) !important;
+}
+
+.sidebar {
+  background-color: var(--settings-sidebar) !important;
+  border-color: var(--settings-border) !important;
+}
+
+.content {
+  background-color: var(--settings-canvas) !important;
+  border-color: var(--settings-border) !important;
+}
+
+.title {
+  color: var(--settings-text) !important;
+  font-size: 24px;
+  font-weight: 620;
+  letter-spacing: -0.025em;
+}
+
+.dialog :global(.eterx-settings-back-button) {
+  color: var(--settings-muted) !important;
+}
+
+.dialog :global(.eterx-settings-tab) {
+  box-sizing: border-box;
+  height: 36px;
+  border-left: 2px solid transparent;
+  border-radius: 7px;
+  color: var(--settings-muted) !important;
+}
+
+.dialog :global(.eterx-settings-tab:hover) {
+  background-color: var(--settings-surface-hover) !important;
+  color: var(--settings-text) !important;
+}
+
+.dialog :global(.eterx-settings-tab[data-active='true']) {
+  border-left-color: #999;
+  background-color: var(--settings-selected) !important;
+  color: var(--settings-text) !important;
+}
+
+.dialog :global(.eterx-settings-tab:focus-visible),
+.dialog :global(.eterx-settings-back-button:focus-visible) {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.dialog :global(.eterx-setting-row),
+.dialog :global(.eterx-settings-stack) {
+  border-color: var(--settings-border) !important;
+  background-color: var(--settings-surface) !important;
+  border-radius: 10px;
+  box-shadow: none !important;
+}
+
+.dialog :global(.eterx-settings-stack-row) {
+  border-color: var(--settings-border) !important;
+}
+
+.dialog :global(.eterx-setting-label) {
+  color: var(--settings-text);
+}
+
+.dialog :global(.eterx-setting-description) {
+  color: var(--settings-muted);
+}
+
+.dialog :global(button[role='switch'][aria-checked='true']) {
+  background-color: var(--settings-toggle-on) !important;
+  box-shadow: none !important;
+}
+
+.dialog :global(button[role='switch'][aria-checked='false']) {
+  background-color: var(--settings-toggle-off) !important;
+}
+
+.dialog :global([data-settings-search-target='work-mode'] > button) {
+  border-color: var(--settings-border) !important;
+  border-radius: 10px;
+  background-color: var(--settings-canvas) !important;
+}
+
+.dialog :global([data-settings-search-target='work-mode'] > button:hover) {
+  background-color: var(--settings-surface-hover) !important;
+}
+
+.dialog :global([data-settings-search-target='work-mode'] > button[data-selected='true']) {
+  border-color: #858585 !important;
+  background-color: var(--settings-selected) !important;
+}
+
+.dialog :global([data-settings-search-target='work-mode'] > button[data-selected='true'] > span:last-child) {
+  border-color: #858585 !important;
+  background-color: #858585 !important;
+}

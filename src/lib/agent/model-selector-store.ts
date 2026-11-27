@@ -1,4 +1,6 @@
 import type { MainAgentMode, MainAgentProvider } from './model-routing';
+import { isNativeSessionProvider, type SubscriptionProvider } from '../native-provider-contract';
+export type { SubscriptionProvider } from '../native-provider-contract';
 
 export type ModelSelectorEntry = {
   provider: MainAgentProvider;
@@ -41,7 +43,7 @@ export const isConcreteModelId = (value: unknown) => {
 };
 
 // Subscription connections use their own settings and catalog, outside the API provider list.
-export const MODEL_PROVIDER_ORDER: Exclude<MainAgentProvider, 'codex'>[] = [
+export const MODEL_PROVIDER_ORDER: Exclude<MainAgentProvider, SubscriptionProvider>[] = [
   'gemini', 'openai', 'anthropic', 'mistral', 'openrouter', 'groq',
   'deepseek', 'grok', 'cerebras', 'together', 'fireworks', 'sambanova',
   'perplexity', 'deepinfra', 'huggingface', 'nvidia', 'cloudflare',
@@ -55,6 +57,10 @@ export const MODEL_PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = {
   mistral: 'mistral',
   openai: 'openai',
   codex: 'codex',
+  antigravity: 'antigravity',
+  cursor: 'cursor',
+  'grok-build': 'grok-build',
+  'claude-code': 'claude-code',
   openrouter: 'openrouter',
   groq: 'groq',
   anthropic: 'anthropic',
@@ -90,8 +96,11 @@ export const MODEL_PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = {
   custom: 'custom',
 };
 
+export const isAccountModelProvider = (value: unknown): value is SubscriptionProvider =>
+  value === 'codex' || isNativeSessionProvider(value);
+
 export const isModelProvider = (value: unknown): value is MainAgentProvider =>
-  value === 'codex' || (typeof value === 'string' && (MODEL_PROVIDER_ORDER as string[]).includes(value));
+  isAccountModelProvider(value) || (typeof value === 'string' && (MODEL_PROVIDER_ORDER as string[]).includes(value));
 
 export const modelEntryKey = (provider: MainAgentProvider | string, modelId: string) =>
   `${String(provider).trim()}:${encodeURIComponent(String(modelId || '').trim())}`;

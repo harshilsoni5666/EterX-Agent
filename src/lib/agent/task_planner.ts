@@ -6,6 +6,8 @@ import { getProviderBaseURL, isLocalModelProvider } from './provider-runtime';
 import { getRuntimeApiKey, type RuntimeApiKeyProvider } from './runtime-api-keys';
 import { meterModelResponse } from '../usage/ledger';
 import { createCodexSubscriptionClient } from './codex-subscription-runtime';
+import { runSubscriptionTurn } from './native-provider/turn';
+import { isNativeSessionProvider } from '../native-provider-contract';
 import { createProviderChatStream } from './provider-stream-adapter';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 
@@ -752,6 +754,9 @@ export class TaskPlannerClient {
           messages: [{ role: 'user', content: prompt }],
         }), MODEL_REQUEST_TIMEOUT_MS), result => ({ usage: result.usage, responseModel: result.model }));
         rawText = (response.content || []).filter((part: any) => part?.type === 'text').map((part: any) => part.text || '').join('');
+      } else if (isNativeSessionProvider(provider)) {
+        rawText = (await runSubscriptionTurn(provider, { model: modelName, prompt, instruction: PLANNER_SYSTEM_PROMPT, auxiliary: true,
+          signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS) })).text;
       } else if (provider === 'codex') {
         const client = createCodexSubscriptionClient();
         const stream = createProviderChatStream(client, provider, {

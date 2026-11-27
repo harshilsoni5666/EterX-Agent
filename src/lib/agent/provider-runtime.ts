@@ -1,6 +1,7 @@
 import type { MainAgentProvider } from './model-routing';
+import { isNativeSessionProvider, SUBSCRIPTION_PROVIDER_NAMES, type NativeSessionProvider } from '../native-provider-contract';
 
-export type OpenAICompatibleProvider = Exclude<MainAgentProvider, 'gemini' | 'anthropic'>;
+export type OpenAICompatibleProvider = Exclude<MainAgentProvider, 'gemini' | 'anthropic' | NativeSessionProvider>;
 
 type ProviderRuntimeDefinition = {
   label: string;
@@ -135,7 +136,7 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
     visionModelPattern: /\b(gpt-4o|gpt-4\.1|gpt-5|o[134](?:\b|-)|chatgpt)/i,
   },
   codex: {
-    label: 'Codex · ChatGPT plan',
+    label: SUBSCRIPTION_PROVIDER_NAMES.codex,
     compactLabel: 'Codex',
     baseURL: 'https://api.openai.com/v1',
     visionModelPattern: /^gpt-\d/i,
@@ -341,13 +342,14 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
 };
 
 export function getProviderRuntime(provider: MainAgentProvider): ProviderRuntimeDefinition | null {
-  return provider === 'gemini' || provider === 'anthropic'
+  return provider === 'gemini' || provider === 'anthropic' || isNativeSessionProvider(provider)
     ? null
     : OPENAI_COMPATIBLE_PROVIDERS[provider];
 }
 
 export function getProviderBaseURL(provider: MainAgentProvider, scopedOverrides?: Partial<Record<MainAgentProvider, string>>): string {
   if (provider === 'codex') return 'https://api.openai.com/v1';
+  if (isNativeSessionProvider(provider)) return '';
   const override = (scopedOverrides || runtimeBaseURLs)[provider];
   if (override) return override;
   if (provider === 'anthropic') {

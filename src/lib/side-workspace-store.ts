@@ -5,10 +5,11 @@ import { compactWorkspaceRoots } from './workspace-paths';
 import { planViewKey, type TaskTrackerState } from './task-plan-trace';
 import type { TurnChanges } from './turn-changes';
 import { recordBrowserHistory } from './browser-history';
+import { localWorkbenchUrl, type WorkbenchDeviceMode, type WorkbenchView } from './workbench/contracts';
 
-export type WorkspaceKind = 'plan' | 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents' | 'git';
+export type WorkspaceKind = 'plan' | 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents' | 'git' | 'workbench';
 export type WorkspaceReviewState = { scope: 'chat' | 'working' | 'branch'; selected: string; filter: string; expanded: boolean; split: boolean; showTree: boolean; root: string; wrap?: boolean; loadFull?: boolean; richPreview?: boolean; ignoreWhitespace?: boolean; wordHighlights?: 'enabled' | 'disabled'; viewed?: string[]; hideViewed?: boolean; compactFolders?: boolean; baseRefs?: Record<string, string> };
-export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; plan?: TaskTrackerState; planChatId?: string; url?: string; favicon?: string; browserNavigation?: { url: string }; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> }; gitNavigation?: { view: import('./git/types').GitView; focusCommit?: boolean } };
+export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; plan?: TaskTrackerState; planChatId?: string; url?: string; favicon?: string; browserNavigation?: { url: string }; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> }; gitNavigation?: { view: import('./git/types').GitView; focusCommit?: boolean }; workbenchView?: WorkbenchView; workbenchUrl?: string; workbenchTaskId?: string; workbenchChatId?: string; workbenchDeviceMode?: WorkbenchDeviceMode; workbenchWindow?: string; developmentPreview?: boolean; previewDevice?: 'desktop' | 'phone' | 'tablet'; previewLandscape?: boolean };
 // Keep the user's split relative to the workspace after the sidebar is laid
 // out. Pixel widths become stale when the sidebar or window changes size.
 type WorkspaceState = { open: boolean; widthRatio: number; expanded: boolean; tabs: WorkspaceTab[]; activeId: string | null; folders?: string[] };
@@ -32,6 +33,7 @@ function observeBrowserTabs() {
     if (!event.url || event.url === 'about:blank') return;
     let hostname = event.url; try { hostname = new URL(event.url).hostname; } catch {}
     updateWorkspaceTab(owner, event.id, { url: event.url, title: event.title || hostname, favicon: event.favicon });
+    if (read(owner).tabs.find(tab => tab.id === event.id)?.developmentPreview) return;
     const signature = JSON.stringify([event.url, event.title, event.favicon]);
     if (event.loading === false && !event.error && /^https?:\/\//i.test(event.url) && recordedBrowserPages.get(event.id) !== signature) {
       recordedBrowserPages.set(event.id, signature);
@@ -44,7 +46,7 @@ function releaseBrowserEvents() {
   browserEventsStop?.(); browserEventsStop = undefined;
 }
 const read = (owner: string) => states.get(resolveWorkspaceOwner(owner)) || empty;
-const titles: Record<WorkspaceKind, string> = { plan: 'Plan', review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat', subagents: 'Sub-Agents', git: 'Git' };
+const titles: Record<WorkspaceKind, string> = { plan: 'Plan', review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat', subagents: 'Sub-Agents', git: 'Git', workbench: 'Workbench' };
 function subscribe(owner: string, fn: () => void) {
   const set = listeners.get(owner) || new Set();
   listeners.set(owner, set); set.add(fn);
@@ -95,7 +97,7 @@ export function addWorkspaceTab(owner: string, kind: WorkspaceKind, details: Par
     (tab.planChatId || owner) === (details.planChatId || owner) &&
     (tab.plan ? planViewKey(tab.plan) : '') === (details.plan ? planViewKey(details.plan) : ''));
   const existing = selectedPlan || (kind === 'files' ? state.tabs.find(tab => tab.id === state.activeId && tab.kind === 'files') : undefined)
-    || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'changes' || kind === 'files' || kind === 'subagents' || kind === 'git'));
+    || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'changes' || kind === 'files' || kind === 'subagents' || kind === 'git' || kind === 'workbench'));
   if (existing) {
     const requestedReview = kind === 'review' && (details.path || details.review) ? { reviewPathRequest: (existing.reviewPathRequest || 0) + 1, ...(details.review ? { review: details.review } : existing.review ? { review: { ...existing.review, selected: details.path!, scope: 'chat' as const } } : {}) } : {};
     updateWorkspace(owner, { open: true, activeId: existing.id, tabs: state.tabs.map(tab => tab.id === existing.id ? { ...tab, ...details, ...requestedReview, id: tab.id, kind, title: details.title || tab.title } : tab) });
@@ -116,13 +118,43 @@ export function openWorkspaceBrowser(owner: string, url: string, details: { titl
   if (!['http:', 'https:'].includes(destination.protocol) || destination.username || destination.password) return;
   const state = read(owner);
   const browsers = state.tabs.filter(tab => tab.kind === 'browser');
-  const matching = browsers.find(tab => tab.url === destination.href);
+  const matching = browsers.find(tab => !tab.developmentPreview && tab.url === destination.href);
   if (matching) { updateWorkspace(owner, { open: true, activeId: matching.id }); return matching.id; }
-  const current = browsers.find(tab => tab.id === state.activeId) || (browsers.length >= 12 ? browsers[browsers.length - 1] : undefined);
+  const current = browsers.find(tab => tab.id === state.activeId && !tab.developmentPreview) || (browsers.length >= 12 ? browsers.findLast(tab => !tab.developmentPreview) : undefined);
+  if (!current && browsers.length >= 12) return;
   if (!current) return addWorkspaceTab(owner, 'browser', { ...details, url: destination.href });
   updateWorkspace(owner, { open: true, activeId: current.id, tabs: state.tabs.map(tab => tab.id === current.id
     ? { ...tab, ...details, url: destination.href, browserNavigation: { url: destination.href } } : tab) });
   return current.id;
+}
+export function openDevelopmentPreview(owner: string, value: string, label?: string) {
+  const url = localWorkbenchUrl(value);
+  const state = read(owner);
+  const browsers = state.tabs.filter(tab => tab.kind === 'browser');
+  const matching = browsers.find(tab => tab.developmentPreview && (tab.workbenchUrl === url.href || tab.url === url.href));
+  if (matching) {
+    updateWorkspace(owner, { open: true, activeId: matching.id });
+    return matching.id;
+  }
+  if (browsers.length >= 12) throw new Error('Close a browser tab before opening another preview.');
+  return addWorkspaceTab(owner, 'browser', { url: url.href, workbenchUrl: url.href, developmentPreview: true, title: label || url.host });
+}
+export function activeDevelopmentPreview(owner: string) {
+  const state = read(owner);
+  return state.open ? state.tabs.find(tab => tab.id === state.activeId && tab.kind === 'browser' && tab.developmentPreview) : undefined;
+}
+export function openWorkbenchView(owner: string, chatId: string, view?: WorkbenchView, target: { url?: string; taskId?: string; mode?: WorkbenchDeviceMode } = {}) {
+  const current = read(owner).tabs.find(tab => tab.kind === 'workbench');
+  const sameChat = !current?.workbenchChatId || current.workbenchChatId === chatId;
+  if (!view && sameChat && current) return addWorkspaceTab(owner, 'workbench', { workbenchChatId: chatId });
+  return addWorkspaceTab(owner, 'workbench', {
+    workbenchChatId: chatId,
+    workbenchView: view || 'runs',
+    workbenchTaskId: view === 'runs' ? target.taskId : sameChat ? current?.workbenchTaskId : undefined,
+    workbenchUrl: target.url,
+    workbenchDeviceMode: view === 'devices' ? target.mode || 'devices' : sameChat ? current?.workbenchDeviceMode : undefined,
+    workbenchWindow: sameChat ? current?.workbenchWindow : undefined,
+  });
 }
 export function updateWorkspaceTab(owner: string, id: string, patch: Partial<WorkspaceTab>) {
   const state = read(owner);

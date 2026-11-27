@@ -17,12 +17,13 @@ import {
   type ScopedRuntimeSettings,
 } from './runtime-api-keys';
 import { getDocumentedThinkingCapabilities } from './model-thinking-contracts';
+import { SUBSCRIPTION_PROVIDER_NAMES, type NativeProvider } from '../native-provider-contract';
 export { getDocumentedThinkingCapabilities } from './model-thinking-contracts';
 // Compatibility export for existing callers; this no longer guesses support.
 export { getDocumentedThinkingCapabilities as inferModelThinkingCapabilities } from './model-thinking-contracts';
 
-export type MainAgentProvider =
-  | 'gemini' | 'mistral' | 'openai' | 'codex' | 'openrouter' | 'anthropic' | 'groq'
+export type MainAgentProvider = NativeProvider
+  | 'gemini' | 'mistral' | 'openai' | 'codex' | 'antigravity' | 'openrouter' | 'anthropic' | 'groq'
   | 'deepseek' | 'grok' | 'cerebras' | 'together' | 'fireworks' | 'sambanova'
   | 'perplexity' | 'deepinfra' | 'huggingface' | 'nvidia' | 'cloudflare'
   | 'ollama' | 'lmstudio' | 'vllm' | 'llamacpp' | 'novita' | 'qwen'
@@ -51,6 +52,7 @@ export type ModelThinkingParameter =
   | 'chat_template_kwargs.enable_thinking'
   | 'chat_template_kwargs.thinking'
   | 'reasoning_effort'
+  | 'thought_level'
   | 'reasoning'
   | 'thinking.budget_tokens'
   | 'chat_template_kwargs.reasoning_effort'
@@ -200,9 +202,32 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   codex: {
     id: 'codex',
     provider: 'codex',
-    label: 'Codex · ChatGPT plan',
+    label: SUBSCRIPTION_PROVIDER_NAMES.codex,
     compactLabel: 'Codex',
     get modelName() { return resolveModelName('codex'); },
+    selectable: true,
+  },
+  antigravity: {
+    id: 'antigravity',
+    provider: 'antigravity',
+    label: SUBSCRIPTION_PROVIDER_NAMES.antigravity,
+    compactLabel: 'Antigravity',
+    get modelName() { return resolveModelName('antigravity'); },
+    selectable: true,
+  },
+  cursor: {
+    id: 'cursor', provider: 'cursor', label: SUBSCRIPTION_PROVIDER_NAMES.cursor, compactLabel: SUBSCRIPTION_PROVIDER_NAMES.cursor,
+    get modelName() { return resolveModelName('cursor'); },
+    selectable: true,
+  },
+  'grok-build': {
+    id: 'grok-build', provider: 'grok-build', label: SUBSCRIPTION_PROVIDER_NAMES['grok-build'], compactLabel: SUBSCRIPTION_PROVIDER_NAMES['grok-build'],
+    get modelName() { return resolveModelName('grok-build'); },
+    selectable: true,
+  },
+  'claude-code': {
+    id: 'claude-code', provider: 'claude-code', label: SUBSCRIPTION_PROVIDER_NAMES['claude-code'], compactLabel: SUBSCRIPTION_PROVIDER_NAMES['claude-code'],
+    get modelName() { return resolveModelName('claude-code'); },
     selectable: true,
   },
   openrouter: {
@@ -387,7 +412,7 @@ export function normalizeModelThinkingCapabilities(value: unknown): ModelThinkin
 
   const rawDefault = source.defaultLevel ?? source.default_effort ?? source.defaultThinkingLevel;
   const defaultLevel = rawDefault === undefined ? undefined : normalizeAdvertisedThinkingLevel(rawDefault);
-  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'thinkingBudget' || source.parameter === 'thinking_level' || source.parameter === 'thinking_budget' || source.parameter === 'thinking.type' || source.parameter === 'enable_thinking' || source.parameter === 'reasoning.enabled' || source.parameter === 'chat_template_kwargs.enable_thinking' || source.parameter === 'chat_template_kwargs.thinking' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort' || source.parameter === 'thinking.budget_tokens' || source.parameter === 'chat_template_kwargs.reasoning_effort'
+  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'thinkingBudget' || source.parameter === 'thinking_level' || source.parameter === 'thinking_budget' || source.parameter === 'thinking.type' || source.parameter === 'enable_thinking' || source.parameter === 'reasoning.enabled' || source.parameter === 'chat_template_kwargs.enable_thinking' || source.parameter === 'chat_template_kwargs.thinking' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort' || source.parameter === 'thinking.budget_tokens' || source.parameter === 'chat_template_kwargs.reasoning_effort' || source.parameter === 'thought_level'
     ? source.parameter
     : undefined;
   const sourceKind = source.source === 'inferred' ? 'inferred' : source.source === 'documented' ? 'documented' : 'provider';

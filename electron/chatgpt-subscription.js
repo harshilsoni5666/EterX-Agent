@@ -261,10 +261,14 @@ function createChatGptSubscription({
   const findProfile = id => record?.profiles.find(profile => profile.id === id);
   const activeProfile = () => findProfile(record?.activeProfileId);
 
+  function publicUsage(profile) {
+    const usage = profileStatus(profile) === 'connected' ? observedUsage.get(profile.id) : null;
+    return usage ? { status: usage.status, observedAt: usage.observedAt, retryAt: usage.pausedUntil || undefined } : null;
+  }
+
   function state() {
     const profile = activeProfile();
     const status = profileStatus(profile);
-    const usage = status === 'connected' ? observedUsage.get(profile.id) : null;
     return {
       available: available && bridgeReady,
       status,
@@ -273,6 +277,7 @@ function createChatGptSubscription({
         label: `Connection ${account.number}`,
         email: account.email,
         status: profileStatus(account),
+        usage: publicUsage(account),
       })),
       activeAccountId: profile?.id ?? null,
       authorizing: Boolean(activeFlow),
@@ -284,7 +289,7 @@ function createChatGptSubscription({
       catalogRevision,
       refreshing: Boolean(catalogRequest),
       catalogError: catalogError || null,
-      usage: usage ? { status: usage.status, observedAt: usage.observedAt } : null,
+      usage: publicUsage(profile),
       planWelcomePending: status === 'connected' && record.planWelcome === 'pending',
       error: signInError || null,
     };
@@ -1059,8 +1064,16 @@ function createChatGptSubscription({
       if (error?.code !== 'ENOENT') throw error;
     });
     bridge = http.createServer((request, response) => {
-      if (request.method !== 'POST' || request.url !== '/v1/responses'
-        || !equalSecret(request.headers['x-eterx-codex-bridge'], key)) {
+      if (!equalSecret(request.headers['x-eterx-codex-bridge'], key)) {
+        response.writeHead(404).end();
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/v1/models') {
+        response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+          .end(JSON.stringify(state().models.map(model => model.id)));
+        return;
+      }
+      if (request.method !== 'POST' || request.url !== '/v1/responses') {
         response.writeHead(404).end();
         return;
       }

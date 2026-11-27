@@ -6,12 +6,14 @@ import { Check, ChevronDown } from 'lucide-react';
 import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { formatModelName } from '../../lib/agent/model-presentation';
 import { modelEntryKey, parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
+import { ModelBadges, usePausedProviders } from '../updates/model-badges';
 
 export function ProxyChatModelPicker({ selection, entries, onSelect }: {
   selection: string;
   entries: ModelSelectorEntry[];
   onSelect: (selection: string) => void;
 }) {
+  const paused = usePausedProviders();
   const workspaceVisible = useWorkspacePaneVisible();
   const [menuOpen, setOpen] = useState(false);
   const open = workspaceVisible && menuOpen;
@@ -129,16 +131,21 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
       {entries.length ? entries.map(entry => {
         const key = modelEntryKey(entry.provider, entry.modelId);
         const selected = key === selection;
+        const unavailable = paused.has(entry.provider);
         return <button
           key={key}
           type="button"
           role="menuitemradio"
           aria-checked={selected}
+          disabled={unavailable}
           title={entry.modelId}
           onClick={() => { onSelect(key); close(); }}
         >
           <span className="min-w-0 flex-1">
-            <span className="block [overflow-wrap:anywhere] text-[12px]">{formatModelName(entry.modelId)}</span>
+            <span className="eterx-model-name-with-badges text-[12px]">
+              <span className="truncate">{formatModelName(entry.modelId)}</span>
+              {unavailable ? <span className="eterx-model-badge">Unavailable</span> : <ModelBadges provider={entry.provider} modelId={entry.modelId} />}
+            </span>
             <span className="eterx-proxy-model-provider">{entry.provider}</span>
           </span>
           {selected && <Check className="h-3.5 w-3.5 shrink-0 opacity-75" />}

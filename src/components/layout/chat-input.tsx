@@ -1,11 +1,13 @@
 'use client';
 
-import { codexCatalogPending, codexModelLabel, codexThinkingCatalog, withCodexSubscriptionModels } from '../../lib/chatgpt-subscription-client';
+import { subscriptionModelLabel, subscriptionThinkingCatalog, withSubscriptionModels } from '../../lib/subscription-models-client';
+import { SUBSCRIPTION_PROVIDER_NAMES } from '../../lib/native-provider-contract';
+import { isAccountModelProvider } from '../../lib/agent/model-selector-store';
 import { getModelFastMode, setModelFastMode } from '../../lib/model-fast-preferences';
 
 import { planStepLabels, planTitle, type PlanImplementation, type TaskTrackerState } from '../../lib/task-plan-trace';
 import { openPlanInWorkspace, PlanPanelOwner } from '../chat/task-plan-card';
-import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
+import { isModelCatalogStorageKey, PROVIDER_BASE_URLS_STORAGE_KEY, readAvailableModelEntries, refreshSavedModelCatalog } from '../../lib/model-catalog-client';
 import { CHAT_PLAN_MODE_CHANGED, readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, type summarizeChatUsage } from '../../lib/chat-command-state';
 import { formatModelName } from '../../lib/agent/model-presentation';
 import { PASTED_TEXT_MIME, shouldAttachPaste } from '../../lib/pasted-text';
@@ -20,9 +22,9 @@ import { CODING_MODES, getCodingMode, type CodingAgentId } from '../../lib/code/
 import { CodingModeDetails } from './coding-mode-details';
 import { ComposerPermissionSelector, ComposerToolApprovals } from './composer-permissions';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
+import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot, Zap } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
-import { ProviderIconAsset } from '../ui/provider-icon';
+import { ModelProviderIconAsset } from '../ui/provider-icon';
 import { Tooltip } from '../ui/tooltip';
 import { useWorkspacePaneVisible } from '../ui/workspace-pane-visibility';
 import { DictationButton } from '../ui/dictation-button';
@@ -54,13 +56,9 @@ import {
   MODEL_PROVIDER_MODE,
   MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
-  MODEL_WIRE_CAPABILITIES_STORAGE_KEY,
   MODEL_THINKING_LEVELS_STORAGE_KEY,
-  entriesToModelCatalog,
-  ensureModelSelectorEntry,
   isEmbeddedModelLabel,
   modelEntryKey,
-  normalizeModelSelectorEntries,
   parseModelEntryKey,
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
@@ -70,7 +68,6 @@ import { WorkspaceLocationMenu } from './workspace-location-menu';
 import { ProjectFolderPicker, projectFolderName, useProjectFolderBrowse } from './project-folder-picker';
 import { GitBranchControl } from './git-branch-control';
 import type { RunLocation } from '../../lib/managed-workspaces';
-import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { formatExactContextTokens } from '../../lib/context-window-policy';
 import { buildFilePreviewUrl, getNativeFilePath } from '../../lib/path-utils';
 import { getFileIconPath } from '../../lib/utils/file-icon-utils';
@@ -96,11 +93,8 @@ const syncRuntimeModelOverrides = (modelOverrides: Record<string, string>) => {
 };
 
 type StoredModelSettings = {
-  apiKeys: Partial<Record<MainAgentProvider, string>>;
   modelOverrides: Partial<Record<MainAgentProvider, string>>;
-  modelCatalog: Partial<Record<MainAgentProvider, string[]>>;
   modelEntries: ModelSelectorEntry[];
-  modelApiKeys: Record<string, string>;
   thinkingCapabilities: Record<string, ModelThinkingCapabilities>;
   chatModelSelection: string;
 };
@@ -119,7 +113,7 @@ const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
   gemini: 'Google Gemini',
   mistral: 'Mistral',
   openai: 'OpenAI',
-  codex: 'Codex · ChatGPT plan',
+  ...SUBSCRIPTION_PROVIDER_NAMES,
   openrouter: 'OpenRouter',
   groq: 'Groq',
   anthropic: 'Anthropic',
@@ -151,35 +145,6 @@ const readStringRecord = (storageKey: string): Record<string, string> => {
   }
 };
 
-const readStringArrayRecord = (storageKey: string): Record<string, string[]> => {
-  if (typeof window === 'undefined') return {};
-  try {
-    const parsed = JSON.parse(appStorage.getItem(storageKey) || '{}');
-    if (!parsed || typeof parsed !== 'object') return {};
-    return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>)
-        .map(([key, value]) => {
-          const values = Array.isArray(value)
-            ? value
-            : typeof value === 'string'
-              ? value.split(/[\n,]/)
-              : [];
-          return [
-            key,
-            Array.from(new Set(
-              values
-                .map(item => String(item || '').trim())
-                .filter(Boolean),
-            )),
-          ];
-        })
-        .filter(([, value]) => value.length > 0),
-    );
-  } catch {
-    return {};
-  }
-};
-
 const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilities> => {
   if (typeof window === 'undefined') return {};
   try {
@@ -196,50 +161,15 @@ const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilitie
 };
 
 const readStoredModelSettings = (): StoredModelSettings => {
-  const apiKeys = readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
-  const storedModelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
-  const modelCatalog = readStringArrayRecord(MODEL_CATALOG_STORAGE_KEY) as Partial<Record<MainAgentProvider, string[]>>;
-  const savedEntries = typeof window !== 'undefined'
-    ? (() => {
-      try {
-        return JSON.parse(appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || '[]');
-      } catch {
-        return [];
-      }
-    })()
-    : [];
   const storedChatModelSelection = typeof window !== 'undefined'
     ? (appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
     : AUTO_MODEL_SELECTION;
-  const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
-  const modelEntries = withCodexSubscriptionModels(normalizeModelSelectorEntries(savedEntries, modelCatalog));
-  const modelOverrides = Object.fromEntries(
-    Object.entries(storedModelOverrides).filter(([provider, modelId]) =>
-      modelEntries.some(entry => entry.provider === provider && entry.modelId === modelId)
-    ),
-  ) as Partial<Record<MainAgentProvider, string>>;
-  const modelApiKeys = readStringRecord(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
-  const thinkingCapabilities = { ...readThinkingCapabilityRecord(), ...codexThinkingCatalog() };
-  const usableEntries = modelEntries.filter(entry =>
-    entry.provider === 'codex' || isLocalModelProvider(entry.provider)
-    || Boolean(apiKeys[entry.provider])
-    || Boolean(modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
-  );
-  const chatModelSelection = parsedStoredChatModel && (
-    (parsedStoredChatModel.provider === 'codex' && codexCatalogPending())
-    || usableEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
-  )
-    ? storedChatModelSelection
-    : AUTO_MODEL_SELECTION;
-
   return {
-    apiKeys,
-    modelOverrides,
-    modelCatalog,
-    modelEntries,
-    modelApiKeys,
-    thinkingCapabilities,
-    chatModelSelection,
+    modelOverrides: Object.fromEntries(Object.entries(readStringRecord(MODEL_OVERRIDE_STORAGE_KEY))
+      .filter(([, id]) => !isEmbeddedModelLabel(id))),
+    modelEntries: withSubscriptionModels(readAvailableModelEntries()),
+    thinkingCapabilities: { ...readThinkingCapabilityRecord(), ...subscriptionThinkingCatalog() },
+    chatModelSelection: parseModelEntryKey(storedChatModelSelection) ? storedChatModelSelection : AUTO_MODEL_SELECTION,
   };
 };
 
@@ -419,7 +349,7 @@ export interface ChatInputProps {
   prepareManagedWorkspace?: boolean;
   chatModelSelection?: string;
   onModelSelectionChange?: (selection: string) => void;
-  onOpenSettingsTab?: (tab: 'api' | 'models' | 'general') => void;
+  onOpenSettingsTab?: (tab: 'api' | 'general') => void;
   chatTitle?: string;
   chatUsage?: ReturnType<typeof summarizeChatUsage>;
   onCompact?: () => Promise<void>;
@@ -1157,6 +1087,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const activeComposerChatKey = activeChatId || 'new_chat';
   const isStopping = stoppingChatIds.has(activeComposerChatKey);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
   const [modelPickerInstance, setModelPickerInstance] = useState(0);
   const closeModelPicker = useCallback(() => setShowModelMenu(false), []);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
@@ -1434,11 +1365,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     };
   }, [activeChatId]);
   const [storedModelSettings, setStoredModelSettings] = useState<StoredModelSettings>(() => ({
-    apiKeys: {},
     modelOverrides: {},
-    modelCatalog: {},
     modelEntries: [],
-    modelApiKeys: {},
     thinkingCapabilities: {},
     chatModelSelection: AUTO_MODEL_SELECTION,
   }));
@@ -1451,11 +1379,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const exists = storedModelSettings.modelEntries.some(candidate =>
       modelEntryKey(candidate.provider, candidate.modelId) === selection
     );
-    const hasCredential = entry.provider === 'codex' || isLocalModelProvider(entry.provider)
-      || Boolean(storedModelSettings.apiKeys[entry.provider])
-      || Boolean(storedModelSettings.modelApiKeys[selection]);
-    return exists && hasCredential ? entry : null;
-  }, [propChatModelSelection, storedModelSettings.apiKeys, storedModelSettings.chatModelSelection, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
+    return exists ? entry : null;
+  }, [propChatModelSelection, storedModelSettings.chatModelSelection, storedModelSettings.modelEntries]);
   const connectors = useConnectors();
   const [localRunLocation, setLocalRunLocation] = useState<RunLocation>('local');
   const runLocation = propRunLocation !== undefined ? propRunLocation : localRunLocation;
@@ -1504,54 +1429,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   });
 
   const refreshStoredModelSettings = useCallback(() => {
-    const loaded = readStoredModelSettings();
-    const storedThinkingLevels = readModelThinkingLevels();
-    const usableModelKeys = new Set(loaded.modelEntries.map(entry => modelEntryKey(entry.provider, entry.modelId)));
-    const loadedThinkingLevels = Object.fromEntries(
-      Object.entries(storedThinkingLevels).filter(([modelKey]) => usableModelKeys.has(modelKey) || parseModelEntryKey(modelKey)?.provider === 'codex'),
-    ) as Record<string, MainAgentThinkingLevel>;
-    const cleanOverrides = Object.fromEntries(
-      Object.entries(loaded.modelOverrides).filter(([, modelId]) => !isEmbeddedModelLabel(modelId)),
-    ) as Partial<Record<MainAgentProvider, string>>;
-    const durableEntries = loaded.modelEntries.filter(entry => entry.provider !== 'codex');
-    const cleanCatalog = entriesToModelCatalog(durableEntries);
-    const cleanSelection = loaded.chatModelSelection;
-
-    // Persist the migration once so the removed placeholder cannot return
-    // from the folder snapshot on the next refresh or another device.
-    const durableValues: Array<[string, string]> = [
-      [MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(durableEntries)],
-      [MODEL_CATALOG_STORAGE_KEY, JSON.stringify(cleanCatalog)],
-      [MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(cleanOverrides)],
-      [CHAT_MODEL_SELECTION_STORAGE_KEY, cleanSelection],
-    ];
-    const durableSnapshot = Object.fromEntries(durableValues);
-    // This callback also runs for each storage update. Only persist an actual
-    // migration change; rewriting the same snapshot from inside the storage
-    // event handler can otherwise re-enter that handler while a write is
-    // still pending and freeze the renderer during model selection.
-    if (durableValues.some(([key, value]) => appStorage.getItem(key) !== value)) {
-      appStorage.setItems(durableSnapshot);
-    }
-    if (JSON.stringify(storedThinkingLevels) !== JSON.stringify(loadedThinkingLevels)) {
-      persistModelThinkingLevels(loadedThinkingLevels);
-    }
-
-    setStoredModelSettings({
-      ...loaded,
-      modelOverrides: cleanOverrides,
-      modelCatalog: cleanCatalog,
-      chatModelSelection: cleanSelection,
-    });
+    setStoredModelSettings(readStoredModelSettings());
+    const loadedThinkingLevels = readModelThinkingLevels();
     setModelThinkingLevels(previous =>
       JSON.stringify(previous) === JSON.stringify(loadedThinkingLevels)
         ? previous
         : loadedThinkingLevels
     );
-  }, []);
-
-  const refreshComposerThinkingCapabilities = useCallback(async () => {
-    await refreshSavedModelCatalog();
   }, []);
   // Let the editor grow with the draft, but keep long prompts from taking over
   // the chat. Once this bound is reached, the textarea itself becomes the
@@ -1618,8 +1502,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   useEffect(() => {
     if (!showModelMenu) return;
-    void refreshComposerThinkingCapabilities();
-  }, [refreshComposerThinkingCapabilities, showModelMenu]);
+    let open = true;
+    const refresh = () => {
+      void refreshSavedModelCatalog().then(() => {
+        if (open) setModelCatalogLoading(false);
+      });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    return () => {
+      open = false;
+      window.clearInterval(timer);
+    };
+  }, [showModelMenu]);
 
 
   useEffect(() => {
@@ -1630,12 +1525,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       MODEL_API_KEY_STORAGE_KEY, MODEL_API_KEY_PRESENCE_STORAGE_KEY,
       MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_OVERRIDE_STORAGE_KEY,
       MODEL_THINKING_CAPABILITIES_STORAGE_KEY, MODEL_THINKING_LEVELS_STORAGE_KEY,
-      CHAT_MODEL_SELECTION_STORAGE_KEY,
+      CHAT_MODEL_SELECTION_STORAGE_KEY, PROVIDER_BASE_URLS_STORAGE_KEY,
     ]);
     const onSettingsUpdated = (event?: Event) => {
       if (disposed) return;
       const key = (event as CustomEvent | undefined)?.detail?.key;
-      if (event?.type === 'eterx-folder-storage-updated' && key && !modelStorageKeys.has(key)) return;
+      if (event?.type === 'eterx-folder-storage-updated' && key
+        && !modelStorageKeys.has(key) && !isModelCatalogStorageKey(key)) return;
       if (refreshPending) return;
       refreshPending = true;
       // Settings broadcasts are synchronous. Read the committed selection
@@ -2506,7 +2402,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (isNetworkPaused) return;
     if (!isAgentRunning && !activeConfiguredChatModel) {
       queuedSendRef.current = null;
-      showComposerNotice('No model configured', 'Add an API key in Settings > API, then choose a live model in Settings > Models.');
+      showComposerNotice('Select a model', 'Choose a model from the chat picker. To connect a provider, add a key in Settings → API.');
       return;
     }
     queuedSendRef.current = null;
@@ -2564,7 +2460,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
 
     if (!isAgentRunning && !activeConfiguredChatModel) {
-      showComposerNotice('No model configured', 'Add an API key in Settings > API, then choose a live model in Settings > Models.');
+      showComposerNotice('Select a model', 'Choose a model from the chat picker. To connect a provider, add a key in Settings → API.');
       return;
     }
     // Never invoke the send handler for an empty composer. This can happen
@@ -2636,29 +2532,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const inputSidePadding = isCompressed ? 'px-11' : 'px-5 sm:px-6';
   const composerRadius = isCompressed ? 'rounded-[24px]' : 'rounded-[26px]';
   const modelOptions = useMemo<ChatModelOption[]>(() => {
-    return storedModelSettings.modelEntries
-      .filter(entry =>
-        entry.provider === 'codex' || isLocalModelProvider(entry.provider)
-        || Boolean(storedModelSettings.apiKeys[entry.provider])
-        || Boolean(storedModelSettings.modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
-      )
-      .map(entry => {
-        const mode = MODEL_PROVIDER_MODE[entry.provider];
-        const label = (entry.provider === 'codex' ? codexModelLabel(entry.modelId) : undefined) || formatModelName(entry.modelId);
-        return {
-          optionKey: modelEntryKey(entry.provider, entry.modelId),
-          id: mode,
-          provider: entry.provider,
-          label,
-          compactLabel: label,
-          modelName: entry.modelId,
-          modelId: entry.modelId,
-        };
-      });
-  }, [storedModelSettings.apiKeys, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
-  // Only show models that came from the persisted model directory/settings.
-  // The static agent mode config is for request routing; it is not a real
-  // selectable model and must never be rendered as one by the composer.
+    return storedModelSettings.modelEntries.map(entry => {
+      const mode = MODEL_PROVIDER_MODE[entry.provider];
+      const label = subscriptionModelLabel(entry.provider, entry.modelId) || formatModelName(entry.modelId);
+      return {
+        optionKey: modelEntryKey(entry.provider, entry.modelId),
+        id: mode,
+        provider: entry.provider,
+        label,
+        compactLabel: label,
+        modelName: entry.modelId,
+        modelId: entry.modelId,
+      };
+    });
+  }, [storedModelSettings.modelEntries]);
   const activeModelSelection = propChatModelSelection !== undefined ? propChatModelSelection : storedModelSettings.chatModelSelection;
   const selectedModel = modelOptions.find(option => option.optionKey === activeModelSelection) || null;
   
@@ -2713,10 +2600,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       : undefined;
   }, [activeThinkingOptions, normalizedActiveThinkingLevel]);
   const modelDisplayLabel = selectedModel
-    ? selectedModel.label
-    : modelOptions.length > 0
-      ? 'Select a model'
-      : 'Set up models';
+    ? isAccountModelProvider(selectedModel.provider) ? `${MODEL_PROVIDER_LABEL[selectedModel.provider]} · ${selectedModel.label}` : selectedModel.label
+    : 'Select a model';
 
   // Normalize this composer's active level without rewriting model defaults.
   // Only an explicit thinking-level edit should persist a new default; a
@@ -2854,54 +2739,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       return;
     }
     const nextOverrides = { ...storedModelSettings.modelOverrides, [option.provider]: option.modelId || option.modelName };
-    const nextEntries = ensureModelSelectorEntry(storedModelSettings.modelEntries, option.provider, option.modelId || option.modelName);
-    const durableEntries = nextEntries.filter(entry => entry.provider !== 'codex');
-    const nextCatalog = entriesToModelCatalog(durableEntries);
 
     appStorage.setItems({
       [CHAT_MODEL_SELECTION_STORAGE_KEY]: option.optionKey,
-      [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(durableEntries),
-      [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(nextCatalog),
       [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(nextOverrides),
     });
     writeStoredAgentMode(option.id);
     setStoredModelSettings(prev => ({
       ...prev,
       modelOverrides: nextOverrides,
-      modelCatalog: nextCatalog,
-      modelEntries: nextEntries,
       chatModelSelection: option.optionKey,
     }));
     emitModelSettingsUpdate({
       type: 'model-selection-updated',
       modelOverrides: nextOverrides,
-      modelCatalog: nextCatalog,
-      modelEntries: nextEntries,
       chatModelSelection: option.optionKey,
     });
     syncRuntimeModelOverrides(nextOverrides);
     onModeChange(option.id);
     setShowModelMenu(false);
-  }, [getEffectiveThinkingLevel, onThinkingLevelChange, modelSelectionScope, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
-  useEffect(() => {
-    if (isModelLocked) return;
-    if (modelOptions.some(option => option.optionKey === activeModelSelection)) return;
-    const nextSelection = AUTO_MODEL_SELECTION;
-    if (activeModelSelection === nextSelection) return;
-    if (modelSelectionScope === 'surface') {
-      // A chat owns its model selection even while the folder-backed model
-      // catalog/API-key snapshot is hydrating or temporarily unavailable.
-      // Clearing it here made navigation and New chat show an older/default
-      // model and could make Send fail before the catalog arrived. Leave the
-      // durable selection intact; it becomes selectable again as soon as its
-      // catalog entry is restored.
-      return;
-    }
-    appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, nextSelection);
-    setStoredModelSettings(previous => ({ ...previous, chatModelSelection: nextSelection }));
-    onModelSelectionChange?.(nextSelection);
-    emitModelSettingsUpdate({ type: 'model-selection-reconciled', chatModelSelection: nextSelection });
-  }, [isModelLocked, modelOptions, activeModelSelection, modelSelectionScope, onModelSelectionChange]);
+  }, [getEffectiveThinkingLevel, onThinkingLevelChange, modelSelectionScope, onModeChange, storedModelSettings.modelOverrides, onModelSelectionChange]);
   const controlPopoutVerticalClass = 'bottom-[calc(100%+8px)]';
   const pillPopoutVerticalClass = isEmptyHome ? 'bottom-full mb-2' : 'bottom-[calc(100%+72px)] mb-0';
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle';
@@ -4321,12 +4178,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   type="button"
                   disabled={isModelLocked}
                   onClick={() => {
-                    if (modelOptions.length === 0) {
-                      setShowModelMenu(false);
-                      onOpenSettingsTab?.('api');
-                      return;
+                    if (!showModelMenu) {
+                      setModelCatalogLoading(modelOptions.length === 0);
+                      setModelPickerInstance(instance => instance + 1);
                     }
-                    if (!showModelMenu) setModelPickerInstance(instance => instance + 1);
                     setShowModelMenu(!showModelMenu);
                   }}
                   data-open={showModelMenu ? 'true' : undefined}
@@ -4344,7 +4199,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       event.stopPropagation();
                     }}>
                       {selectedModel ? (
-                        <ProviderIconAsset provider={selectedModel.provider} className="eterx-model-provider-icon size-4" />
+                        <ModelProviderIconAsset provider={selectedModel.provider} className="eterx-model-provider-icon size-4" />
                       ) : (
                         <svg
                           aria-hidden="true"
@@ -4360,6 +4215,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           <path d="m2 17 10 5 10-5" />
                           <path d="m2 12 10 5 10-5" />
                         </svg>
+                      )}
+                      {selectedModel && getModelFastMode(selectedModel.optionKey) === true && (
+                        <Zap role="img" aria-label="Speed mode enabled"
+                          className="eterx-model-fast-indicator size-3.5 shrink-0 fill-current">
+                          <title>Speed mode enabled</title>
+                        </Zap>
                       )}
                       <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {modelDisplayLabel}
@@ -4382,6 +4243,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       anchorRef={modelSelectorRef}
                       openBelow={isNewChatHome}
                       models={modelOptions}
+                      loading={modelCatalogLoading}
+                      onOpenApiSettings={onOpenSettingsTab && (() => {
+                        closeModelPicker();
+                        onOpenSettingsTab('api');
+                      })}
                       selectedModel={selectedModel}
                       providerLabels={MODEL_PROVIDER_LABEL}
                       getThinkingOptions={getThinkingLevelOptions}

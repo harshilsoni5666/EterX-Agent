@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { recordMediaResponse } from '../usage/ledger';
 import { measureFeature } from '../telemetry/runtime';
+import { assertProviderAvailable, ProviderUnavailableError } from '../app-presentation/posthog';
 import path from 'node:path';
 import { withApiKeyRounds } from '../agent/api-retry';
 import {
@@ -387,6 +388,12 @@ async function executeImageRoute(input: ImageGenerationInput, settings: ImageSet
     const meta = IMAGE_PROVIDER_META[provider];
     const model = input.model?.trim() && provider === preferred ? input.model.trim() : (settings.modelByProvider[provider] || meta.defaultModel);
     if (!meta.available) { failedProviders.push({ provider, model, error: 'Provider is unavailable.' }); continue; }
+    try { await assertProviderAvailable(provider); }
+    catch (error) {
+      if (!(error instanceof ProviderUnavailableError)) throw error;
+      failedProviders.push({ provider, model, error: error.message });
+      continue;
+    }
     const keys = meta.requiresKey ? keysForProvider(provider, settings) : ['__no_key__'];
     if (meta.requiresKey && keys.length === 0) {
       failedProviders.push({ provider, model, error: 'No credential configured.' });

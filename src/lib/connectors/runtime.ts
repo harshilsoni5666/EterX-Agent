@@ -3,6 +3,7 @@ import { URL } from 'node:url';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import appPackage from '../../../package.json';
+import { measureMcpInvocation } from '../telemetry/runtime';
 import {
   ConnectorRecord,
   getConnectorRecord,
@@ -323,7 +324,8 @@ export async function listConnectedMcpTools(serverId: string, options: { allowDi
   return result;
 }
 export async function callConnectedMcpTool(serverId: string, name: string, args: Record<string, unknown>): Promise<any> {
-  return mcpRpc(serverId, 'tools/call', { name, arguments: args });
+  return measureMcpInvocation('external_mcp', () => mcpRpc(serverId, 'tools/call', { name, arguments: args }),
+    result => result?.isError === true);
 }
 
 export function listConnectorRuntimeStatus(): Array<Record<string, unknown>> {

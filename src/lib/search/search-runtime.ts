@@ -2,6 +2,7 @@ import { MODEL_REQUEST_TIMEOUT_MS } from '../agent/model-request-policy';
 import { load } from 'cheerio';
 import { Anthropic, OpenAI } from '../agent/model-clients';
 import { meterModelResponse } from '../usage/ledger';
+import { assertProviderAvailable } from '../app-presentation/posthog';
 import { measureFeature } from '../telemetry/runtime';
 import { GoogleGenAI } from '@google/genai';
 import {
@@ -890,6 +891,7 @@ const executeGenericWebAction = async (input: SearchExecutionInput, provider: Se
 };
 
 async function executeSearchProvider(input: SearchExecutionInput, provider: SearchProvider, settings: SearchSettings): Promise<NormalizedSearchResult> {
+  await assertProviderAvailable(provider);
   switch (provider) {
     case 'tavily': return executeTavily(input, settings.apiKeys.tavily?.[0] || '', settings);
     case 'brave': return executeBrave(input, settings.apiKeys.brave?.[0] || '', settings);

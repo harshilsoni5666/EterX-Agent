@@ -3,11 +3,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, Bot, Check, ChevronRight, Copy, Eye, EyeOff, FileText, HelpCircle, Loader2, Monitor, Plus, Search, Settings2, ShieldCheck, X } from 'lucide-react';
 import { appStorage, appStorageReady, flushAppStorage } from '../../lib/client-storage';
-import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
+import { isModelCatalogStorageKey, PROVIDER_BASE_URLS_STORAGE_KEY, readAvailableModelEntries, refreshSavedModelCatalog } from '../../lib/model-catalog-client';
 import { getModelThinkingOptions, normalizeThinkingLevelForModel, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
-import { MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY, isModelProvider, normalizeModelSelectorEntries, modelEntryKey, parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
+import { API_KEY_PRESENCE_STORAGE_KEY, MODEL_API_KEY_PRESENCE_STORAGE_KEY, MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY, isModelProvider, isAccountModelProvider, modelEntryKey, parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
 import { normalizeTelegramToken, TELEGRAM_CLIENT_VERSION } from '../../lib/agent/gateways/telegram-token.cjs';
 
 type BotProfile = {
@@ -74,19 +74,21 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
     return () => { off?.(); window.clearInterval(timer); unsubscribeVisibility(); };
   }, [api, refresh]);
   useEffect(() => {
-    let previousValues: Array<string | null> | null = null;
-    const read = () => {
-      const values = [MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY]
-        .map(key => appStorage.getItem(key));
-      if (previousValues && values.every((value, index) => value === previousValues![index])) return;
-      previousValues = values;
-      try { setModels(normalizeModelSelectorEntries(JSON.parse(values[0] || 'null'), JSON.parse(values[1] || '{}'))); } catch { setModels([]); }
-      try { setThinkingCapabilities(JSON.parse(values[2] || '{}')); } catch { setThinkingCapabilities({}); }
+    const modelSettings = new Set([
+      MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+      API_KEY_PRESENCE_STORAGE_KEY, MODEL_API_KEY_PRESENCE_STORAGE_KEY, PROVIDER_BASE_URLS_STORAGE_KEY,
+    ]);
+    const read = (event?: Event) => {
+      const key = (event as CustomEvent | undefined)?.detail?.key;
+      if (key && !modelSettings.has(key) && !isModelCatalogStorageKey(key)) return;
+      setModels(readAvailableModelEntries().filter(entry => !isAccountModelProvider(entry.provider)));
+      try { setThinkingCapabilities(JSON.parse(appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}')); }
+      catch { setThinkingCapabilities({}); }
     };
     let active = true;
     void appStorageReady.then(() => { if (active) read(); });
     read();
-    const events = ['focus', 'eterx-settings-updated', 'eterx-folder-storage-updated'];
+    const events = ['focus', 'eterx-settings-updated', 'eterx-folder-storage-updated', 'eterx-folder-storage-ready'];
     events.forEach(name => window.addEventListener(name, read));
     return () => { active = false; events.forEach(name => window.removeEventListener(name, read)); };
   }, [draft?.id]);

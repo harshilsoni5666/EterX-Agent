@@ -6,6 +6,7 @@ import { DEFAULT_GIT_PREFERENCES, normalizeGitPreferences } from './preferences'
 import type { GitMutation, GitMutationResult, GitStatus } from './types';
 
 export const GIT_CHANGED_EVENT = 'eterx-git-changed';
+export const CHAT_GIT_COMMIT_EVENT = 'eterx-chat-git-commit';
 
 export function useGitPreferences() {
   const [state, setState] = useState({ ...DEFAULT_GIT_PREFERENCES, ready: false });

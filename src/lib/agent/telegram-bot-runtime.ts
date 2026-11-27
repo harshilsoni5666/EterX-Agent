@@ -4,7 +4,7 @@ import { agentRegistry } from './agent-registry';
 import { getEterxDataDir } from './storage-paths';
 import { hydrateServerRuntimeSettings } from './server-runtime-hydration';
 import { buildScopedRuntimeSettings } from './runtime-api-keys';
-import { isModelProvider, isConcreteModelId, MODEL_PROVIDER_MODE } from './model-selector-store';
+import { isAccountModelProvider, isModelProvider, isConcreteModelId, MODEL_PROVIDER_MODE } from './model-selector-store';
 import { normalizeThinkingLevelForModel } from './model-routing';
 import { readStoredModelMetadata } from './stored-model-metadata';
 import { getCodingMode } from '../code/coding-modes';
@@ -236,8 +236,8 @@ class TelegramBotRuntime {
     }
     const provider = bot.model.provider;
     if (!isModelProvider(provider)) throw new Error('Invalid model provider.');
-    if (provider === 'codex') {
-      await this.send(event, 'Choose an API provider model for this bot. ChatGPT plan usage is available in your EterX desktop chats.', event.id);
+    if (isAccountModelProvider(provider)) {
+      await this.send(event, 'Choose an API provider model for this bot. Subscription models are available in your EterX desktop chats.', event.id);
       await this.ack(event); return { status: 'needs-model' };
     }
     const runtimeSettings = buildScopedRuntimeSettings();

@@ -20,6 +20,7 @@ import { openChatImage } from './image-gallery';
 import { useLifecycleElapsedMs } from './lifecycle-clock';
 import { openLocalFilePath } from './local-file-link';
 import { WorkspaceFileIcon } from './workspace-file-icon';
+import { WorkPanelDevelopment } from './work-panel-development';
 import type { WorkspaceSubAgentsProps } from './workspace-sub-agents';
 
 type WorkPanelAgent = WorkspaceSubAgentsProps['agents'][number] & {
@@ -289,6 +290,7 @@ type WorkPanelProps = {
   attached: boolean;
   panelId: string;
   owner: string;
+  chatId: string;
   workspacePath: string | null;
   workspaceName: string;
   workspaceLocked: boolean;
@@ -310,7 +312,7 @@ type WorkPanelProps = {
 };
 
 export function WorkPanel({
-  cardRef, chatRef, triggerRef, widthPreference, attached, panelId, owner, workspacePath, workspaceName, workspaceLocked,
+  cardRef, chatRef, triggerRef, widthPreference, attached, panelId, owner, chatId, workspacePath, workspaceName, workspaceLocked,
   traceLogs, media, mediaError, retryMedia, pins,
   plan, planRunning, agents, activeAgentId, revealAgents, assetIndexes, context, onSelectWorkspace, onSelectAgent, onClose,
 }: WorkPanelProps) {
@@ -593,6 +595,8 @@ export function WorkPanel({
               {!rootState.error && <button type="button" onClick={repository.refresh}>Retry</button>}
             </p>}
           </section>}
+
+          <WorkPanelDevelopment owner={owner} chatId={chatId} onOpen={onClose} />
 
           {plan && (steps.length > 0 || plan.document?.trim()) && <section className="eterx-work-panel-section" aria-label="Task Plan">
             <button type="button" className="eterx-work-panel-row" title={plan?.goal} aria-expanded={planOpen} aria-controls={plansId} onClick={() => setPlanOpen(value => !value)}>

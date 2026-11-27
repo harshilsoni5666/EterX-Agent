@@ -1,0 +1,148 @@
+.root {
+  --connection-text: #f1f1f1;
+  --connection-muted: #a7a7a7;
+  --connection-surface: #202020;
+  --connection-line: #373737;
+  --connection-control: #292929;
+  --connection-hover: #363636;
+  --connection-ready: #91d3b2;
+  --connection-warning: #e3bd83;
+  --connection-error: #f4a49e;
+  --connection-button: #ededed;
+  --connection-button-text: #181818;
+  color: var(--connection-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+:global(:root[data-theme='light']) .root {
+  --connection-text: #2a2a27;
+  --connection-muted: #696961;
+  --connection-surface: #fafaf8;
+  --connection-line: #deded8;
+  --connection-control: #f1f1ed;
+  --connection-hover: #e7e7e1;
+  --connection-ready: #23674c;
+  --connection-warning: #785716;
+  --connection-error: #a7463e;
+  --connection-button: #272725;
+  --connection-button-text: #fafafa;
+}
+
+.intro { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin: -10px 0 26px; color: var(--connection-muted); }
+.intro p { flex:1 1 210px; margin:0; }
+.section + .section { margin-top: 26px; }
+.section h4, .editor h5 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+.section > h4, .heading { margin-bottom: 10px; }
+.heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.panel, .editor, .guide, .empty {
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--connection-line);
+  border-radius: 11px;
+  background: var(--connection-surface);
+  list-style: none;
+}
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 12px 14px;
+}
+.rowIcon { flex: none; color: var(--connection-muted); }
+.rowText { flex: 1 1 145px; min-width: 0; }
+.rowText strong, .rowText span { display: block; overflow-wrap: anywhere; }
+.rowText strong { font-weight: 550; }
+.rowText span { color: var(--connection-muted); font-size: 11.5px; }
+.actions, .editorActions, .confirm, .copyRow, .links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.actions { margin-inline-start: auto; }
+.editorActions { justify-content: flex-end; margin-top: 12px; }
+.machine + .machine { border-top: 1px solid var(--connection-line); }
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--connection-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.badge i { display: block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge[data-state='ready'] { color: var(--connection-ready); }
+.badge[data-state='setup'] { color: var(--connection-warning); }
+.badge[data-state='offline'] { color: var(--connection-error); }
+
+.primary, .secondary, .iconButton, .quiet, .danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 29px;
+  padding: 4px 9px;
+  border: 1px solid var(--connection-line);
+  border-radius: 7px;
+  background: var(--connection-control);
+  color: var(--connection-text);
+  font-weight: 550;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.iconButton, .quiet { border-color: transparent; background: transparent; color: var(--connection-muted); }
+.iconButton { padding-inline: 6px; }
+.primary { background: var(--connection-button); color: var(--connection-button-text); border-color: var(--connection-button); }
+.primary:hover:not(:disabled) { opacity: .88; }
+.secondary:hover:not(:disabled), .iconButton:hover:not(:disabled), .quiet:hover:not(:disabled), .danger:hover:not(:disabled) { background: var(--connection-hover); }
+.danger { color: var(--connection-error); }
+.root button:disabled { opacity: .46; cursor: default; }
+.root :is(button, input, summary, a):focus-visible { outline: 2px solid #598fc8; outline-offset: 2px; }
+.details, .confirm { padding: 8px 14px 12px; border-top: 1px solid var(--connection-line); }
+.details { color: var(--connection-muted); font-size: 12px; overflow-wrap: anywhere; }
+.details[data-offline='true'] p { color: var(--connection-error); }
+.details p, .guide p, .empty p { margin: 0; }
+.details p + p, .guide p + p, .copyRow { margin-top: 6px; }
+.copyRow code { border-radius: 4px; padding: 3px 6px; background: var(--connection-control); }
+.confirm > span { flex: 1 1 12rem; }
+
+.editor { margin-bottom: 10px; padding: 13px 14px; }
+.editor h5 { margin-bottom: 9px; }
+.fields, .advancedFields { display: grid; gap: 9px; }
+.fields { grid-template-columns: minmax(106px, 1fr) minmax(155px, 1.7fr); }
+.advancedFields { grid-template-columns: minmax(160px, 1fr) minmax(86px, 112px); margin-top: 7px; }
+.editor label { display:block; min-width: 0; font-size: 12px; font-weight: 500; }
+.editor small { color: var(--connection-muted); font-weight: 400; }
+.editor input {
+  display: block;
+  margin-top: 4px;
+  width: 100%;
+  min-height: 33px;
+  padding: 4px 8px;
+  border: 1px solid var(--connection-line);
+  border-radius: 6px;
+  background: var(--connection-control);
+  color: var(--connection-text);
+  font-size: 12px;
+}
+.editor input::placeholder { color: var(--connection-muted); opacity: .85; }
+.advanced { margin-top: 10px; color: var(--connection-muted); font-size: 12px; }
+.advanced summary { cursor: pointer; }
+.fileInput { display: flex; align-items: stretch; gap: 5px; }
+.fileInput button { margin-top: 4px; }
+.root { container-type: inline-size; }
+@container (max-width: 360px) { .fields, .advancedFields { grid-template-columns: 1fr; } }
+.hint { margin: 7px 0; color: var(--connection-muted); font-size: 12px; }
+.empty, .loading { display: flex; align-items: center; gap: 10px; padding: 14px; color: var(--connection-muted); }
+.empty svg, .loading svg { flex: none; }
+.error { margin: 0 0 12px; color: var(--connection-error); overflow-wrap: anywhere; }
+.guide details { padding: 10px 14px; }
+.guide details + details { border-top: 1px solid var(--connection-line); }
+.guide summary { cursor: pointer; font-weight: 500; }
+.guide p { color: var(--connection-muted); font-size: 12px; }
+.guide summary + p { margin-top: 8px; }
+.guide a { display: inline-flex; align-items: center; gap: 4px; padding-block: 5px; color: var(--connection-text); text-decoration: underline; text-underline-offset: 3px; }
+.links { column-gap: 14px; }
